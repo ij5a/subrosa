@@ -25,22 +25,29 @@ Early (v0.1.0). Archive, search, backups, and the hook wiring work, and ingestio
 
 ## Install
 
-Two pieces: the binary (does the work) and the plugin (wires the hooks).
-
-**1. The binary** (needs a Rust toolchain until prebuilt releases land):
-
-```sh
-cargo install --git https://github.com/ij5a/subrosa
-```
-
-**2. The plugin** (inside Claude Code):
+**The easy way — plugin only, no Rust, no package manager** (inside Claude Code):
 
 ```
 /plugin marketplace add ij5a/subrosa
 /plugin install subrosa@subrosa
 ```
 
-**3. One-time setup** — creates the database and asks where backup snapshots should mirror to (iCloud / Dropbox / Google Drive / OneDrive / custom / none):
+On your next session start the plugin fetches the prebuilt binary for your platform from GitHub Releases — version-pinned and sha256-verified against checksums committed in this repo (the 70 lines of `hooks/run.sh` are all it does). No toolchain needed.
+
+Prefer to install the binary yourself? Any of these work too, and the plugin will find it on PATH:
+
+```sh
+# install script (prebuilt, checksum-verified)
+curl -fsSL https://raw.githubusercontent.com/ij5a/subrosa/main/install.sh | sh
+
+# homebrew
+brew install ij5a/tap/subrosa
+
+# from source, if you have Rust
+cargo install --git https://github.com/ij5a/subrosa
+```
+
+**Then, one-time setup** — creates the database and asks where backup snapshots should mirror to (iCloud / Dropbox / Google Drive / OneDrive / custom / none):
 
 ```sh
 subrosa setup
