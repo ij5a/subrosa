@@ -1,0 +1,22 @@
+[package]
+name = "subrosa"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Persistent, private memory for Claude Code. Archives every session into a local SQLite FTS5 database and makes it searchable."
+repository = "https://github.com/ij5a/subrosa"
+license = "MIT"
+keywords = ["claude", "claude-code", "memory", "sqlite", "fts5"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+regex = "1"
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+serde = "1"
+serde_json = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

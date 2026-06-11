@@ -1,0 +1,14 @@
+{
+  "name": "subrosa",
+  "description": "Persistent, private memory for Claude Code — what's said under the rose stays under the rose.",
+  "owner": {
+    "name": "ij5a"
+  },
+  "plugins": [
+    {
+      "name": "subrosa",
+      "source": "./",
+      "description": "Persistent, private memory for Claude Code — archives every session locally and makes it searchable."
+    }
+  ]
+}

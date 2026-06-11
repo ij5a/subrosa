@@ -1,0 +1,467 @@
+//! Transcript JSONL → turns rows. Faithful port of the proven Python flattener:
+//! keeps real user prompts and assistant text/thinking, compacts tool_use to
+//! name + args, keeps only a short head of tool_result, drops meta wrappers.
+
+use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::Value;
+
+use crate::db::now_iso;
+use crate::redact::redact;
+
+// Per-record flattening caps (chars). Tool output is mostly noise; keep a searchable head.
+const TOOL_USE_CAP: usize = 300;
+const TOOL_RESULT_CAP: usize = 500;
+const THINKING_CAP: usize = 2000;
+const RECORD_CAP: usize = 8000;
+
+// Machine-generated wrapper records arrive as `user` turns but carry no conversation.
+// Real prompts never start with these literal tags.
+const NOISE_PREFIXES: [&str; 6] = [
+    "<command-name>",
+    "<command-message>",
+    "<command-args>",
+    "<local-command-stdout>",
+    "<local-command-stderr>",
+    "[subrosa recall]", // our own UserPromptSubmit injection — avoids a recall feedback loop
+];
+
+/// Serialize JSON with Python's default `", "` / `": "` separators so stored
+/// turns are byte-identical to the reference implementation (golden-file parity).
+struct PySep;
+
+impl serde_json::ser::Formatter for PySep {
+    fn begin_array_value<W: ?Sized + std::io::Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> std::io::Result<()> {
+        if first {
+            Ok(())
+        } else {
+            writer.write_all(b", ")
+        }
+    }
+    fn begin_object_key<W: ?Sized + std::io::Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> std::io::Result<()> {
+        if first {
+            Ok(())
+        } else {
+            writer.write_all(b", ")
+        }
+    }
+    fn begin_object_value<W: ?Sized + std::io::Write>(
+        &mut self,
+        writer: &mut W,
+    ) -> std::io::Result<()> {
+        writer.write_all(b": ")
+    }
+}
+
+fn dumps_pylike(v: &Value) -> String {
+    let mut buf = Vec::new();
+    let mut ser = serde_json::Serializer::with_formatter(&mut buf, PySep);
+    if serde::Serialize::serialize(v, &mut ser).is_err() {
+        return v.to_string();
+    }
+    String::from_utf8(buf).unwrap_or_default()
+}
+
+/// Char-based truncation so multi-byte text never splits mid-codepoint.
+fn cap(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(n).collect();
+        out.push('…');
+        out
+    }
+}
+
+fn is_command_noise(text: &str) -> bool {
+    let s = text.trim_start();
+    NOISE_PREFIXES.iter().any(|p| s.starts_with(p))
+}
+
+/// tool_result content is sometimes a string, sometimes a list of blocks.
+fn stringify(body: Option<&Value>) -> String {
+    match body {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(items)) => {
+            let mut out = Vec::new();
+            for b in items {
+                match b {
+                    Value::Object(m) => {
+                        let is_text = m.get("type").and_then(Value::as_str) == Some("text")
+                            || m.contains_key("text");
+                        if is_text {
+                            out.push(
+                                m.get("text")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    Value::String(s) => out.push(s.clone()),
+                    _ => {}
+                }
+            }
+            out.join("\n")
+        }
+        Some(v @ Value::Object(m)) => m
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| serde_json::to_string(v).unwrap_or_default()),
+        Some(v) => v.to_string(),
+    }
+}
+
+/// Map one raw transcript record to (role, text), or None to skip.
+pub fn flatten_record(o: &Value) -> Option<(String, String)> {
+    let t = o.get("type").and_then(Value::as_str)?;
+    if t != "user" && t != "assistant" {
+        return None;
+    }
+    if o.get("isMeta").and_then(Value::as_bool).unwrap_or(false) {
+        return None; // local-command caveats / injected wrappers, not real conversation
+    }
+    let empty = Value::Object(serde_json::Map::new());
+    let msg = match o.get("message") {
+        Some(m) if m.is_object() => m,
+        _ => &empty,
+    };
+    let role = msg.get("role").and_then(Value::as_str).unwrap_or(t);
+    let mut parts: Vec<String> = Vec::new();
+    match msg.get("content") {
+        Some(Value::String(s)) => {
+            let s = s.trim();
+            if !s.is_empty() {
+                parts.push(s.to_string());
+            }
+        }
+        Some(Value::Array(blocks)) => {
+            for b in blocks {
+                let Value::Object(m) = b else { continue };
+                match m.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        let s = m.get("text").and_then(Value::as_str).unwrap_or("").trim();
+                        if !s.is_empty() {
+                            parts.push(s.to_string());
+                        }
+                    }
+                    Some("thinking") => {
+                        let s = m
+                            .get("thinking")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim();
+                        if !s.is_empty() {
+                            parts.push(cap(s, THINKING_CAP));
+                        }
+                    }
+                    Some("tool_use") => {
+                        let name = m.get("name").and_then(Value::as_str).unwrap_or("tool");
+                        let input = m.get("input").cloned().unwrap_or(Value::Null);
+                        let input = if input.is_null() {
+                            Value::Object(serde_json::Map::new())
+                        } else {
+                            input
+                        };
+                        let arg = dumps_pylike(&input);
+                        parts.push(format!("⚙ {} {}", name, cap(&arg, TOOL_USE_CAP)));
+                    }
+                    Some("tool_result") => {
+                        let body = stringify(m.get("content"));
+                        let body = body.trim();
+                        if !body.is_empty() {
+                            parts.push(format!("↪ {}", cap(body, TOOL_RESULT_CAP)));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    let text = parts
+        .iter()
+        .filter(|p| !p.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = text.trim();
+    if text.is_empty() || is_command_noise(text) {
+        return None;
+    }
+    Some((role.to_string(), cap(&redact(text), RECORD_CAP)))
+}
+
+fn session_count(conn: &Connection, sid: &str) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT count(*) FROM turns WHERE session_id=?",
+        [sid],
+        |r| r.get(0),
+    )
+}
+
+struct Row {
+    seq: i64,
+    uuid: Option<String>,
+    ts: Option<String>,
+    role: String,
+    text: String,
+    is_meta: i64,
+    is_sidechain: i64,
+    cwd: Option<String>,
+}
+
+/// Parse one transcript JSONL and upsert its turns + session row. Idempotent.
+/// Returns (inserted, scanned).
+pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn Error>> {
+    if !path.exists() {
+        return Ok((0, 0));
+    }
+    // Filename stem == sessionId; stable key for re-ingest + file tracking.
+    let sid = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let project = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let reader = BufReader::new(fs::File::open(path)?);
+    let mut rows: Vec<Row> = Vec::new();
+    let (mut first_ts, mut last_ts, mut cwd): (Option<String>, Option<String>, Option<String>) =
+        (None, None, None);
+    let mut scanned: i64 = 0;
+
+    for (i, chunk) in reader.split(b'\n').enumerate() {
+        let Ok(bytes) = chunk else { continue };
+        let line = String::from_utf8_lossy(&bytes);
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // A half-written last line of a live transcript fails to parse; picked up next pass.
+        let Ok(o) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        scanned += 1;
+        let Some((role, text)) = flatten_record(&o) else {
+            continue;
+        };
+        let ts = o
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if let Some(ref t) = ts {
+            if first_ts.as_deref().map(|f| t.as_str() < f).unwrap_or(true) {
+                first_ts = Some(t.clone());
+            }
+            if last_ts.as_deref().map(|l| t.as_str() > l).unwrap_or(true) {
+                last_ts = Some(t.clone());
+            }
+        }
+        let row_cwd = o.get("cwd").and_then(Value::as_str).map(str::to_string);
+        if cwd.is_none() {
+            cwd = row_cwd.clone();
+        }
+        rows.push(Row {
+            seq: i as i64,
+            uuid: o.get("uuid").and_then(Value::as_str).map(str::to_string),
+            ts,
+            role,
+            text,
+            is_meta: o.get("isMeta").and_then(Value::as_bool).unwrap_or(false) as i64,
+            is_sidechain: o
+                .get("isSidechain")
+                .and_then(Value::as_bool)
+                .unwrap_or(false) as i64,
+            cwd: row_cwd,
+        });
+    }
+
+    let before = session_count(conn, &sid)?;
+    if !rows.is_empty() {
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR IGNORE INTO turns\
+                 (session_id,seq,uuid,ts,role,text,is_meta,is_sidechain,project,cwd) \
+                 VALUES (?,?,?,?,?,?,?,?,?,?)",
+            )?;
+            for r in &rows {
+                stmt.execute(params![
+                    sid,
+                    r.seq,
+                    r.uuid,
+                    r.ts,
+                    r.role,
+                    r.text,
+                    r.is_meta,
+                    r.is_sidechain,
+                    project,
+                    r.cwd
+                ])?;
+            }
+        }
+        tx.commit()?;
+    }
+    let inserted = session_count(conn, &sid)? - before;
+
+    let (num_turns, last_seq): (i64, i64) = conn.query_row(
+        "SELECT count(*), COALESCE(max(seq), -1) FROM turns WHERE session_id=?",
+        [&sid],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let fsize = fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
+    conn.execute(
+        "INSERT INTO sessions \
+           (session_id,file_path,project,cwd,first_ts,last_ts,num_turns,last_seq,file_size,ingested_at) \
+         VALUES (?,?,?,?,?,?,?,?,?,?) \
+         ON CONFLICT(session_id) DO UPDATE SET \
+           file_path=excluded.file_path, \
+           project=excluded.project, \
+           cwd=COALESCE(excluded.cwd, sessions.cwd), \
+           first_ts=COALESCE(excluded.first_ts, sessions.first_ts), \
+           last_ts=COALESCE(excluded.last_ts, sessions.last_ts), \
+           num_turns=excluded.num_turns, \
+           last_seq=excluded.last_seq, \
+           file_size=excluded.file_size, \
+           ingested_at=excluded.ingested_at",
+        params![
+            sid,
+            path.to_string_lossy(),
+            project,
+            cwd,
+            first_ts,
+            last_ts,
+            num_turns,
+            last_seq,
+            fsize,
+            now_iso()
+        ],
+    )?;
+    Ok((inserted, scanned))
+}
+
+/// Ingest any transcript whose size changed since last archive (catch-up for a
+/// missed SessionEnd). Returns (files_seen, files_ingested, turns_inserted).
+pub fn sweep(conn: &Connection, root: &Path) -> Result<(i64, i64, i64), Box<dyn Error>> {
+    if !root.exists() {
+        return Ok((0, 0, 0));
+    }
+    let mut seen: HashMap<String, i64> = HashMap::new();
+    {
+        let mut stmt = conn.prepare("SELECT session_id, file_size FROM sessions")?;
+        let mut rows = stmt.query([])?;
+        while let Some(r) = rows.next()? {
+            seen.insert(r.get(0)?, r.get(1)?);
+        }
+    }
+    let mut transcripts = Vec::new();
+    for project_dir in fs::read_dir(root)? {
+        let Ok(project_dir) = project_dir else {
+            continue;
+        };
+        let p = project_dir.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&p) else {
+            continue;
+        };
+        for f in entries.flatten() {
+            let fp = f.path();
+            if fp.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                transcripts.push(fp);
+            }
+        }
+    }
+    transcripts.sort();
+
+    let (mut files, mut ingested, mut inserted_total) = (0, 0, 0);
+    for path in transcripts {
+        files += 1;
+        let Ok(size) = fs::metadata(&path).map(|m| m.len() as i64) else {
+            continue;
+        };
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if seen.get(&stem) == Some(&size) {
+            continue; // unchanged since last ingest
+        }
+        let (ins, _) = ingest_file(conn, &path)?;
+        ingested += 1;
+        inserted_total += ins;
+    }
+    Ok((files, ingested, inserted_total))
+}
+
+/// Append a session to the checkpoint queue — but only when it's worth distilling
+/// and isn't already queued or already checkpointed. Idempotent: the SessionEnd
+/// hook fires repeatedly on resume. Returns: queued | pruned | unchanged | duplicate.
+pub fn enqueue_checkpoint(
+    conn: &Connection,
+    sid: &str,
+    log_path: &Path,
+) -> Result<&'static str, Box<dyn Error>> {
+    let row: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT COALESCE(last_seq,-1), COALESCE(checkpointed_seq,-1) \
+             FROM sessions WHERE session_id=?",
+            [sid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let user_turns: i64 = conn.query_row(
+        "SELECT count(*) FROM turns WHERE session_id=? AND role='user' AND is_sidechain=0",
+        [sid],
+        |r| r.get(0),
+    )?;
+    let Some((last_seq, checkpointed_seq)) = row else {
+        return Ok("pruned"); // not yet ingested
+    };
+    if user_turns < 1 {
+        return Ok("pruned"); // empty / sub-agent-only / bare slash-command
+    }
+    if last_seq <= checkpointed_seq {
+        return Ok("unchanged"); // already checkpointed and hasn't grown past the mark
+    }
+    let pending: HashSet<String> = fs::read_to_string(log_path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.rsplit('\t').next().unwrap_or(l).trim().to_string())
+        .collect();
+    if pending.contains(sid) {
+        return Ok("duplicate");
+    }
+    if let Some(parent) = log_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    use std::io::Write;
+    let mut f = fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(log_path)?;
+    writeln!(f, "{}\t{}", now_iso(), sid)?;
+    Ok("queued")
+}
