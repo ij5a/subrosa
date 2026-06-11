@@ -1,0 +1,18 @@
+# session aaaa-bbbb-1111  project=-tmp-demo  cwd=/tmp/demo  2026-06-12T01:00:00Z..2026-06-12T01:05:00Z
+# memdir: {{PROJECTS_DIR}}/-tmp-demo/memory
+
+## user
+deploying cache-prod today, password=‹redacted› should be masked
+
+## assistant
+Rolling out now.
+check the cluster first
+⚙ Bash {"command": "kubectl get pods", "flags": {"all": true, "n": 3}}
+
+## user
+↪ pod-1 Running
+pod-2 Running
+
+## user
+TICKET-123 cache-prod rollout finished, latency back to normal
+

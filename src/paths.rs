@@ -10,6 +10,18 @@ pub fn home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Expand a leading `~` the way a shell would (clap doesn't).
+pub fn expanduser(p: &std::path::Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if s == "~" {
+        return home();
+    }
+    if let Some(rest) = s.strip_prefix("~/") {
+        return home().join(rest);
+    }
+    p.to_path_buf()
+}
+
 fn env_path(key: &str, default: impl FnOnce() -> PathBuf) -> PathBuf {
     std::env::var_os(key)
         .map(PathBuf::from)

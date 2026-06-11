@@ -1,11 +1,17 @@
 mod backup;
 mod db;
+mod facts;
+mod generate;
 mod hook;
+mod import_existing;
 mod ingest;
 mod paths;
+mod recall;
 mod redact;
 mod search;
+mod session;
 mod setup;
+mod stats;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -20,7 +26,7 @@ use clap::{Parser, Subcommand};
 #[command(name = "subrosa", version, about)]
 struct Cli {
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -59,6 +65,12 @@ enum Cmd {
         #[arg(long)]
         quiet: bool,
     },
+    /// Ingest every transcript that changed since its last archive
+    Sweep {
+        /// Suppress output
+        #[arg(long)]
+        quiet: bool,
+    },
     /// Search the archived transcripts (FTS5, bm25-ranked)
     Search {
         /// Search terms (each phrase-quoted unless --raw)
@@ -76,8 +88,93 @@ enum Cmd {
         #[arg(long)]
         session: Option<String>,
     },
+    /// Show the memory archive dashboard (activity, store, by-project share)
+    Stats(stats::Args),
+    /// Mutate curated facts (upsert/archive/pin/unpin/list)
+    Fact {
+        #[arg(value_enum)]
+        action: facts::FactAction,
+        /// Leaf filename, e.g. reference_foo.md (bare filename, no path)
+        #[arg(long)]
+        leaf: Option<String>,
+        /// Fact type: user | feedback | project | reference
+        #[arg(long = "type")]
+        type_: Option<String>,
+        /// Index title (default: stored value, then name slug)
+        #[arg(long)]
+        title: Option<String>,
+        /// One-line index hook (default: stored value, then description)
+        #[arg(long)]
+        hook: Option<String>,
+        /// Force always-loaded regardless of budget
+        #[arg(long)]
+        pin: bool,
+        /// Stamp origin_session on new facts (checkpoint provenance)
+        #[arg(long)]
+        origin_session: Option<String>,
+        /// Encoded project name (default: parent dir of --memdir)
+        #[arg(long)]
+        project: Option<String>,
+        /// A project's memory/ dir (default: the current project, from cwd)
+        #[arg(long)]
+        memdir: Option<PathBuf>,
+        /// Filter for `list`
+        #[arg(long, value_enum, default_value = "active")]
+        status: facts::StatusFilter,
+    },
+    /// Generate a project's MEMORY.md from the facts table (byte-budgeted)
+    Generate {
+        /// Encoded project name (default: parent dir of --memdir)
+        #[arg(long)]
+        project: Option<String>,
+        /// A project's memory/ dir (default: the current project, from cwd)
+        #[arg(long)]
+        memdir: Option<PathBuf>,
+        /// Max bytes
+        #[arg(long, default_value_t = generate::DEFAULT_BUDGET)]
+        budget: i64,
+        /// Output path (default: <memdir>/MEMORY.md)
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Let facts not currently in the index compete for the budget too
+        #[arg(long)]
+        include_orphans: bool,
+        /// Print to stdout, don't write the file
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// One-time import of a project's MEMORY.md + leaf files into the facts table
+    Import {
+        /// The project's memory/ dir (default: the current project, from cwd)
+        memdir: Option<PathBuf>,
+        /// Skip the safety backup of the memdir
+        #[arg(long)]
+        no_backup: bool,
+        /// Override the encoded project name (default: parent dir name)
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Print one archived session's flattened turns
+    Session {
+        /// Session id (transcript filename stem)
+        id: String,
+    },
     /// List sessions queued for checkpoint
     Pending,
+    /// Remove a session from the queue + record the checkpoint high-water mark
+    CheckpointDrop {
+        /// Session id
+        id: String,
+    },
+    /// Conditionally queue a session (prunes empty/sub-agent-only sessions)
+    CheckpointEnqueue {
+        /// Session id
+        id: String,
+    },
+    /// Mark the currently-running session checkpointed
+    CheckpointMark,
+    /// Empty the whole checkpoint queue (prefer checkpoint-drop per session)
+    CheckpointClear,
     /// Claude Code hook entrypoints (read the hook JSON on stdin; never fail the session)
     #[command(subcommand)]
     Hook(HookEvent),
@@ -85,15 +182,24 @@ enum Cmd {
 
 #[derive(Subcommand, Clone, Copy)]
 pub enum HookEvent {
-    /// SessionStart: catch-up ingest of any transcript that changed since its last archive
+    /// SessionStart: catch-up ingest + checkpoint/byte-cap nudge
     SessionStart,
     /// SessionEnd: archive the ended session and queue it for checkpoint
     SessionEnd,
+    /// UserPromptSubmit: inject relevant past-session hits into context
+    UserPromptSubmit,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match cli.cmd {
+    let Some(cmd) = cli.cmd else {
+        // Bare `subrosa` opens the dashboard, same as `subrosa stats`.
+        return stats::run(&stats::Args {
+            detail: false,
+            no_color: false,
+        });
+    };
+    match cmd {
         Cmd::Hook(event) => hook::run(event), // logs problems, always exits 0
         Cmd::Setup { mirror, no_mirror } => setup::run(mirror, no_mirror),
         Cmd::Backup {
@@ -107,6 +213,7 @@ fn main() -> ExitCode {
             sweep,
             quiet,
         } => run_ingest(paths, sweep, quiet),
+        Cmd::Sweep { quiet } => run_ingest(Vec::new(), true, quiet),
         Cmd::Search {
             terms,
             limit,
@@ -114,7 +221,49 @@ fn main() -> ExitCode {
             project,
             session,
         } => search::run(&terms, limit, raw, project.as_deref(), session.as_deref()),
+        Cmd::Stats(args) => stats::run(&args),
+        Cmd::Fact {
+            action,
+            leaf,
+            type_,
+            title,
+            hook,
+            pin,
+            origin_session,
+            project,
+            memdir,
+            status,
+        } => facts::run(
+            action,
+            leaf,
+            type_,
+            title,
+            hook,
+            pin,
+            origin_session,
+            project,
+            memdir,
+            status,
+        ),
+        Cmd::Generate {
+            project,
+            memdir,
+            budget,
+            out,
+            include_orphans,
+            dry_run,
+        } => generate::run(project, memdir, budget, out, include_orphans, dry_run),
+        Cmd::Import {
+            memdir,
+            no_backup,
+            project,
+        } => import_existing::run(memdir, no_backup, project),
+        Cmd::Session { id } => session::dump(&id),
         Cmd::Pending => run_pending(),
+        Cmd::CheckpointDrop { id } => session::drop_sid(&id),
+        Cmd::CheckpointEnqueue { id } => session::enqueue(&id),
+        Cmd::CheckpointMark => session::mark_current(),
+        Cmd::CheckpointClear => run_checkpoint_clear(),
     }
 }
 
@@ -183,7 +332,9 @@ fn run_ingest(paths: Vec<PathBuf>, sweep: bool, quiet: bool) -> ExitCode {
         match ingest::sweep(&conn, &paths::projects_dir()) {
             Ok((files, ingested, inserted)) => {
                 if !quiet {
-                    println!("[subrosa] sweep: {files} transcripts, {ingested} changed, +{inserted} turns");
+                    println!(
+                        "[subrosa] sweep: {files} transcripts, {ingested} changed, +{inserted} turns"
+                    );
                 }
                 ExitCode::SUCCESS
             }
@@ -234,5 +385,26 @@ fn run_pending() -> ExitCode {
             println!("{line}");
         }
     }
+    ExitCode::SUCCESS
+}
+
+fn run_checkpoint_clear() -> ExitCode {
+    let pending = paths::pending_log();
+    let Ok(text) = std::fs::read_to_string(&pending) else {
+        println!("[subrosa] queue empty");
+        return ExitCode::SUCCESS;
+    };
+    let n = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| l.rsplit('\t').next().unwrap_or(l))
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    if let Err(e) = std::fs::write(&pending, "") {
+        eprintln!("[subrosa] cannot clear queue: {e}");
+        return ExitCode::FAILURE;
+    }
+    println!("[subrosa] cleared {n} queued session(s)");
     ExitCode::SUCCESS
 }

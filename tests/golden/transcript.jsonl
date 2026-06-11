@@ -1,0 +1,6 @@
+{"type":"user","timestamp":"2026-06-12T01:00:00Z","uuid":"u1","cwd":"/tmp/demo","message":{"role":"user","content":"deploying cache-prod today, password=hunter2 should be masked"}}
+{"type":"assistant","timestamp":"2026-06-12T01:01:00Z","uuid":"u2","cwd":"/tmp/demo","message":{"role":"assistant","content":[{"type":"text","text":"Rolling out now."},{"type":"thinking","thinking":"check the cluster first"},{"type":"tool_use","name":"Bash","input":{"command":"kubectl get pods","flags":{"all":true,"n":3}}}]}}
+{"type":"user","timestamp":"2026-06-12T01:02:00Z","uuid":"u3","cwd":"/tmp/demo","message":{"role":"user","content":[{"type":"tool_result","content":[{"type":"text","text":"pod-1 Running\npod-2 Running"}]}]}}
+{"type":"user","timestamp":"2026-06-12T01:03:00Z","uuid":"u4","cwd":"/tmp/demo","message":{"role":"user","content":"<command-name>/foo</command-name>"}}
+{"type":"user","timestamp":"2026-06-12T01:04:00Z","uuid":"u5","cwd":"/tmp/demo","message":{"role":"user","content":"[subrosa recall] injected block that must not be archived"}}
+{"type":"user","timestamp":"2026-06-12T01:05:00Z","uuid":"u7","cwd":"/tmp/demo","message":{"role":"user","content":"TICKET-123 cache-prod rollout finished, latency back to normal"}}

@@ -1,6 +1,7 @@
-//! Transcript JSONL → turns rows. Faithful port of the proven Python flattener:
-//! keeps real user prompts and assistant text/thinking, compacts tool_use to
-//! name + args, keeps only a short head of tool_result, drops meta wrappers.
+//! Transcript JSONL → turns rows: keeps real user prompts and assistant
+//! text/thinking, compacts tool_use to name + args, keeps only a short head
+//! of tool_result, drops meta wrappers. The stored-text format is pinned
+//! byte-for-byte by golden tests — existing archives must re-ingest cleanly.
 
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -28,14 +29,16 @@ const NOISE_PREFIXES: [&str; 6] = [
     "<command-args>",
     "<local-command-stdout>",
     "<local-command-stderr>",
-    "[subrosa recall]", // our own UserPromptSubmit injection — avoids a recall feedback loop
+    // Our own recall injection header — archiving it would feed past
+    // injections back into future recall results.
+    "[subrosa recall]",
 ];
 
-/// Serialize JSON with Python's default `", "` / `": "` separators so stored
-/// turns are byte-identical to the reference implementation (golden-file parity).
-struct PySep;
+/// JSON with `", "` / `": "` separators — the archive's canonical stored-text
+/// format for tool args, pinned byte-for-byte by golden tests.
+struct SpacedSeps;
 
-impl serde_json::ser::Formatter for PySep {
+impl serde_json::ser::Formatter for SpacedSeps {
     fn begin_array_value<W: ?Sized + std::io::Write>(
         &mut self,
         writer: &mut W,
@@ -66,9 +69,9 @@ impl serde_json::ser::Formatter for PySep {
     }
 }
 
-fn dumps_pylike(v: &Value) -> String {
+fn to_json_spaced(v: &Value) -> String {
     let mut buf = Vec::new();
-    let mut ser = serde_json::Serializer::with_formatter(&mut buf, PySep);
+    let mut ser = serde_json::Serializer::with_formatter(&mut buf, SpacedSeps);
     if serde::Serialize::serialize(v, &mut ser).is_err() {
         return v.to_string();
     }
@@ -179,7 +182,7 @@ pub fn flatten_record(o: &Value) -> Option<(String, String)> {
                         } else {
                             input
                         };
-                        let arg = dumps_pylike(&input);
+                        let arg = to_json_spaced(&input);
                         parts.push(format!("⚙ {} {}", name, cap(&arg, TOOL_USE_CAP)));
                     }
                     Some("tool_result") => {

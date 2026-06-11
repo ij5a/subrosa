@@ -21,6 +21,12 @@ jobs:
       - run: cargo build --locked
       - run: cargo test --locked
 
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/sweep.sh
+
   audit:
     runs-on: ubuntu-latest
     steps:

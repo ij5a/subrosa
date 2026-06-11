@@ -2,14 +2,15 @@
 //! synced folder) so the WAL/SHM sidecars don't corrupt under cloud sync.
 
 use std::fs;
+use std::path::PathBuf;
 use std::time::Duration;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
 use crate::paths;
 
-// The DDL matches the original Python implementation byte-for-byte where it
-// matters: a DB created by either implementation works with the other.
+// The DDL is compatibility-critical: archives created by any past version
+// must keep working byte-for-byte, so schema changes go through migrate() only.
 const SCHEMA: &str = r#"
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
@@ -121,6 +122,86 @@ pub fn connect() -> rusqlite::Result<Connection> {
     migrate(&conn)?;
     conn.pragma_update(None, "user_version", 1)?;
     Ok(conn)
+}
+
+/// Open the DB read-only — the fast path for per-prompt lookups that must not
+/// write or contend for the write lock. Errors if the DB doesn't exist yet.
+pub fn connect_readonly() -> rusqlite::Result<Connection> {
+    let conn = Connection::open_with_flags(
+        paths::db_path(),
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(Duration::from_millis(5_000))?;
+    Ok(conn)
+}
+
+/// Mirror Claude Code's projects-dir naming: every non-alphanumeric char becomes a dash.
+pub fn encode_cwd(path: &str) -> String {
+    path.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// The current project's memory/ dir, derived from the cwd — the default for
+/// `subrosa fact` and `subrosa generate` so facts land in the project you're in.
+/// The cwd can arrive via a symlink while Claude Code names the projects dir
+/// after the resolved path, so try raw + resolved cwd (plus a sessions-table
+/// match, which holds Claude Code's own encoding) and prefer a dir that exists.
+pub fn current_memdir(conn: Option<&Connection>) -> PathBuf {
+    let mut raws: Vec<String> = Vec::new();
+    if let Ok(p) = std::env::var("PWD") {
+        if !p.is_empty() {
+            raws.push(p);
+        }
+    }
+    if let Ok(p) = std::env::current_dir() {
+        raws.push(p.to_string_lossy().into_owned());
+    }
+    let mut cwds: Vec<String> = Vec::new();
+    for p in &raws {
+        let resolved = fs::canonicalize(p)
+            .map(|x| x.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| p.clone());
+        for q in [p.clone(), resolved] {
+            if !cwds.contains(&q) {
+                cwds.push(q);
+            }
+        }
+    }
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(conn) = conn {
+        // A sessions-table hit is authoritative — it's Claude Code's own encoding.
+        for cw in &cwds {
+            let hit: Option<Option<String>> = conn
+                .query_row(
+                    "SELECT project FROM sessions WHERE cwd=? ORDER BY last_ts DESC LIMIT 1",
+                    [cw],
+                    |r| r.get(0),
+                )
+                .optional()
+                .unwrap_or(None);
+            if let Some(Some(p)) = hit {
+                if !p.is_empty() {
+                    candidates.push(p);
+                }
+            }
+        }
+    }
+    candidates.extend(cwds.iter().map(|c| encode_cwd(c)));
+    let projects = paths::projects_dir();
+    for enc in &candidates {
+        let d = projects.join(enc).join("memory");
+        if d.exists() {
+            return d;
+        }
+    }
+    let enc = candidates
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| encode_cwd(raws.first().map(String::as_str).unwrap_or("")));
+    projects.join(enc).join("memory")
 }
 
 #[cfg(unix)]

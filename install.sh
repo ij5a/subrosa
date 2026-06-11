@@ -1,7 +1,7 @@
 #!/bin/sh
-# Install a prebuilt subrosa binary from GitHub Releases. No Rust needed.
+# Install a prebuilt subrosa binary from GitHub Releases. No toolchain needed.
 #   curl -fsSL https://raw.githubusercontent.com/ij5a/subrosa/main/install.sh | sh
-# Optional: VERSION=v0.1.0 sh install.sh   (defaults to the latest release)
+# Optional: VERSION=vX.Y.Z sh install.sh   (defaults to the latest release)
 set -eu
 
 REPO="ij5a/subrosa"
@@ -17,7 +17,7 @@ esac
 
 if [ -z "${VERSION:-}" ]; then
   # The /releases/latest redirect ends in the tag name.
-  VERSION="$(curl -fsSI "https://github.com/$REPO/releases/latest" \
+  VERSION="$(curl -fsSI --proto '=https' --proto-redir '=https' "https://github.com/$REPO/releases/latest" \
     | tr -d '\r' | awk -F'/tag/' 'tolower($0) ~ /^location:/ {print $2}')"
 fi
 [ -n "$VERSION" ] || { echo "could not resolve the latest release tag" >&2; exit 1; }
@@ -28,8 +28,8 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 echo "downloading $ARCHIVE ..."
-curl -fsSL --proto '=https' -o "$TMP/$ARCHIVE" "$BASE/$ARCHIVE"
-curl -fsSL --proto '=https' -o "$TMP/sha256sums.txt" "$BASE/sha256sums.txt"
+curl -fsSL --proto '=https' --proto-redir '=https' -o "$TMP/$ARCHIVE" "$BASE/$ARCHIVE"
+curl -fsSL --proto '=https' --proto-redir '=https' -o "$TMP/sha256sums.txt" "$BASE/sha256sums.txt"
 
 WANT="$(awk -v f="$ARCHIVE" '$2 == f {print $1}' "$TMP/sha256sums.txt")"
 if command -v sha256sum >/dev/null 2>&1; then

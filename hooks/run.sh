@@ -24,6 +24,8 @@ find_bin() {
 }
 
 bootstrap() {
+  # Owner-only for everything the bootstrap creates (data dir, temp download).
+  umask 077
   [ -s "$SELF/binary-version" ] && [ -s "$SELF/sha256sums.txt" ] || return 1
   VERSION="$(cat "$SELF/binary-version")"
   case "$(uname -s)-$(uname -m)" in
@@ -38,7 +40,7 @@ bootstrap() {
   [ -n "$WANT" ] || return 1
 
   TMP="$(mktemp -d)" || return 1
-  if ! curl -fsSL --proto '=https' --max-time 120 -o "$TMP/$ARCHIVE" \
+  if ! curl -fsSL --proto '=https' --proto-redir '=https' --max-time 120 -o "$TMP/$ARCHIVE" \
     "https://github.com/ij5a/subrosa/releases/download/$VERSION/$ARCHIVE"; then
     rm -rf "$TMP"
     return 1
@@ -52,7 +54,7 @@ bootstrap() {
     rm -rf "$TMP"
     return 1
   fi
-  mkdir -p "$DATA/bin" && chmod 700 "$DATA" 2>/dev/null
+  mkdir -p "$DATA/bin" && chmod 700 "$DATA" "$DATA/bin" 2>/dev/null
   tar -xzf "$TMP/$ARCHIVE" -C "$DATA/bin" subrosa && chmod 755 "$DATA/bin/subrosa"
   STATUS=$?
   rm -rf "$TMP"
