@@ -2,7 +2,9 @@
   <img src="assets/subrosa-banner.png" alt="subrosa" width="560">
 </p>
 
-Persistent, private memory for Claude Code — that never spends your tokens on itself.
+<p align="center">
+  Persistent, private memory for Claude Code — that never spends your tokens on itself.
+</p>
 
 Every session is archived into a local SQLite database and becomes searchable: the work you did last month is one `subrosa search` away, relevant past sessions resurface automatically when you type a related prompt, and Claude stops rediscovering things it already figured out.
 
@@ -15,7 +17,11 @@ Every session is archived into a local SQLite database and becomes searchable: t
   <img src="assets/demo.gif" alt="subrosa demo: search the archive, automatic recall on a prompt, dashboard" width="800">
 </p>
 
-[How it compares](docs/comparison.md) · [FAQ](docs/faq.md) · [Performance](#performance)
+<p align="center">
+  <a href="docs/comparison.md">How it compares</a> ·
+  <a href="docs/faq.md">FAQ</a> ·
+  <a href="#performance">Performance</a>
+</p>
 
 ## Why "subrosa"?
 
