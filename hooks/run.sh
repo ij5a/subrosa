@@ -8,19 +8,24 @@ EVENT="$1"
 [ -n "$EVENT" ] || exit 0
 
 DATA="${SUBROSA_DIR:-$HOME/.claude/subrosa}"
-SELF="$(cd "$(dirname "$0")" && pwd)"
+# Parameter expansion, not $(dirname): the hot path must not fork. hooks.json
+# always invokes us by absolute path, so stripping the last component works.
+SELF="${0%/*}"
+[ "$SELF" != "$0" ] || SELF="."
 
+# Sets BIN directly (no $(...) capture subshell — this runs on every prompt).
 find_bin() {
   if command -v subrosa >/dev/null 2>&1; then
-    echo subrosa
-    return
+    BIN=subrosa
+    return 0
   fi
   for c in "$HOME/.cargo/bin/subrosa" "$DATA/bin/subrosa" "$SELF/../bin/subrosa"; do
     if [ -x "$c" ]; then
-      echo "$c"
-      return
+      BIN="$c"
+      return 0
     fi
   done
+  BIN=""
 }
 
 bootstrap() {
@@ -61,13 +66,13 @@ bootstrap() {
   return $STATUS
 }
 
-BIN="$(find_bin)"
+find_bin
 if [ -z "$BIN" ]; then
   mkdir -p "$DATA" 2>/dev/null
   if bootstrap >>"$DATA/hook.log" 2>&1; then
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) bootstrap: installed $(cat "$SELF/binary-version") to $DATA/bin" >>"$DATA/hook.log"
   fi
-  BIN="$(find_bin)"
+  find_bin
   [ -n "$BIN" ] || exit 0
 fi
 # No exec, and stderr dropped: an older PATH binary that doesn't know this

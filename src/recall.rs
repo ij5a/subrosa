@@ -24,6 +24,9 @@ use crate::{db, paths};
 const MAX_INJECT: usize = 3;
 const SNIPPET_LEN: usize = 160;
 const MIN_TERMS: usize = 2;
+// FTS candidate query: cap the OR-union so a pasted wall of text can't explode
+// into a hundred-branch posting-list merge. The post-filter still sees every term.
+const MAX_FTS_TERMS: usize = 12;
 // Trim the dedup log once it's clearly past any live-session working set.
 const SEEN_TRIM_AT: usize = 4000;
 const SEEN_KEEP: usize = 2000;
@@ -196,14 +199,13 @@ fn is_anchor(tok: &str) -> bool {
 }
 
 /// Source sessions already injected into this live session — never repeat them.
-fn already_injected(log: &Path, session: &str) -> HashSet<String> {
+/// Takes the log text (read once per prompt) rather than re-reading the file.
+fn already_injected(seen_text: &str, session: &str) -> HashSet<String> {
     if session.is_empty() {
         return HashSet::new();
     }
-    let Ok(text) = std::fs::read_to_string(log) else {
-        return HashSet::new();
-    };
-    text.lines()
+    seen_text
+        .lines()
         .filter_map(|l| l.split_once('\t'))
         .filter(|(s, _)| *s == session)
         .map(|(_, sid)| sid.to_string())
@@ -238,19 +240,23 @@ pub fn forget_session(log: &Path, session: &str) {
 }
 
 /// Best-effort append (+ occasional trim) of injected source sessions. No
-/// locking: a lost line costs one repeated injection at worst.
-fn remember_injected<'a>(log: &Path, session: &str, sids: impl Iterator<Item = &'a str>) {
+/// locking: a lost line costs one repeated injection at worst. `seen_text` is
+/// the log content this prompt already read — no second read on the hot path.
+fn remember_injected<'a>(
+    log: &Path,
+    seen_text: &str,
+    session: &str,
+    sids: impl Iterator<Item = &'a str>,
+) {
     if session.is_empty() {
         return;
     }
     if let Some(parent) = log.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(text) = std::fs::read_to_string(log) {
-        let lines: Vec<&str> = text.lines().collect();
-        if lines.len() > SEEN_TRIM_AT {
-            let _ = std::fs::write(log, lines[lines.len() - SEEN_KEEP..].join("\n") + "\n");
-        }
+    let lines: Vec<&str> = seen_text.lines().collect();
+    if lines.len() > SEEN_TRIM_AT {
+        let _ = std::fs::write(log, lines[lines.len() - SEEN_KEEP..].join("\n") + "\n");
     }
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .append(true)
@@ -291,7 +297,14 @@ pub fn run(input: &Value) -> Option<String> {
         .get("session_id")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let fts_match = terms
+    // When over the cap, keep the terms most likely to be selective: anchors
+    // first, then longer words. Under the cap the query is byte-identical.
+    let mut fts_terms: Vec<&String> = terms.iter().collect();
+    if fts_terms.len() > MAX_FTS_TERMS {
+        fts_terms.sort_by_key(|t| (!is_anchor(t), std::cmp::Reverse(t.chars().count())));
+        fts_terms.truncate(MAX_FTS_TERMS);
+    }
+    let fts_match = fts_terms
         .iter()
         .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
         .collect::<Vec<_>>()
@@ -331,7 +344,8 @@ pub fn run(input: &Value) -> Option<String> {
         .map(|t| (t.to_lowercase(), is_anchor(t)))
         .collect();
     let seen_log = paths::recall_seen_log();
-    let already = already_injected(&seen_log, cur_session);
+    let seen_text = std::fs::read_to_string(&seen_log).unwrap_or_default();
+    let already = already_injected(&seen_text, cur_session);
     let mut picked = Vec::new();
     let mut seen_sessions = HashSet::new();
     for (sid, ts, text) in rows {
@@ -374,6 +388,7 @@ pub fn run(input: &Value) -> Option<String> {
     }
     remember_injected(
         &seen_log,
+        &seen_text,
         cur_session,
         picked.iter().map(|(sid, _, _)| sid.as_str()),
     );

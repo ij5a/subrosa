@@ -103,6 +103,24 @@ Everything is overridable with env vars: `SUBROSA_DIR`, `SUBROSA_DB`, `SUBROSA_P
 - The database is `0600`, its directory `0700`.
 - Secret shapes are redacted before storage. The source transcripts under `~/.claude/projects` remain as Claude Code wrote them — full-disk encryption is the real at-rest control for those.
 
+## Performance
+
+A hook that runs on every prompt has to be invisible. Measured with `scripts/bench.sh`
+(hyperfine, synthetic 50,000-turn / 28 MB archive, Apple M3 Max):
+
+| Operation | Time |
+|---|---|
+| Prompt recall check, no match — the usual case | ~4 ms |
+| Prompt recall check, match found and injected | ~14 ms |
+| A full hook fire as Claude Code runs it (shell wrapper + binary) | under 10 ms |
+| Session-start catch-up sweep, nothing changed | ~5 ms |
+| `subrosa search` over 50,000 turns | 5–11 ms |
+| Archiving 50,000 turns from scratch (first install) | ~1.1 s |
+
+One static 3.7 MB binary, no background process, no runtime dependencies — every hook
+is a short-lived process that opens the database, does its work, and exits. Reproduce
+the numbers with `scripts/bench.sh` (needs `hyperfine`).
+
 ## Development
 
 ```sh

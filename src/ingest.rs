@@ -395,18 +395,17 @@ pub fn sweep(conn: &Connection, root: &Path) -> Result<(i64, i64, i64), Box<dyn 
         for f in entries.flatten() {
             let fp = f.path();
             if fp.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                transcripts.push(fp);
+                // DirEntry metadata — no second stat per transcript later.
+                let Ok(md) = f.metadata() else { continue };
+                transcripts.push((fp, md.len() as i64));
             }
         }
     }
     transcripts.sort();
 
     let (mut files, mut ingested, mut inserted_total) = (0, 0, 0);
-    for path in transcripts {
+    for (path, size) in transcripts {
         files += 1;
-        let Ok(size) = fs::metadata(&path).map(|m| m.len() as i64) else {
-            continue;
-        };
         let stem = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())

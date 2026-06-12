@@ -20,3 +20,6 @@ serde_json = "1"
 lto = true
 codegen-units = 1
 strip = true
+# Hooks guarantee exit 0 via Result handling (no catch_unwind), and run.sh
+# absorbs abnormal exits — abort drops the unwinder: smaller, faster binary.
+panic = "abort"

@@ -3,6 +3,7 @@
 //! the secret VALUE is replaced — surrounding words stay searchable. The source
 //! transcripts are still cleartext; disk encryption is the real at-rest control.
 
+use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -34,12 +35,16 @@ static REDACTIONS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     ]
 });
 
-pub fn redact(text: &str) -> String {
-    REDACTIONS
-        .iter()
-        .fold(text.to_string(), |acc, (pat, repl)| {
-            pat.replace_all(&acc, *repl).into_owned()
-        })
+/// Borrows straight through when nothing matches — the overwhelmingly common
+/// case — so clean turns cost zero copies here.
+pub fn redact(text: &str) -> Cow<'_, str> {
+    let mut acc = Cow::Borrowed(text);
+    for (pat, repl) in REDACTIONS.iter() {
+        if pat.is_match(&acc) {
+            acc = Cow::Owned(pat.replace_all(&acc, *repl).into_owned());
+        }
+    }
+    acc
 }
 
 #[cfg(test)]

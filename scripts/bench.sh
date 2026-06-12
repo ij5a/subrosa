@@ -1,0 +1,108 @@
+#!/bin/sh
+# Reproducible performance benchmark against a synthetic archive (never live data).
+# Needs: hyperfine. Usage: scripts/bench.sh [path-to-subrosa-binary]
+set -eu
+
+BIN="${1:-target/release/subrosa}"
+BENCH="${BENCH_DIR:-/tmp/subrosa-bench}"
+SESSIONS="${BENCH_SESSIONS:-200}"
+TURNS="${BENCH_TURNS:-250}"
+
+command -v hyperfine >/dev/null 2>&1 || { echo "bench: hyperfine not installed"; exit 1; }
+[ -x "$BIN" ] || { echo "bench: binary not found at $BIN (cargo build --release first)"; exit 1; }
+BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
+
+export SUBROSA_DIR="$BENCH/data"
+export SUBROSA_PROJECTS_DIR="$BENCH/projects"
+
+# Deterministic synthetic transcripts: prose + identifiers + tool records across
+# 8 projects, shaped like real Claude Code JSONL. awk with a hand-rolled LCG so
+# the corpus is byte-identical on every awk (no srand portability gamble).
+if [ ! -f "$BENCH/projects/.generated" ]; then
+  rm -rf "$BENCH"
+  mkdir -p "$BENCH/projects"
+  awk -v root="$BENCH/projects" -v sessions="$SESSIONS" -v turns="$TURNS" 'BEGIN {
+    seed = 42
+    nw = split("deploy rollout cluster ingress gateway terraform module bucket lambda queue " \
+               "retry timeout migration schema index vacuum replica failover snapshot backup " \
+               "latency throughput budget alert dashboard pipeline runner artifact release " \
+               "candidate incident postmortem rollback canary traffic shard partition broker", words, " ")
+    ni = split("svc-cache-prod svc-auth-prod svc-billing-prod svc-search-prod svc-ingest-prod " \
+               "cache-gateway-prod us-east-1", idents, " ")
+    for (n = 1000; n < 1040; n++) idents[++ni] = "TICKET-" n
+    for (s = 0; s < sessions; s++) {
+      proj = "-tmp-bench-proj" (s % 8)
+      cwd = "/tmp/bench/proj" (s % 8)
+      system("mkdir -p \"" root "/" proj "\"")
+      f = sprintf("%s/%s/bench-%04d-0000-4000-8000-%012d.jsonl", root, proj, s, s)
+      for (t = 0; t < turns; t++) {
+        ts = sprintf("2026-01-%02dT%02d:%02d:00Z", (s % 28) + 1, int(t / 60) % 24, t % 60)
+        if (t % 2 == 0) {
+          printf "{\"type\":\"user\",\"timestamp\":\"%s\",\"uuid\":\"u%d-%d\",\"cwd\":\"%s\"," \
+                 "\"message\":{\"role\":\"user\",\"content\":\"%s\"}}\n", ts, s, t, cwd, sentence() > f
+        } else {
+          blocks = "{\"type\":\"text\",\"text\":\"" sentence() " " sentence() "\"}"
+          if (t % 5 == 1)
+            blocks = blocks ",{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":" \
+                     "{\"command\":\"kubectl get pods -n " pick(idents, ni) "\"}}"
+          printf "{\"type\":\"assistant\",\"timestamp\":\"%s\",\"uuid\":\"a%d-%d\",\"cwd\":\"%s\"," \
+                 "\"message\":{\"role\":\"assistant\",\"content\":[%s]}}\n", ts, s, t, cwd, blocks > f
+        }
+      }
+      close(f)
+    }
+    printf "generated %d transcripts x %d records under %s\n", sessions, turns, root
+  }
+  # Park-Miller minstd: products stay under 2^53, exact in awk doubles.
+  function rnd(n) { seed = (seed * 16807) % 2147483647; return seed % n }
+  function pick(arr, n) { return arr[rnd(n) + 1] }
+  function sentence(   k, i, out) {
+    k = 8 + rnd(13)
+    out = ""
+    for (i = 0; i < k; i++) out = out (i ? " " : "") words[rnd(nw) + 1]
+    if (rnd(10) < 4) out = out " " pick(idents, ni)
+    return out
+  }'
+  touch "$BENCH/projects/.generated"
+fi
+
+# Fresh full ingest: archive build throughput (3 runs, DB wiped in prepare).
+echo "== ingest: full archive build ($SESSIONS transcripts x $TURNS records) =="
+hyperfine --warmup 1 --runs 3 \
+  --prepare "rm -rf '$SUBROSA_DIR'" \
+  "'$BIN' ingest --sweep --quiet"
+
+[ -f "$SUBROSA_DIR/memory.db" ] || "$BIN" ingest --sweep --quiet
+TURNS_TOTAL=$("$BIN" init | sed -n 's/.*turns=//p')
+DB_KB=$(du -k "$SUBROSA_DIR/memory.db" | cut -f1)
+echo "archive: $TURNS_TOTAL turns, $((DB_KB / 1024))MB"
+echo
+
+HIT='{"prompt":"how did the cache-gateway-prod TICKET-1012 deploy rollout go","cwd":"/tmp/bench/proj3","session_id":"bench-live"}'
+MISS='{"prompt":"zxqv-flurble-9921 quuxotic zebra contraption rebalance","cwd":"/tmp/bench/proj3","session_id":"bench-live"}'
+
+echo "== hook user-prompt-submit (recall): every-prompt hot path =="
+hyperfine --warmup 5 --runs 50 \
+  --prepare "rm -f '$SUBROSA_DIR/recall-seen.log'" \
+  -n "recall (match + inject)" "printf '%s' '$HIT' | '$BIN' hook user-prompt-submit" \
+  -n "recall (no match, silent)" "printf '%s' '$MISS' | '$BIN' hook user-prompt-submit"
+
+echo "== hook session-start (idle catch-up sweep over $SESSIONS transcripts) =="
+hyperfine --warmup 3 --runs 25 \
+  -n "session-start (nothing changed)" \
+  "printf '{\"cwd\":\"/tmp/bench/proj3\",\"session_id\":\"bench-live\"}' | '$BIN' hook session-start"
+
+echo "== search =="
+hyperfine --warmup 3 --runs 25 \
+  -n "search identifier" "'$BIN' search cache-gateway-prod -n 5" \
+  -n "search two terms" "'$BIN' search deploy rollout -n 5"
+
+echo "== process startup floor =="
+hyperfine --warmup 5 --runs 50 -n "subrosa --version" "'$BIN' --version"
+
+# Wrapper overhead: what Claude Code actually pays per hook fire (script + binary).
+RUNSH="$(cd "$(dirname "$0")/.." && pwd)/hooks/run.sh"
+echo "== hooks/run.sh wrapper (PATH resolves to the bench binary) =="
+PATH="$(dirname "$BIN"):$PATH" hyperfine --warmup 5 --runs 50 \
+  --prepare "rm -f '$SUBROSA_DIR/recall-seen.log'" \
+  -n "run.sh user-prompt-submit" "printf '%s' '$MISS' | sh '$RUNSH' user-prompt-submit"

@@ -121,6 +121,7 @@ pub fn connect() -> rusqlite::Result<Connection> {
     conn.busy_timeout(Duration::from_millis(30_000))?;
     // Connection-local; the persistent WAL switch lives in the init batch.
     conn.pragma_update(None, "synchronous", "NORMAL")?;
+    tune(&conn)?;
     // user_version current → everyday connects are pure reads. Creation and
     // upgrades retry: WAL conversion can BUSY right past the busy handler.
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -164,7 +165,16 @@ pub fn connect_readonly() -> rusqlite::Result<Connection> {
             | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     conn.busy_timeout(Duration::from_millis(5_000))?;
+    tune(&conn)?;
     Ok(conn)
+}
+
+/// Connection-local read-path tuning. mmap skips read() syscalls for FTS page
+/// access (clamped to file size; the live DB is always on local disk), and
+/// in-memory temp keeps the bm25 sort off the filesystem. Batch because
+/// `PRAGMA mmap_size=` returns a row, which execute_batch discards.
+fn tune(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("PRAGMA mmap_size=268435456; PRAGMA temp_store=MEMORY;")
 }
 
 /// Mirror Claude Code's projects-dir naming: every non-alphanumeric char becomes a dash.
