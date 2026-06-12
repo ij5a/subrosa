@@ -32,6 +32,7 @@ EOF
 awk -v root="$SUBROSA_PROJECTS_DIR" -v sessions=96 -v turns=250 'BEGIN {
   seed = 42
   np = split("-work-acme-web -work-acme-infra -work-acme-billing -home-jp-oss-zola-site -home-jp-scratch -work-acme-data -work-acme-mobile -home-jp-dotfiles", projs, " ")
+  split("/work/acme/web /work/acme/infra /work/acme/billing /home/jp/oss/zola-site /home/jp/scratch /work/acme/data /work/acme/mobile /home/jp/dotfiles", cwds, " ")
   nw = split("deploy rollout cluster ingress gateway terraform module bucket lambda queue " \
              "retry timeout migration schema index vacuum replica failover snapshot backup " \
              "latency throughput budget alert dashboard pipeline runner artifact release " \
@@ -41,7 +42,7 @@ awk -v root="$SUBROSA_PROJECTS_DIR" -v sessions=96 -v turns=250 'BEGIN {
   for (n = 1000; n < 1040; n++) idents[++ni] = "TICKET-" n
   for (s = 0; s < sessions; s++) {
     proj = projs[(s % np) + 1]
-    cwd = "/work/demo" (s % np)
+    cwd = cwds[(s % np) + 1]
     system("mkdir -p \"" root "/" proj "\"")
     f = sprintf("%s/%s/demo-%04d-0000-4000-8000-%012d.jsonl", root, proj, s, s)
     for (t = 0; t < turns; t++) {
@@ -65,4 +66,51 @@ function sentence(   k, i, out) {
 
 subrosa ingest --sweep --quiet
 subrosa init
+
+# Seed curated facts for the -tmp project (the tape records with cwd=/tmp) so the
+# dashboard's facts/index/backup rows show a lived-in memory instead of zeros.
+MEMDIR="$SUBROSA_PROJECTS_DIR/-tmp/memory"
+mkdir -p "$MEMDIR"
+
+cat > "$MEMDIR/project_aurora_failover_fix.md" <<'EOF'
+---
+name: aurora-failover-fix
+description: Aurora failover fixed — pgbouncer server_check_delay=2, dns_max_ttl=1, fast_failover on; drill now 40s, zero 5xx
+metadata:
+  type: project
+---
+
+Failover took 4 minutes because pgbouncer kept pinning the dead writer. Fixed 2026-05-02; failover drill now completes in 40 seconds.
+EOF
+subrosa fact upsert --memdir "$MEMDIR" --leaf project_aurora_failover_fix.md \
+  --hook "Aurora failover: pgbouncer server_check_delay=2 + dns_max_ttl=1 + fast_failover; drill 40s, zero 5xx" >/dev/null
+
+cat > "$MEMDIR/project_rate_limit_decision.md" <<'EOF'
+---
+name: rate-limit-decision
+description: api-gateway rate limiting — redis sliding window, 50 req/s per key, burst 200; token bucket rejected
+metadata:
+  type: project
+---
+
+Decided 2026-05-20: redis sliding window in rate_limiter.rs (lua script for atomicity). Token bucket rejected — burst smoothing mattered more.
+EOF
+subrosa fact upsert --memdir "$MEMDIR" --leaf project_rate_limit_decision.md \
+  --hook "Rate limiting: redis sliding window on api-gateway, 50 req/s per key, burst 200" >/dev/null
+
+cat > "$MEMDIR/reference_failover_runbook.md" <<'EOF'
+---
+name: failover-runbook
+description: Aurora failover runbook — wiki/ops/aurora-failover; drill quarterly
+metadata:
+  type: reference
+---
+
+Runbook documented after the 2026-05-02 incident. Drill schedule: quarterly.
+EOF
+subrosa fact upsert --memdir "$MEMDIR" --leaf reference_failover_runbook.md \
+  --hook "Failover runbook at wiki/ops/aurora-failover; drill quarterly" >/dev/null
+
+subrosa generate --memdir "$MEMDIR" >/dev/null
+subrosa backup --force >/dev/null
 echo "demo archive ready: SUBROSA_DIR=$SUBROSA_DIR SUBROSA_PROJECTS_DIR=$SUBROSA_PROJECTS_DIR"
