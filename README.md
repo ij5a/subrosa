@@ -1,9 +1,15 @@
 <p align="center">
-  <img src="assets/subrosa-banner.png" alt="subrosa" width="560">
+  <img src="assets/subrosa-banner.png" alt="subrosa" width="100%">
 </p>
 
 <p align="center">
   Persistent, private memory for Claude Code — that never spends your tokens on itself.
+</p>
+
+<p align="center">
+  <a href="https://github.com/ij5a/subrosa/releases/latest"><img src="https://img.shields.io/github/v/release/ij5a/subrosa" alt="latest release"></a>
+  <a href="https://github.com/ij5a/subrosa/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/ij5a/subrosa/ci.yml?branch=main" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/ij5a/subrosa" alt="MIT license"></a>
 </p>
 
 Every session is archived into a local SQLite database and becomes searchable: the work you did last month is one `subrosa search` away, relevant past sessions resurface automatically when you type a related prompt, and Claude stops rediscovering things it already figured out.
@@ -18,9 +24,18 @@ Every session is archived into a local SQLite database and becomes searchable: t
 </p>
 
 <p align="center">
+  <a href="#why-subrosa">Why "subrosa"?</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#what-it-does">What it does</a> ·
+  <a href="#commands">Commands</a> ·
+  <a href="#the-memory-workflow">The memory workflow</a> ·
+  <a href="#make-claude-search-the-archive-itself">Make Claude search the archive itself</a><br/>
+  <a href="#where-your-data-lives">Where your data lives</a> ·
+  <a href="#privacy-model">Privacy model</a> ·
+  <a href="#performance">Performance</a> ·
+  <a href="#development">Development</a> ·
   <a href="docs/comparison.md">How it compares</a> ·
-  <a href="docs/faq.md">FAQ</a> ·
-  <a href="#performance">Performance</a>
+  <a href="docs/faq.md">FAQ</a>
 </p>
 
 ## Why "subrosa"?
@@ -106,6 +121,18 @@ subrosa setup                            # one-time backup-mirror question
 ```
 
 ## The memory workflow
+
+```mermaid
+flowchart TD
+    ended["session ends<br/>quit, /clear, or log out"] --> archived["archived into the local database<br/>+ queued for checkpoint"]
+    archived --> nudge["next session start<br/>a note lands in Claude's context:<br/>N sessions queued for checkpoint"]
+    nudge --> backlog["/subrosa:checkpoint-backlog<br/>saves durable facts from each queued session"]
+    livesession["live session<br/>before /clear or /compact"] --> checkpoint["/subrosa:checkpoint<br/>saves durable facts from the current session"]
+    backlog --> facts["curated facts<br/>leaf files + the facts table"]
+    checkpoint --> facts
+    facts -->|subrosa generate| memorymd["MEMORY.md<br/>byte-budgeted, loaded every session"]
+    archived -.->|stays searchable either way| recall["subrosa search + automatic prompt recall"]
+```
 
 1. A session ends (you quit Claude Code, run `/clear`, or log out) → it's archived and queued.
 2. At the next session start, a note lands in Claude's context: `[subrosa] N session(s) queued for checkpoint…` — hook output goes to Claude, not to your chat window, so Claude acts on it (or you can run the next step yourself).
