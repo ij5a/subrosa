@@ -41,7 +41,12 @@ enum Cmd {
         no_mirror: bool,
     },
     /// Create (or verify) the local memory schema and print a status line
-    Init,
+    Init {
+        /// Append the "Memory recall" block to ~/.claude/CLAUDE.md (idempotent),
+        /// so Claude searches the archive on its own at task start
+        #[arg(long)]
+        claude_md: bool,
+    },
     /// Snapshot the DB (consistent copy; safe while in use)
     Backup {
         /// Snapshot even if one was taken in the last 24h
@@ -215,7 +220,7 @@ fn main() -> ExitCode {
             keep,
             no_mirror,
         } => run_backup(force, keep, no_mirror),
-        Cmd::Init => run_init(),
+        Cmd::Init { claude_md } => run_init(claude_md),
         Cmd::Ingest {
             paths,
             sweep,
@@ -299,7 +304,7 @@ fn run_backup(force: bool, keep: usize, no_mirror: bool) -> ExitCode {
     }
 }
 
-fn run_init() -> ExitCode {
+fn run_init(claude_md: bool) -> ExitCode {
     let conn = match db::connect() {
         Ok(c) => c,
         Err(e) => {
@@ -325,6 +330,9 @@ fn run_init() -> ExitCode {
         count("SELECT count(*) FROM sessions"),
         count("SELECT count(*) FROM turns")
     );
+    if claude_md {
+        return setup::append_claude_md();
+    }
     ExitCode::SUCCESS
 }
 

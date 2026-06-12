@@ -42,6 +42,13 @@ pub fn projects_dir() -> PathBuf {
     })
 }
 
+/// Claude Code's user-global memory file — the `init --claude-md` target.
+pub fn claude_md() -> PathBuf {
+    env_path("SUBROSA_CLAUDE_MD", || {
+        home().join(".claude").join("CLAUDE.md")
+    })
+}
+
 pub fn pending_log() -> PathBuf {
     env_path("SUBROSA_PENDING_LOG", || {
         mem_dir().join("pending-checkpoint.log")

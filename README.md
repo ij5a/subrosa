@@ -43,6 +43,14 @@ Then start a new Claude Code session (quit and reopen, or run `claude` again). T
 
 The one-time download fetches the program itself — your data never goes anywhere.
 
+Then one more command, in your terminal, for the best experience — it teaches Claude to
+check the archive on its own before starting work, instead of only reacting to your
+prompts ([what it adds](#make-claude-search-the-archive-itself) — idempotent, ~150 tokens):
+
+```sh
+~/.claude/subrosa/bin/subrosa init --claude-md   # or just: subrosa init --claude-md, with the CLI below
+```
+
 ### Optional: the `subrosa` command in your terminal
 
 The plugin works without this. Install the CLI if you also want to search and manage the archive yourself:
@@ -106,7 +114,7 @@ subrosa setup                            # one-time backup-mirror question
 
 `MEMORY.md` is generated from the facts table under a byte budget — important facts (pinned, feedback) win when space runs out, and everything that doesn't fit stays searchable in the archive.
 
-## Optional: make Claude search the archive itself
+## Make Claude search the archive itself
 
 The recall hook reacts to the words in your prompt. The other direction — Claude
 deciding to check the archive before it starts working — takes one paragraph in your
@@ -128,7 +136,14 @@ generated — never hand-edit it; update facts with `subrosa fact` + `subrosa ge
 or run `/subrosa:checkpoint`.
 ```
 
-subrosa never edits your `CLAUDE.md` itself: a standing instruction costs about
+Or have it appended for you — same text, idempotent, and a no-op if the section
+is already there:
+
+```sh
+subrosa init --claude-md
+```
+
+subrosa never edits your `CLAUDE.md` unasked: a standing instruction costs about
 150 tokens of always-loaded context, so spending them is your call. In return,
 Claude composes its own searches mid-task and follows leads the prompt-triggered
 hook can't see.
