@@ -203,6 +203,29 @@ fn long_hooks_capped_in_index() {
 }
 
 #[test]
+fn recall_matches_word_forms() {
+    let env = setup("stem");
+    ingest(
+        &env,
+        "ffff-4444",
+        &[user_rec(
+            "2026-06-12T01:00:00Z",
+            "u1",
+            "we deployed those services yesterday evening",
+        )],
+    );
+    // No exact token overlap — only the stems match (deploy/deployed,
+    // service/services), so this fails without the porter index.
+    let payload =
+        r#"{"prompt":"deploy the service again maybe","cwd":"/tmp/demo","session_id":"live-4"}"#;
+    let (out, _) = run(&env, &["hook", "user-prompt-submit"], Some(payload));
+    assert!(
+        out.starts_with("[subrosa recall]"),
+        "stemmed recall should match word forms, got:\n{out}"
+    );
+}
+
+#[test]
 fn pre_compact_archives_and_resets_dedup() {
     let env = setup("precompact");
     ingest(

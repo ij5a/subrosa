@@ -11,6 +11,8 @@ use crate::paths;
 
 // The DDL is compatibility-critical: archives created by any past version
 // must keep working byte-for-byte, so schema changes go through migrate() only.
+// v2: porter-stemmed FTS (word forms match; identifiers pass through unchanged).
+const SCHEMA_VERSION: i64 = 2;
 const SCHEMA: &str = r#"
 PRAGMA journal_mode=WAL;
 
@@ -48,7 +50,7 @@ CREATE INDEX IF NOT EXISTS idx_turns_project ON turns(project);
 
 -- External-content FTS5 (the turns table is the source of truth; FTS holds only the index).
 CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(
-  text, content='turns', content_rowid='id', tokenize='unicode61'
+  text, content='turns', content_rowid='id', tokenize='porter unicode61'
 );
 
 -- Keep the FTS index in sync. On INSERT OR IGNORE conflicts the AFTER INSERT trigger does
@@ -91,7 +93,7 @@ CREATE TABLE IF NOT EXISTS facts (
 CREATE INDEX IF NOT EXISTS idx_facts_project ON facts(project, status, superseded_at);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
-  title, hook, description, content='facts', content_rowid='id', tokenize='unicode61'
+  title, hook, description, content='facts', content_rowid='id', tokenize='porter unicode61'
 );
 CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
   INSERT INTO facts_fts(rowid, title, hook, description) VALUES (new.id, new.title, new.hook, new.description);
@@ -119,12 +121,12 @@ pub fn connect() -> rusqlite::Result<Connection> {
     conn.busy_timeout(Duration::from_millis(30_000))?;
     // Connection-local; the persistent WAL switch lives in the init batch.
     conn.pragma_update(None, "synchronous", "NORMAL")?;
-    // user_version 1 = schema current → everyday connects are pure reads. First-
-    // time creation retries: WAL conversion can BUSY right past the busy handler.
+    // user_version current → everyday connects are pure reads. Creation and
+    // upgrades retry: WAL conversion can BUSY right past the busy handler.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if v == 1 {
+        if v == SCHEMA_VERSION {
             return Ok(conn);
         }
         match init_schema(&conn) {
@@ -140,7 +142,7 @@ pub fn connect() -> rusqlite::Result<Connection> {
 fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SCHEMA)?;
     migrate(conn)?;
-    conn.pragma_update(None, "user_version", 1)
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION)
 }
 
 fn is_busy(e: &rusqlite::Error) -> bool {
@@ -241,7 +243,8 @@ fn chmod(path: &std::path::Path, mode: u32) {
 #[cfg(not(unix))]
 fn chmod(_path: &std::path::Path, _mode: u32) {}
 
-/// Idempotent column adds for DBs created before a column existed.
+/// Idempotent upgrades for DBs created by an older version: column adds and
+/// the v2 stemmed-FTS rebuild.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
     let cols: Vec<String> = stmt
@@ -253,7 +256,49 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [],
         )?;
     }
+    // v2: swap both FTS indexes to the stemmed tokenizer. The CREATE statements
+    // must match SCHEMA above (minus IF NOT EXISTS).
+    upgrade_fts(
+        conn,
+        "turns_fts",
+        "CREATE VIRTUAL TABLE turns_fts USING fts5(\
+           text, content='turns', content_rowid='id', tokenize='porter unicode61');",
+    )?;
+    upgrade_fts(
+        conn,
+        "facts_fts",
+        "CREATE VIRTUAL TABLE facts_fts USING fts5(\
+           title, hook, description, content='facts', content_rowid='id', \
+           tokenize='porter unicode61');",
+    )?;
     Ok(())
+}
+
+/// Rebuild an external-content FTS index whose tokenizer predates porter, in
+/// one write transaction — the source table is the truth, the index is
+/// disposable (~220ms at 50k turns). Crash mid-way rolls back to the old index.
+fn upgrade_fts(conn: &Connection, table: &str, create_sql: &str) -> rusqlite::Result<()> {
+    let ddl: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            [table],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let current = match ddl {
+        Some(s) => s.contains("porter"),
+        None => true, // absent: SCHEMA just created it with the current tokenizer
+    };
+    if current {
+        return Ok(());
+    }
+    conn.execute_batch(&format!(
+        "BEGIN IMMEDIATE;\n\
+         DROP TABLE {table};\n\
+         {create_sql}\n\
+         INSERT INTO {table}({table}) VALUES('rebuild');\n\
+         COMMIT;"
+    ))
 }
 
 /// ISO-8601 UTC timestamp with seconds precision, e.g. 2026-06-12T06:20:02+00:00.
@@ -282,4 +327,86 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The pre-v2 shape of the turns side: unstemmed FTS plus the insert trigger.
+    const V1_DDL: &str = r#"
+CREATE TABLE turns (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id   TEXT NOT NULL,
+  seq          INTEGER NOT NULL,
+  uuid TEXT, ts TEXT, role TEXT, text TEXT,
+  is_meta INTEGER DEFAULT 0, is_sidechain INTEGER DEFAULT 0,
+  project TEXT, cwd TEXT,
+  UNIQUE(session_id, seq)
+);
+CREATE VIRTUAL TABLE turns_fts USING fts5(
+  text, content='turns', content_rowid='id', tokenize='unicode61'
+);
+CREATE TRIGGER turns_ai AFTER INSERT ON turns BEGIN
+  INSERT INTO turns_fts(rowid, text) VALUES (new.id, new.text);
+END;
+"#;
+
+    fn count_match(conn: &Connection, term: &str) -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM turns_fts WHERE turns_fts MATCH ?",
+            [format!("\"{term}\"")],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn migrate_rebuilds_fts_with_porter() {
+        let p = std::env::temp_dir().join(format!("subrosa-mig-{}.db", std::process::id()));
+        let _ = fs::remove_file(&p);
+        let conn = Connection::open(&p).unwrap();
+        conn.execute_batch(V1_DDL).unwrap();
+        conn.execute(
+            "INSERT INTO turns(session_id, seq, text) VALUES('s1', 0, 'we deployed the cache service')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        assert_eq!(count_match(&conn, "deploy"), 0, "v1 index must not stem");
+
+        init_schema(&conn).unwrap();
+
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        let ddl: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='turns_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(ddl.contains("porter"), "tokenizer not upgraded: {ddl}");
+        assert_eq!(
+            count_match(&conn, "deploy"),
+            1,
+            "stemmed match after migration"
+        );
+
+        // The untouched triggers still sync the rebuilt index.
+        conn.execute(
+            "INSERT INTO turns(session_id, seq, text) VALUES('s1', 1, 'deploying again tomorrow')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(count_match(&conn, "deploy"), 2);
+
+        // Re-running is a no-op (porter already present → no rebuild path).
+        init_schema(&conn).unwrap();
+        assert_eq!(count_match(&conn, "deploy"), 2);
+        drop(conn);
+        let _ = fs::remove_file(&p);
+    }
 }
