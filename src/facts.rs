@@ -37,6 +37,20 @@ pub fn type_weight(t: Option<&str>) -> i64 {
     }
 }
 
+/// One fat hook line would crowd several facts out of the byte-budgeted index.
+pub const HOOK_MAX_CHARS: usize = 240;
+
+/// Char-safe cap for index hook lines (multi-byte text never splits).
+pub fn cap_hook(s: &str) -> String {
+    if s.chars().count() <= HOOK_MAX_CHARS {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(HOOK_MAX_CHARS - 1).collect();
+        out.push('…');
+        out
+    }
+}
+
 /// Drop one matching pair of surrounding quotes — YAML quoting that shouldn't
 /// leak into the stored value.
 fn unquote(v: &str) -> String {
@@ -184,6 +198,11 @@ fn upsert(
                 .filter(|s| !s.is_empty())
         })
         .unwrap_or_else(|| fm.get("description").cloned().unwrap_or_default());
+    let capped = cap_hook(&hook);
+    if capped != hook {
+        eprintln!("[subrosa] hook truncated to {HOOK_MAX_CHARS} chars — index lines stay short");
+    }
+    let hook = capped;
     let description: Option<String> = fm
         .get("description")
         .cloned()

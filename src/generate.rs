@@ -29,7 +29,8 @@ fn render_line(f: &Fact) -> String {
         "- [{}]({}) — {}\n",
         f.title.as_deref().unwrap_or(""),
         f.leaf_path.as_deref().unwrap_or(""),
-        f.hook.as_deref().unwrap_or("")
+        // Cap defensively too: rows may predate the upsert-side cap.
+        crate::facts::cap_hook(f.hook.as_deref().unwrap_or(""))
     )
 }
 

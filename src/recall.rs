@@ -1,23 +1,32 @@
 //! UserPromptSubmit recall: find archived sessions relevant to the current
 //! prompt and return lines to inject into context. Stays quiet unless there's
-//! a strong match. Read-only, mechanical; never blocks the prompt.
+//! a strong match. DB read-only, mechanical; never blocks the prompt.
 //!
 //! Relevance gate (to avoid noise on every prompt): the prompt must contain
 //! at least 2 distinctive terms (identifiers, or words of 4+ chars that
 //! aren't stopwords); a past turn only counts if it contains at least 2 of
-//! those terms; scoped to the current project; the live session is excluded.
+//! those terms, one of them anchor-grade (identifier-like or 6+ chars);
+//! scoped to the current project; the live session is excluded. Source
+//! sessions already injected into this live session are skipped
+//! (recall-seen.log) so a same-topic conversation doesn't re-inject them
+//! on every prompt.
 
 use std::collections::HashSet;
+use std::io::Write;
+use std::path::Path;
 use std::sync::OnceLock;
 
 use regex::Regex;
 use serde_json::Value;
 
-use crate::db;
+use crate::{db, paths};
 
 const MAX_INJECT: usize = 3;
 const SNIPPET_LEN: usize = 160;
 const MIN_TERMS: usize = 2;
+// Trim the dedup log once it's clearly past any live-session working set.
+const SEEN_TRIM_AT: usize = 4000;
+const SEEN_KEEP: usize = 2000;
 
 const STOPWORDS: &[&str] = &[
     "the",
@@ -67,6 +76,8 @@ const STOPWORDS: &[&str] = &[
     "not",
     "no",
     "yes",
+    "ok",
+    "okay",
     "i",
     "you",
     "we",
@@ -165,12 +176,64 @@ fn distinctive_terms(prompt: &str) -> Vec<String> {
             || (tok.len() >= 2
                 && tok.chars().any(|c| c.is_ascii_uppercase())
                 && !tok.chars().any(|c| c.is_ascii_lowercase()));
-        if identifierish || (tok.len() >= 4 && !STOPWORDS.contains(&low.as_str())) {
+        if (identifierish || tok.len() >= 4) && !STOPWORDS.contains(&low.as_str()) {
             terms.push(tok.to_string());
             seen.insert(low);
         }
     }
     terms
+}
+
+/// Anchor-grade terms justify an injection: identifier-like (digit, `_`, `-`,
+/// `.`, or ALL-CAPS) or 6+ chars. Two short generic words never fire alone.
+fn is_anchor(tok: &str) -> bool {
+    tok.chars()
+        .any(|c| c.is_ascii_digit() || c == '_' || c == '-' || c == '.')
+        || (tok.len() >= 2
+            && tok.chars().any(|c| c.is_ascii_uppercase())
+            && !tok.chars().any(|c| c.is_ascii_lowercase()))
+        || tok.chars().count() >= 6
+}
+
+/// Source sessions already injected into this live session — never repeat them.
+fn already_injected(log: &Path, session: &str) -> HashSet<String> {
+    if session.is_empty() {
+        return HashSet::new();
+    }
+    let Ok(text) = std::fs::read_to_string(log) else {
+        return HashSet::new();
+    };
+    text.lines()
+        .filter_map(|l| l.split_once('\t'))
+        .filter(|(s, _)| *s == session)
+        .map(|(_, sid)| sid.to_string())
+        .collect()
+}
+
+/// Best-effort append (+ occasional trim) of injected source sessions. No
+/// locking: a lost line costs one repeated injection at worst.
+fn remember_injected<'a>(log: &Path, session: &str, sids: impl Iterator<Item = &'a str>) {
+    if session.is_empty() {
+        return;
+    }
+    if let Some(parent) = log.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(text) = std::fs::read_to_string(log) {
+        let lines: Vec<&str> = text.lines().collect();
+        if lines.len() > SEEN_TRIM_AT {
+            let _ = std::fs::write(log, lines[lines.len() - SEEN_KEEP..].join("\n") + "\n");
+        }
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(log)
+    {
+        for sid in sids {
+            let _ = writeln!(f, "{session}\t{sid}");
+        }
+    }
 }
 
 /// Date part of the stored ISO timestamp (stored zone, ~UTC — same display
@@ -235,20 +298,25 @@ pub fn run(input: &Value) -> Option<String> {
         .flatten()
         .collect();
 
-    let low_terms: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
+    // (lowercased term, anchor-grade) — anchor judged on the original casing.
+    let term_meta: Vec<(String, bool)> = terms
+        .iter()
+        .map(|t| (t.to_lowercase(), is_anchor(t)))
+        .collect();
+    let seen_log = paths::recall_seen_log();
+    let already = already_injected(&seen_log, cur_session);
     let mut picked = Vec::new();
     let mut seen_sessions = HashSet::new();
     for (sid, ts, text) in rows {
         let text_low = text.as_deref().unwrap_or("").to_lowercase();
-        if low_terms
+        let matched: Vec<&(String, bool)> = term_meta
             .iter()
-            .filter(|t| text_low.contains(t.as_str()))
-            .count()
-            < MIN_TERMS
-        {
+            .filter(|(low, _)| text_low.contains(low.as_str()))
+            .collect();
+        if matched.len() < MIN_TERMS || !matched.iter().any(|(_, anchor)| *anchor) {
             continue;
         }
-        if !seen_sessions.insert(sid.clone()) {
+        if already.contains(&sid) || !seen_sessions.insert(sid.clone()) {
             continue;
         }
         picked.push((sid, ts, text));
@@ -264,8 +332,9 @@ pub fn run(input: &Value) -> Option<String> {
         "[subrosa recall] Possibly relevant past sessions from the local archive — verify before \
          relying on them; run `subrosa search` for the full text:",
     )];
-    for (sid, ts, text) in picked {
+    for (sid, ts, text) in &picked {
         let snip: String = text
+            .as_deref()
             .unwrap_or_default()
             .split_whitespace()
             .collect::<Vec<_>>()
@@ -276,5 +345,10 @@ pub fn run(input: &Value) -> Option<String> {
         let sid8: String = sid.chars().take(8).collect();
         lines.push(format!("- {} · {}: {}", fmt_ts(ts.as_deref()), sid8, snip));
     }
+    remember_injected(
+        &seen_log,
+        cur_session,
+        picked.iter().map(|(sid, _, _)| sid.as_str()),
+    );
     Some(lines.join("\n"))
 }

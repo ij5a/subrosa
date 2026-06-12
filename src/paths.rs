@@ -52,6 +52,12 @@ pub fn hook_log() -> PathBuf {
     mem_dir().join("hook.log")
 }
 
+/// Recall dedup state: which source sessions were already injected into a
+/// given live session, so repeated prompts on one topic stay silent.
+pub fn recall_seen_log() -> PathBuf {
+    mem_dir().join("recall-seen.log")
+}
+
 pub fn backups_dir() -> PathBuf {
     mem_dir().join("backups")
 }

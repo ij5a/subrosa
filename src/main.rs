@@ -192,6 +192,12 @@ pub enum HookEvent {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Hooks keep Rust's SIGPIPE ignore (they must always exit 0); CLI commands
+    // get the Unix default back so `subrosa search | head` ends silently
+    // instead of panicking on the closed pipe.
+    if !matches!(cli.cmd, Some(Cmd::Hook(_))) {
+        restore_sigpipe();
+    }
     let Some(cmd) = cli.cmd else {
         // Bare `subrosa` opens the dashboard, same as `subrosa stats`.
         return stats::run(&stats::Args {
@@ -387,6 +393,20 @@ fn run_pending() -> ExitCode {
     }
     ExitCode::SUCCESS
 }
+
+#[cfg(unix)]
+fn restore_sigpipe() {
+    extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+    }
+    // SIGPIPE=13, SIG_DFL=0 on the unix targets we ship (macOS, Linux).
+    unsafe {
+        signal(13, 0);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_sigpipe() {}
 
 fn run_checkpoint_clear() -> ExitCode {
     let pending = paths::pending_log();

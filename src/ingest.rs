@@ -23,15 +23,16 @@ const RECORD_CAP: usize = 8000;
 
 // Machine-generated wrapper records arrive as `user` turns but carry no conversation.
 // Real prompts never start with these literal tags.
-const NOISE_PREFIXES: [&str; 6] = [
+const NOISE_PREFIXES: [&str; 7] = [
     "<command-name>",
     "<command-message>",
     "<command-args>",
     "<local-command-stdout>",
     "<local-command-stderr>",
-    // Our own recall injection header — archiving it would feed past
-    // injections back into future recall results.
+    // Our own context injections (recall header, session-start nudge) —
+    // archiving them would feed past injections back into future results.
     "[subrosa recall]",
+    "[subrosa]",
 ];
 
 /// JSON with `", "` / `": "` separators — the archive's canonical stored-text
