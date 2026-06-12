@@ -19,9 +19,12 @@ if [ -n "$hits" ]; then
   status=1
 fi
 
-# Legacy naming that must not resurface — this is a standalone project.
-legacy=$(printf '%s\n' "$files" | tr '\n' '\0' | xargs -0 grep -nIiE 'python|pylike' 2>/dev/null)
-legacy_mem=$(printf '%s\n' "$files" | tr '\n' '\0' | xargs -0 grep -nIwE 'mem' 2>/dev/null)
+# Legacy naming that must not resurface — this is a standalone project. docs/
+# is exempt: pages there compare against ecosystem tools whose names contain
+# the guarded words (claude-mem, Python runtimes); secrets are still checked.
+legacy_files=$(printf '%s\n' "$files" | grep -v '^docs/')
+legacy=$(printf '%s\n' "$legacy_files" | tr '\n' '\0' | xargs -0 grep -nIiE 'python|pylike' 2>/dev/null)
+legacy_mem=$(printf '%s\n' "$legacy_files" | tr '\n' '\0' | xargs -0 grep -nIwE 'mem' 2>/dev/null)
 if [ -n "$legacy$legacy_mem" ]; then
   echo "sweep: legacy naming found:"
   printf '%s\n%s\n' "$legacy" "$legacy_mem" | grep .

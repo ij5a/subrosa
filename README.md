@@ -1,6 +1,21 @@
-# subrosa
+<p align="center">
+  <img src="assets/subrosa-banner.png" alt="subrosa" width="560">
+</p>
 
-Persistent, private memory for Claude Code. Every session is archived into a local SQLite database and becomes searchable — the work you did last month is one `subrosa search` away, relevant past sessions resurface automatically when you type a related prompt, and Claude stops rediscovering things it already figured out.
+Persistent, private memory for Claude Code — that never spends your tokens on itself.
+
+Every session is archived into a local SQLite database and becomes searchable: the work you did last month is one `subrosa search` away, relevant past sessions resurface automatically when you type a related prompt, and Claude stops rediscovering things it already figured out.
+
+- **Zero LLM calls to capture memory.** Archiving is mechanical parsing — saving a session never burns tokens. Most memory plugins run your sessions through an LLM to save them; [the comparison](docs/comparison.md) has the numbers, from their own docs.
+- **Hard token ceilings, enforced in code.** Recall injects at most ~180 tokens per prompt — and usually nothing: it stays silent unless the match is strong. The always-loaded index is capped at 23 KB. Verify it yourself with [`scripts/bench.sh`](#performance).
+- **One 3.7 MB static binary.** No daemon, no worker port, no runtime dependencies. A hook fires, finishes in under 10 ms, and exits.
+- **Your transcripts never leave your machine.** The binary makes zero network calls — no cloud, no telemetry — and obvious secret shapes are masked before storage.
+
+<p align="center">
+  <img src="assets/demo.gif" alt="subrosa demo: search the archive, automatic recall on a prompt, dashboard" width="800">
+</p>
+
+[How it compares](docs/comparison.md) · [FAQ](docs/faq.md) · [Performance](#performance)
 
 ## Why "subrosa"?
 
@@ -79,7 +94,7 @@ subrosa setup                            # one-time backup-mirror question
 ## The memory workflow
 
 1. A session ends (you quit Claude Code, run `/clear`, or log out) → it's archived and queued.
-2. Next session start, you see: `[subrosa] N session(s) queued for checkpoint…`
+2. At the next session start, a note lands in Claude's context: `[subrosa] N session(s) queued for checkpoint…` — hook output goes to Claude, not to your chat window, so Claude acts on it (or you can run the next step yourself).
 3. Run `/subrosa:checkpoint-backlog` — Claude reads each queued session and saves the durable facts into that project's memory (leaf files + the facts table), then regenerates `MEMORY.md`.
 4. Before `/clear` or `/compact`, run `/subrosa:checkpoint` to do the same for the live session.
 
@@ -102,6 +117,7 @@ Everything is overridable with env vars: `SUBROSA_DIR`, `SUBROSA_DB`, `SUBROSA_P
 - Recalled snippets are your own archived text resurfaced verbatim — the injection block tells Claude to verify before relying on them.
 - The database is `0600`, its directory `0700`.
 - Secret shapes are redacted before storage. The source transcripts under `~/.claude/projects` remain as Claude Code wrote them — full-disk encryption is the real at-rest control for those.
+- Two things touch the network, neither is the binary and neither carries your data out: the plugin's one-time bootstrap downloads the program from GitHub releases (checksum-verified, uploads nothing), and the optional backup mirror copies a snapshot file into a folder you pick — if you pick an iCloud/Dropbox-synced folder, your sync client uploads it. Your call, off by default.
 
 ## Performance
 
