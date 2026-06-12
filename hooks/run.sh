@@ -70,4 +70,7 @@ if [ -z "$BIN" ]; then
   BIN="$(find_bin)"
   [ -n "$BIN" ] || exit 0
 fi
-exec "$BIN" hook "$EVENT"
+# No exec, and stderr dropped: an older PATH binary that doesn't know this
+# event yet must degrade to a silent no-op, never a failed hook.
+"$BIN" hook "$EVENT" 2>/dev/null
+exit 0

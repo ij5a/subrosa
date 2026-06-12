@@ -28,12 +28,14 @@ pub fn run(event: HookEvent) -> ExitCode {
         HookEvent::SessionStart => session_start(&input),
         HookEvent::SessionEnd => session_end(&input),
         HookEvent::UserPromptSubmit => user_prompt_submit(&input),
+        HookEvent::PreCompact => pre_compact(&input),
     };
     if let Err(e) = result {
         let name = match event {
             HookEvent::SessionStart => "session-start",
             HookEvent::SessionEnd => "session-end",
             HookEvent::UserPromptSubmit => "user-prompt-submit",
+            HookEvent::PreCompact => "pre-compact",
         };
         log(&format!("{name} error: {e}"));
     }
@@ -135,6 +137,31 @@ fn session_end(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
         Ok(Some(label)) => log(&format!("session-end backup: {label}")),
         Ok(None) => {}
         Err(e) => log(&format!("session-end backup error: {e}")),
+    }
+    Ok(())
+}
+
+/// Compaction is about to summarize the conversation away: archive the
+/// transcript as it stands, and forget this session's recall dedup — the
+/// injected blocks die with the old context, so re-injection is useful again.
+/// Stdout stays empty (PreCompact stdout is not context), and exiting 0 is
+/// load-bearing: exit 2 would BLOCK the compaction.
+fn pre_compact(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(tp) = input.get("transcript_path").and_then(Value::as_str) {
+        let p = Path::new(tp);
+        if p.is_file() {
+            let conn = db::connect()?;
+            match ingest::ingest_file(&conn, p) {
+                Ok((inserted, scanned)) => log(&format!(
+                    "pre-compact ingest {tp}: +{inserted} turns ({scanned} records scanned)"
+                )),
+                Err(e) => log(&format!("pre-compact ingest error {tp}: {e}")),
+            }
+        }
+    }
+    if let Some(sid) = input.get("session_id").and_then(Value::as_str) {
+        recall::forget_session(&paths::recall_seen_log(), sid);
+        log(&format!("pre-compact recall-dedup reset {sid}"));
     }
     Ok(())
 }

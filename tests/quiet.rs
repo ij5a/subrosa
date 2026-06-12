@@ -201,3 +201,50 @@ fn long_hooks_capped_in_index() {
         line.chars().count()
     );
 }
+
+#[test]
+fn pre_compact_archives_and_resets_dedup() {
+    let env = setup("precompact");
+    ingest(
+        &env,
+        "cccc-5555",
+        &[user_rec(
+            "2026-06-12T01:00:00Z",
+            "u1",
+            "TICKET-456 cache-prod rollout finished cleanly",
+        )],
+    );
+    let prompt = r#"{"prompt":"status of the cache-prod TICKET-456 rollout","cwd":"/tmp/demo","session_id":"live-9"}"#;
+    let (first, _) = run(&env, &["hook", "user-prompt-submit"], Some(prompt));
+    assert!(first.starts_with("[subrosa recall]"), "{first}");
+    let (repeat, _) = run(&env, &["hook", "user-prompt-submit"], Some(prompt));
+    assert_eq!(repeat, "", "dedup should silence the repeat");
+
+    // Compaction fires: the live transcript is archived, dedup forgets live-9.
+    let live = env.projects.join("-tmp-demo/live-9.jsonl");
+    fs::write(
+        &live,
+        user_rec(
+            "2026-06-12T02:00:00Z",
+            "u9",
+            "MIGRATE-77 schema migration plan drafted",
+        ) + "\n",
+    )
+    .unwrap();
+    let payload = format!(
+        r#"{{"session_id":"live-9","transcript_path":"{}","cwd":"/tmp/demo","trigger":"auto"}}"#,
+        live.to_str().unwrap()
+    );
+    let (out, _) = run(&env, &["hook", "pre-compact"], Some(&payload));
+    assert_eq!(out, "", "pre-compact must keep stdout empty");
+    let (dump, _) = run(&env, &["session", "live-9"], None);
+    assert!(
+        dump.contains("MIGRATE-77"),
+        "mid-session turns not archived:\n{dump}"
+    );
+    let (again, _) = run(&env, &["hook", "user-prompt-submit"], Some(prompt));
+    assert!(
+        again.starts_with("[subrosa recall]"),
+        "dedup must reset after compaction, got:\n{again}"
+    );
+}

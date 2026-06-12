@@ -210,6 +210,33 @@ fn already_injected(log: &Path, session: &str) -> HashSet<String> {
         .collect()
 }
 
+/// Forget a live session's dedup entries. PreCompact uses this: the injected
+/// blocks die with the compacted context, so re-injection is useful again.
+pub fn forget_session(log: &Path, session: &str) {
+    if session.is_empty() {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(log) else {
+        return;
+    };
+    let keep: Vec<&str> = text
+        .lines()
+        .filter(|l| {
+            l.split_once('\t')
+                .map(|(s, _)| s != session)
+                .unwrap_or(true)
+        })
+        .collect();
+    if keep.len() < text.lines().count() {
+        let body = if keep.is_empty() {
+            String::new()
+        } else {
+            keep.join("\n") + "\n"
+        };
+        let _ = std::fs::write(log, body);
+    }
+}
+
 /// Best-effort append (+ occasional trim) of injected source sessions. No
 /// locking: a lost line costs one repeated injection at worst.
 fn remember_injected<'a>(log: &Path, session: &str, sids: impl Iterator<Item = &'a str>) {

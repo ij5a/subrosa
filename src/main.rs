@@ -188,6 +188,8 @@ pub enum HookEvent {
     SessionEnd,
     /// UserPromptSubmit: inject relevant past-session hits into context
     UserPromptSubmit,
+    /// PreCompact: archive the conversation so far + reset recall dedup
+    PreCompact,
 }
 
 fn main() -> ExitCode {
