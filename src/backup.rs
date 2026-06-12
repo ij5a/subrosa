@@ -6,8 +6,10 @@
 
 use std::error::Error;
 use std::fs;
+use std::time::{Duration, Instant};
 
-use rusqlite::{Connection, MAIN_DB};
+use rusqlite::backup::{Backup, StepResult};
+use rusqlite::Connection;
 
 use crate::{db, paths};
 
@@ -65,14 +67,56 @@ pub fn snapshot(
         .take(14)
         .collect();
     let dest = dir.join(format!("snapshot-{}-{}.db", &ts[..8], &ts[8..]));
-    // Page-by-page consistent copy, safe while the DB is in use.
-    conn.backup(MAIN_DB, &dest, None)?;
-    chmod600(&dest);
+    // Page-by-page copy into a per-process temp file, then an atomic rename:
+    // hooks racing an expired throttle can't clobber a finished snapshot, and a
+    // failed copy never leaves a partial one. Busy/Locked steps retry (bounded).
+    let tmp = dir.join(format!(".snapshot-{}.tmp", std::process::id()));
+    let _ = fs::remove_file(&tmp);
+    let copy = (|| -> Result<(), Box<dyn Error>> {
+        let mut dst = Connection::open(&tmp)?;
+        let bk = Backup::new(conn, &mut dst)?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match bk.step(100)? {
+                StepResult::Done => return Ok(()),
+                StepResult::Busy | StepResult::Locked => {
+                    if Instant::now() >= deadline {
+                        return Err("timed out waiting for the database lock".into());
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                _ => {} // More: keep stepping (also covers future variants)
+            }
+        }
+    })();
+    if let Err(e) = copy {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    chmod600(&tmp);
+    fs::rename(&tmp, &dest)?;
 
     let snaps = snapshots();
     if snaps.len() > keep {
         for old in &snaps[..snaps.len() - keep] {
             let _ = fs::remove_file(old);
+        }
+    }
+    // Sweep temp files left by hooks that died mid-copy (spare active ones).
+    if let Ok(rd) = fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let stale = name.starts_with(".snapshot-")
+                && name.ends_with(".tmp")
+                && e.metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .map(|d| d.as_secs() > 3600)
+                    .unwrap_or(false);
+            if stale {
+                let _ = fs::remove_file(e.path());
+            }
         }
     }
 
@@ -82,11 +126,18 @@ pub fn snapshot(
         .unwrap_or_default();
     if use_mirror {
         if let Some(mirror_dir) = paths::mirror() {
+            // Same temp+rename discipline as the local snapshot: a synced
+            // folder must never see a torn subrosa-latest.db mid-copy.
+            let mtmp = mirror_dir.join(format!(".subrosa-latest-{}.tmp", std::process::id()));
             match fs::create_dir_all(&mirror_dir)
-                .and_then(|_| fs::copy(&dest, mirror_dir.join("subrosa-latest.db")))
+                .and_then(|_| fs::copy(&dest, &mtmp))
+                .and_then(|_| fs::rename(&mtmp, mirror_dir.join("subrosa-latest.db")))
             {
                 Ok(_) => label.push_str(" + mirror"),
-                Err(e) => eprintln!("[subrosa] mirror skipped: {e}"),
+                Err(e) => {
+                    let _ = fs::remove_file(&mtmp);
+                    eprintln!("[subrosa] mirror skipped: {e}");
+                }
             }
         }
     }

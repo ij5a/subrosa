@@ -9,7 +9,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::Value;
 
 use crate::db::now_iso;
@@ -301,7 +301,9 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
 
     let before = session_count(conn, &sid)?;
     if !rows.is_empty() {
-        let tx = conn.unchecked_transaction()?;
+        // Immediate: take the write lock at BEGIN (where busy_timeout applies)
+        // instead of risking a mid-transaction SQLITE_BUSY that bypasses it.
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
         {
             let mut stmt = tx.prepare(
                 "INSERT OR IGNORE INTO turns\

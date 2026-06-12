@@ -3,7 +3,7 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
@@ -13,7 +13,6 @@ use crate::paths;
 // must keep working byte-for-byte, so schema changes go through migrate() only.
 const SCHEMA: &str = r#"
 PRAGMA journal_mode=WAL;
-PRAGMA synchronous=NORMAL;
 
 CREATE TABLE IF NOT EXISTS sessions (
   session_id  TEXT PRIMARY KEY,
@@ -118,10 +117,39 @@ pub fn connect() -> rusqlite::Result<Connection> {
     let conn = Connection::open(&p)?;
     chmod(&p, 0o600);
     conn.busy_timeout(Duration::from_millis(30_000))?;
+    // Connection-local; the persistent WAL switch lives in the init batch.
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    // user_version 1 = schema current → everyday connects are pure reads. First-
+    // time creation retries: WAL conversion can BUSY right past the busy handler.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if v == 1 {
+            return Ok(conn);
+        }
+        match init_schema(&conn) {
+            Ok(()) => return Ok(conn),
+            Err(e) if is_busy(&e) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SCHEMA)?;
-    migrate(&conn)?;
-    conn.pragma_update(None, "user_version", 1)?;
-    Ok(conn)
+    migrate(conn)?;
+    conn.pragma_update(None, "user_version", 1)
+}
+
+fn is_busy(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(f, _)
+            if f.code == rusqlite::ErrorCode::DatabaseBusy
+                || f.code == rusqlite::ErrorCode::DatabaseLocked
+    )
 }
 
 /// Open the DB read-only — the fast path for per-prompt lookups that must not

@@ -110,20 +110,25 @@ fn nudge_lines(input: &Value) -> Vec<String> {
 }
 
 /// Archive the just-ended transcript and queue its session id for checkpointing.
+/// Steps are isolated: a lock failure in one must not skip the others.
 fn session_end(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
     let conn = db::connect()?;
     if let Some(tp) = input.get("transcript_path").and_then(Value::as_str) {
         let p = Path::new(tp);
         if p.is_file() {
-            let (inserted, scanned) = ingest::ingest_file(&conn, p)?;
-            log(&format!(
-                "session-end ingest {tp}: +{inserted} turns ({scanned} records scanned)"
-            ));
+            match ingest::ingest_file(&conn, p) {
+                Ok((inserted, scanned)) => log(&format!(
+                    "session-end ingest {tp}: +{inserted} turns ({scanned} records scanned)"
+                )),
+                Err(e) => log(&format!("session-end ingest error {tp}: {e}")),
+            }
         }
     }
     if let Some(sid) = input.get("session_id").and_then(Value::as_str) {
-        let status = ingest::enqueue_checkpoint(&conn, sid, &paths::pending_log())?;
-        log(&format!("session-end enqueue {sid}: {status}"));
+        match ingest::enqueue_checkpoint(&conn, sid, &paths::pending_log()) {
+            Ok(status) => log(&format!("session-end enqueue {sid}: {status}")),
+            Err(e) => log(&format!("session-end enqueue error {sid}: {e}")),
+        }
     }
     // Throttled snapshot — no-op unless the newest backup is >24h old.
     match crate::backup::throttled(&conn) {
