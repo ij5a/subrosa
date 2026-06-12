@@ -106,6 +106,33 @@ subrosa setup                            # one-time backup-mirror question
 
 `MEMORY.md` is generated from the facts table under a byte budget — important facts (pinned, feedback) win when space runs out, and everything that doesn't fit stays searchable in the archive.
 
+## Optional: make Claude search the archive itself
+
+The recall hook reacts to the words in your prompt. The other direction — Claude
+deciding to check the archive before it starts working — takes one paragraph in your
+`CLAUDE.md`: `~/.claude/CLAUDE.md` covers every project, a repo's own `CLAUDE.md`
+just that one. Paste and adjust:
+
+```markdown
+## Memory recall (subrosa)
+
+Every past Claude Code session is archived locally and searchable with
+`subrosa search "<keywords>"` — scope with `--project <name>`, more results with
+`-n 20`. (If `subrosa` isn't on PATH, it's at `~/.claude/subrosa/bin/subrosa`.)
+At the start of any task — investigating, debugging, designing, reviewing, or when
+a ticket, environment, resource, person, or past decision comes up — search the
+archive first and build on what past sessions already worked out instead of
+starting cold. Announce the search ("Searching past sessions for [topic]...") and
+cite hits with their date. Skip only for trivial one-liners. `MEMORY.md` is
+generated — never hand-edit it; update facts with `subrosa fact` + `subrosa generate`,
+or run `/subrosa:checkpoint`.
+```
+
+subrosa never edits your `CLAUDE.md` itself: a standing instruction costs about
+150 tokens of always-loaded context, so spending them is your call. In return,
+Claude composes its own searches mid-task and follows leads the prompt-triggered
+hook can't see.
+
 ## Where your data lives
 
 | What | Where | Why |
