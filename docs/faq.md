@@ -46,7 +46,7 @@ The automatic recall is a small, cheap nudge, not the full answer. It injects th
 
 ## Why keyword search instead of embeddings?
 
-A deliberate trade. Embeddings (meaning-based search) need model weights or API calls — that breaks the single static binary, the 5-crate supply chain, and zero-cost capture. Instead it matches word roots, so `deploy` finds `deployed` and `deploying`, while identifiers like `TICKET-123` and `my-app-prod` stay exact. If misses become a real problem, the planned fallback is an extra opt-in index — still local, still no model.
+A deliberate trade. Embeddings (meaning-based search) need model weights or API calls — that breaks the single static binary, the 5-crate supply chain, and zero-cost capture. Instead it matches word roots, so `deploy` finds `deployed` and `deploying`, while identifiers like `TICKET-123` and `my-app-prod` stay exact. For partial names and typos, `subrosa search --fuzzy` adds a local trigram index (built on first use) — still no model. True meaning-based (semantic) search stays the deliberate omission.
 
 ## How do I verify the binary?
 

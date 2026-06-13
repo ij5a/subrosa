@@ -9,7 +9,7 @@ Persistent-memory options for Claude Code, as of 2026-06-13. This compares what 
 | Storage | Local SQLite (full-text search) | Local SQLite + vector store | Local logs | Local Markdown + Milvus Lite (cloud opt-in) | Supermemory cloud [^sm-docs] |
 | Cost to save a session | Zero — mechanical parsing, no LLM call | Runs each session through Claude (Agent SDK) [^cm-arch] | "Typical cost is less than $0.01 per session save." [^rem] | Builds embeddings locally, no LLM call | Cloud processing; plugin requires Supermemory Pro ($19/mo+) [^sm-price] |
 | Context injected | ≤ ~180 tokens per prompt, usually 0; index hard-capped at 23 KB | Some users report heavy token use at session start [^cm-618] [^cm-1848] | Reloads tiered logs at session start | "Automatic Context Injection Costs Zero Extra Tokens" [^ms-blog] | Injects saved memories at session start [^sm-docs] |
-| Recall | Keyword search, word-root matching, hyphen-safe identifiers, project-scoped, deduped per session | Keyword + meaning-based | Log reload | Meaning-based (vector) | Cloud, meaning-based |
+| Recall | Keyword search, word-root matching, hyphen-safe identifiers, + opt-in fuzzy (trigram), project-scoped, deduped per session | Keyword + meaning-based | Log reload | Meaning-based (vector) | Cloud, meaning-based |
 | Secret redaction before storage | Yes — keys, tokens, `password=` values masked at write | Manual `<private>` tags | Not documented | Not documented | Not documented either way [^sm-redact] |
 | Network calls | None from the binary, ever | Local worker; SDK calls for summarization | Anthropic API (Haiku) | Local by default | Required, every session |
 | Price / license | Free, MIT | Free, Apache-2.0 | Free plugin, pay per save | Free, MIT | Plugin free, service $19/mo+ |

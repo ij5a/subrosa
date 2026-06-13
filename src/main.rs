@@ -92,6 +92,9 @@ enum Cmd {
         /// Restrict to a session id (prefix match)
         #[arg(long)]
         session: Option<String>,
+        /// Substring/typo matching via a trigram index (built on first use)
+        #[arg(long)]
+        fuzzy: bool,
     },
     /// Show the memory archive dashboard (activity, store, by-project share)
     Stats(stats::Args),
@@ -233,7 +236,15 @@ fn main() -> ExitCode {
             raw,
             project,
             session,
-        } => search::run(&terms, limit, raw, project.as_deref(), session.as_deref()),
+            fuzzy,
+        } => search::run(
+            &terms,
+            limit,
+            raw,
+            project.as_deref(),
+            session.as_deref(),
+            fuzzy,
+        ),
         Cmd::Stats(args) => stats::run(&args),
         Cmd::Fact {
             action,

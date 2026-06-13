@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/ij5a/subrosa" alt="MIT license"></a>
 </p>
 
-Every session is archived into a local SQLite database and becomes searchable: the work you did last month is one `subrosa search` away, relevant past sessions resurface automatically when you type a related prompt, and Claude stops rediscovering things it already figured out.
+Every session is archived into a local SQLite database and becomes searchable: the work you did last month is one `subrosa search` away, relevant past sessions resurface automatically when you type a related prompt, and Claude stops rediscovering things it already figured out. That last part is where it pays for itself: pulling up last month's answer costs a few hundred tokens, while having Claude re-derive it from scratch — re-reading files, redoing the investigation — runs into the thousands.
 
 - **No LLM calls to save memory.** Saving a session is plain text parsing — it never spends tokens. Most memory plugins run your sessions through an LLM to save them; [the comparison](docs/comparison.md) has the numbers, from their own docs.
 - **Hard token limits, set in the code.** Recall adds at most ~180 tokens to a prompt, and usually nothing — it stays silent unless the match is strong. The always-loaded index is capped at 23 KB. [Check it yourself](#proof-verify-it-yourself).
@@ -94,7 +94,7 @@ subrosa          # the dashboard
 - **Archives every session.** When a session ends — quitting Claude Code, running `/clear`, or logging out all count — the plugin saves its transcript into a local database (SQLite with full-text search), and catches up on anything it missed at the next start.
 - **Recalls on its own.** When you submit a prompt with enough distinctive terms, the top matching past sessions from the same project are injected into context — quiet unless the match is strong.
 - **Builds long-term memory.** Ended sessions wait in a queue; the bundled `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog` commands read them and save the important points as curated facts (one fact per small markdown file). `subrosa generate` then builds `MEMORY.md` — a short index Claude Code loads every session, capped in size so it can never overflow.
-- **Makes everything searchable.** `subrosa search <terms>` runs ranked full-text search, so identifiers like `my-app-prod` or `TICKET-123` stay searchable.
+- **Makes everything searchable.** `subrosa search <terms>` runs ranked full-text search, so identifiers like `my-app-prod` or `TICKET-123` stay searchable — with `--fuzzy` for partial names and typos.
 - **Shows you the picture.** `subrosa` alone prints the dashboard: activity sparkline, store size, per-project share, index budget.
 - **Backs itself up.** Consistent snapshots on a 24h throttle, plus an optional mirror of the latest snapshot to a folder you pick.
 - **Masks secrets at the door.** Private key blocks, AWS keys, bearer tokens, and `password=`-style values are redacted before they're written.
@@ -106,6 +106,7 @@ subrosa                                  # dashboard (same as: subrosa stats)
 subrosa search aurora failover           # find that thing from three weeks ago
 subrosa search --project api deploy      # scope to one project
 subrosa search -n 30 --raw 'cache OR redis'
+subrosa search --fuzzy ratelimiter       # substring/typo matching (builds a trigram index on first use)
 
 subrosa fact list                        # curated facts for the current project
 subrosa fact upsert --leaf note.md       # add/update a fact from a markdown file (one fact per file)
@@ -153,7 +154,8 @@ covers every project, a repo's own `CLAUDE.md` just that one. Paste and adjust:
 
 Every past Claude Code session is archived locally and searchable with
 `subrosa search "<keywords>"` — scope with `--project <name>`, more results with
-`-n 20`. (If `subrosa` isn't on PATH, it's at `~/.claude/subrosa/bin/subrosa`.)
+`-n 20`, and retry with `--fuzzy` if an exact search finds nothing (partial names, typos).
+(If `subrosa` isn't on PATH, it's at `~/.claude/subrosa/bin/subrosa`.)
 At the start of any task — investigating, debugging, designing, reviewing, or when
 a ticket, environment, resource, person, or past decision comes up — search the
 archive first and build on what past sessions already worked out instead of

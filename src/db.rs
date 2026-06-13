@@ -311,6 +311,43 @@ fn upgrade_fts(conn: &Connection, table: &str, create_sql: &str) -> rusqlite::Re
     ))
 }
 
+/// Build the opt-in trigram FTS index on first `--fuzzy` search, plus triggers to keep it in
+/// sync. Created outside the versioned schema so users who never run `--fuzzy` pay no storage or
+/// ingest cost; recall never uses it (the porter table backs the per-prompt gate). Needs a
+/// read-write connection. Returns true if it built the index this call (one-time, ~seconds on a
+/// big archive).
+pub fn ensure_trigram_index(conn: &Connection) -> rusqlite::Result<bool> {
+    let exists = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='turns_fts_tri'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if exists {
+        return Ok(false);
+    }
+    conn.execute_batch(
+        "BEGIN IMMEDIATE;\n\
+         CREATE VIRTUAL TABLE turns_fts_tri USING fts5(\
+           text, content='turns', content_rowid='id', tokenize='trigram');\n\
+         CREATE TRIGGER turns_tri_ai AFTER INSERT ON turns BEGIN\n\
+           INSERT INTO turns_fts_tri(rowid, text) VALUES (new.id, new.text);\n\
+         END;\n\
+         CREATE TRIGGER turns_tri_ad AFTER DELETE ON turns BEGIN\n\
+           INSERT INTO turns_fts_tri(turns_fts_tri, rowid, text) VALUES('delete', old.id, old.text);\n\
+         END;\n\
+         CREATE TRIGGER turns_tri_au AFTER UPDATE ON turns BEGIN\n\
+           INSERT INTO turns_fts_tri(turns_fts_tri, rowid, text) VALUES('delete', old.id, old.text);\n\
+           INSERT INTO turns_fts_tri(rowid, text) VALUES (new.id, new.text);\n\
+         END;\n\
+         INSERT INTO turns_fts_tri(turns_fts_tri) VALUES('rebuild');\n\
+         COMMIT;",
+    )?;
+    Ok(true)
+}
+
 /// ISO-8601 UTC timestamp with seconds precision, e.g. 2026-06-12T06:20:02+00:00.
 /// Hand-rolled because std has no date formatting and we keep the dep tree small.
 pub fn now_iso() -> String {
@@ -416,6 +453,66 @@ END;
         // Re-running is a no-op (porter already present → no rebuild path).
         init_schema(&conn).unwrap();
         assert_eq!(count_match(&conn, "deploy"), 2);
+        drop(conn);
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn trigram_index_substring_matches_and_stays_synced() {
+        let p = std::env::temp_dir().join(format!("subrosa-tri-{}.db", std::process::id()));
+        let _ = fs::remove_file(&p);
+        let conn = Connection::open(&p).unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO turns(session_id, seq, text) VALUES('s1', 0, 'pgbouncer kept pinning the writer')",
+            [],
+        )
+        .unwrap();
+
+        // Built on demand, idempotent.
+        assert!(ensure_trigram_index(&conn).unwrap(), "first call builds");
+        assert!(
+            !ensure_trigram_index(&conn).unwrap(),
+            "second call is a no-op"
+        );
+
+        // Porter (exact) can't match the substring 'bouncer'; trigram (fuzzy) can — the whole point.
+        let q = "\"bouncer\"";
+        let porter: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM turns_fts WHERE turns_fts MATCH ?",
+                [q],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(porter, 0, "porter must not substring-match");
+        let tri: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM turns_fts_tri WHERE turns_fts_tri MATCH ?",
+                [q],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tri, 1, "trigram substring-matches pgbouncer");
+
+        // The triggers keep the trigram index synced with later inserts.
+        conn.execute(
+            "INSERT INTO turns(session_id, seq, text) VALUES('s1', 1, 'another pgbouncer note')",
+            [],
+        )
+        .unwrap();
+        let tri2: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM turns_fts_tri WHERE turns_fts_tri MATCH ?",
+                [q],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            tri2, 2,
+            "trigger synced the new turn into the trigram index"
+        );
+
         drop(conn);
         let _ = fs::remove_file(&p);
     }

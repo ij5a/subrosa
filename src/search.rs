@@ -8,12 +8,14 @@ use crate::{db, paths};
 
 /// Quote each whitespace term as a phrase so identifiers like `my-app-prod` /
 /// `TICKET-123` match instead of tripping FTS5's column/NOT operators on the hyphen.
-pub fn build_match(terms: &[String], raw: bool) -> String {
+pub fn build_match(terms: &[String], raw: bool, fuzzy: bool) -> String {
     let q = terms.join(" ").trim().to_string();
     if raw {
         return q;
     }
     q.split_whitespace()
+        // The trigram tokenizer (--fuzzy) can't index a token shorter than 3 chars; drop those.
+        .filter(|tok| !fuzzy || tok.chars().count() >= 3)
         .map(|tok| format!("\"{}\"", tok.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" ")
@@ -35,6 +37,7 @@ pub fn run(
     raw: bool,
     project: Option<&str>,
     session: Option<&str>,
+    fuzzy: bool,
 ) -> ExitCode {
     if terms.is_empty() {
         eprintln!("[subrosa] give search terms");
@@ -47,13 +50,33 @@ pub fn run(
             return ExitCode::FAILURE;
         }
     };
-    let m = build_match(terms, raw);
+    // --fuzzy queries a separate trigram index (substring/typo matching), built on first use.
+    // Recall never uses it; the porter table stays default and backs the per-prompt gate.
+    let table = if fuzzy { "turns_fts_tri" } else { "turns_fts" };
+    if fuzzy {
+        match db::ensure_trigram_index(&conn) {
+            Ok(true) => eprintln!(
+                "[subrosa] built the fuzzy index (one-time); future --fuzzy searches are instant"
+            ),
+            Ok(false) => {}
+            Err(e) => {
+                eprintln!("[subrosa] cannot build the fuzzy index: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let m = build_match(terms, raw, fuzzy);
+    if fuzzy && m.trim().is_empty() {
+        eprintln!("[subrosa] --fuzzy needs at least one term of 3+ characters");
+        return ExitCode::from(2);
+    }
 
-    let mut sql = String::from(
+    // The table name is a fixed literal chosen by --fuzzy, never user input.
+    let mut sql = format!(
         "SELECT t.session_id, t.ts, t.role, t.project, \
-                snippet(turns_fts, 0, '«', '»', '…', 12) AS snip \
-         FROM turns_fts JOIN turns t ON t.id = turns_fts.rowid \
-         WHERE turns_fts MATCH ?",
+                snippet({table}, 0, '«', '»', '…', 12) AS snip \
+         FROM {table} JOIN turns t ON t.id = {table}.rowid \
+         WHERE {table} MATCH ?"
     );
     let mut binds: Vec<String> = vec![m.clone()];
     if let Some(p) = project {
@@ -65,7 +88,7 @@ pub fn run(
         binds.push(format!("{s}%"));
     }
     // limit is a typed integer from clap — safe to inline; strings stay parameterized.
-    sql.push_str(&format!(" ORDER BY bm25(turns_fts) LIMIT {limit}"));
+    sql.push_str(&format!(" ORDER BY bm25({table}) LIMIT {limit}"));
 
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
@@ -99,6 +122,13 @@ pub fn run(
 
     if rows.is_empty() {
         println!("[subrosa] no matches for: {m}");
+        // Nudge toward the fuzzy fallback when an exact search finds nothing.
+        if !fuzzy && !raw {
+            println!(
+                "[subrosa] no exact match — try fuzzy: subrosa search --fuzzy {}",
+                terms.join(" ")
+            );
+        }
         return ExitCode::SUCCESS;
     }
     for (i, (sid, ts, role, project, snip)) in rows.iter().enumerate() {

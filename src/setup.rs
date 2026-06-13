@@ -159,7 +159,8 @@ const CLAUDE_MD_SNIPPET: &str = r#"## Memory recall (subrosa)
 
 Every past Claude Code session is archived locally and searchable with
 `subrosa search "<keywords>"` — scope with `--project <name>`, more results with
-`-n 20`. (If `subrosa` isn't on PATH, it's at `~/.claude/subrosa/bin/subrosa`.)
+`-n 20`, and retry with `--fuzzy` if an exact search finds nothing (partial names, typos).
+(If `subrosa` isn't on PATH, it's at `~/.claude/subrosa/bin/subrosa`.)
 At the start of any task — investigating, debugging, designing, reviewing, or when
 a ticket, environment, resource, person, or past decision comes up — search the
 archive first and build on what past sessions already worked out instead of
