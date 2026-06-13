@@ -1,36 +1,52 @@
 # FAQ
 
-## Does anything ever leave my machine?
+## Can my data leave my machine?
 
-Your data — no. The binary makes zero network calls: no cloud, no telemetry, no update checker. Two network touches exist around it, and neither carries your data out: the plugin's one-time bootstrap downloads the program from GitHub releases (sha256-verified against checksums committed in this repo), and the optional backup mirror copies a snapshot file into a folder you pick. If you point the mirror at an iCloud or Dropbox folder, your sync client uploads that snapshot — that's your choice, off by default, and only static snapshot files ever land there (never the live database).
+Your data — no. The binary makes zero network calls: no cloud, no telemetry, no update checker. Two network things happen, but neither sends your data out: the plugin's one-time bootstrap downloads the program from GitHub releases (sha256-verified against checksums committed in this repo), and the optional backup mirror copies a snapshot file into a folder you pick. If you point the mirror at an iCloud or Dropbox folder, your sync client uploads that snapshot — that's your choice, off by default, and only static snapshot files ever land there (never the live database).
 
 ## Where is my data?
 
-`~/.claude/subrosa/memory.db` (live database), `~/.claude/subrosa/backups/` (snapshots, last 7), plus the mirror folder if you configured one. The database is `0600` in a `0700` directory. All paths are env-overridable (`SUBROSA_DIR`, `SUBROSA_DB`, …).
+`~/.claude/subrosa/memory.db` (live database), `~/.claude/subrosa/backups/` (snapshots, last 7), plus the mirror folder if you configured one. The database is readable only by you (`0600`), and so is its folder (`0700`). All paths are env-overridable (`SUBROSA_DIR`, `SUBROSA_DB`, …).
 
 ## What gets redacted?
 
-Private key blocks, AWS access keys, bearer tokens, and `password=` / `token:`-style values are masked before storage — only the secret value is replaced, surrounding words stay searchable. The original transcripts under `~/.claude/projects` remain as Claude Code wrote them; full-disk encryption is the at-rest control for those.
+Private key blocks, AWS access keys, bearer tokens, and `password=` / `token:`-style values are masked before storage — only the secret part is hidden; the rest stays searchable. The original transcripts under `~/.claude/projects` remain as Claude Code wrote them; full-disk encryption is the at-rest control for those.
 
 ## Is the archive encrypted at rest?
 
-No — by design, and full-disk encryption is the control. The database is `0600` in a `0700` directory; turn on FileVault (macOS) or LUKS (Linux) and it's encrypted at rest along with everything else, including the original transcripts. subrosa doesn't add its own encryption because an automated hook has to open the database with no one there to type a passphrase — so the key would sit next to the data, under the same user and permissions. That's full-disk encryption with extra steps, no real gain against an attacker who's already that user. And the transcripts Claude Code writes under `~/.claude/projects` are [plaintext regardless](https://code.claude.com/docs/en/claude-directory), so encrypting only subrosa's copy would protect little. The one thing that can leave the machine is a mirror snapshot you opt into syncing — keep that folder off, or point it at one that's itself encrypted.
+No — by design, and full-disk encryption is the control. The database is `0600` in a `0700` directory; turn on FileVault (macOS) or LUKS (Linux) and it's encrypted at rest along with everything else, including the original transcripts. subrosa doesn't add its own encryption because the program runs on its own, with no one there to type a password — so the key would have to sit right next to the data, readable by the same user. That's full-disk encryption with extra steps, no real gain against an attacker who's already that user. And the transcripts Claude Code writes under `~/.claude/projects` are [plaintext regardless](https://code.claude.com/docs/en/claude-directory#plaintext-storage), so encrypting only subrosa's copy would protect little. The one thing that can leave the machine is a mirror snapshot you opt into syncing — keep that folder off, or point it at one that's itself encrypted.
 
 ## How many tokens does it cost me?
 
-Recall injects at most ~180 tokens per prompt, and usually injects nothing — it stays silent unless your prompt shares at least two distinctive terms (one identifier-grade) with a past session, and it never re-injects the same session into one conversation. The always-loaded `MEMORY.md` index is hard-capped at 23 KB. Saving sessions costs zero tokens: archiving is mechanical parsing, no LLM involved. Run [`scripts/bench.sh`](../scripts/bench.sh) to verify the latency numbers on your machine.
+Almost nothing — and the cost is fixed by constants in the code, not by how much you use it. Every operation and what it costs:
+
+| Operation | When it runs | Token cost |
+|---|---|---|
+| Saving a session | session end + catch-up at start | **0** — mechanical parsing, no LLM |
+| Auto-recall, no match | every prompt (the usual case) | **0** — stays silent |
+| Auto-recall, strong match | every prompt | **≤ ~180** — top 3 snippets, hard-capped |
+| `MEMORY.md` index load | once per session start | **≤ 23 KB (≈ 6k tokens)**, usually far less |
+| `subrosa search` | only when you or Claude run it | **~a few hundred** (15 ranked lines), net-cheaper than rediscovery |
+
+**Example — a 30-prompt session.** The index loads once at the start (a few KB for a typical project — this is normal always-loaded context, like `CLAUDE.md`). Across the 30 prompts, most don't match anything in your past work, so nothing is injected; recall only fires on a strong match (at least 2 matching words, one of them a specific name or ID), and each fire adds ≤180 tokens. Say 4 of them match: ≤720 tokens for the whole session. Saving all 30 turns when you quit: 0. Ask Claude to dig into the archive twice → two `subrosa search` calls, a few hundred tokens each, each replacing a multi-thousand-token rediscovery.
+
+So the cost is flat and predictable — a small one-time index load plus capped, usually-silent recall. There's no per-save LLM bill that grows with how much you do. For how this token cost compares to LLM-summarizing plugins, see the [comparison](comparison.md).
 
 ## Does it get more expensive or slower as the archive grows?
 
-No — both stay flat. Token cost doesn't scale with size: saving is always zero tokens, and recall is capped at ~180 per prompt whether you have 100 sessions or 100,000 — the cap is a constant, not a percentage. Search is an FTS5 index, not a linear scan, so it stays fast as data grows — ~5–11 ms over a 50,000-turn archive. Disk grows only by text: a year of heavy use is a few hundred MB. When the auto-recall snippets aren't enough, Claude runs `subrosa search` on demand — a bounded, ranked result list (default 15 lines), which costs far fewer tokens than rediscovering the answer from scratch.
+No — both stay flat. Token cost doesn't scale with size: saving is always zero tokens, and recall is capped at ~180 per prompt whether you have 100 sessions or 100,000 — the cap is a constant, not a percentage. Search is an FTS5 index, not a linear scan, so it stays fast as data grows — ~5–11 ms over a 50,000-turn archive. Disk grows only by text: a year of heavy use is a few hundred MB. When the auto-recall snippets aren't enough, Claude runs `subrosa search` on demand — a bounded, ranked result list (default 15 lines), which costs far fewer tokens than rediscovering the answer from scratch. Run [`scripts/bench.sh`](../scripts/bench.sh) to confirm the latency numbers on your own machine.
 
 ## Why don't I see subrosa's messages in the chat?
 
-Hook output isn't chat. Claude Code adds SessionStart and UserPromptSubmit hook stdout to *Claude's context* — Claude sees and acts on it, but it doesn't render as a message to you. The dashboard (`subrosa`) and `subrosa search` are the human-facing views.
+That output isn't a chat message. Claude Code puts it straight into *Claude's context* (at session start, and when you submit a prompt) — Claude sees and acts on it, but it never shows up as a message to you. The dashboard (`subrosa`) and `subrosa search` are the views meant for you to read.
+
+## Recall only shows 3 results — doesn't it miss things?
+
+The automatic recall is a small, cheap nudge, not the full answer. It injects the top 3 matches (~180 tokens) ranked by relevance, capped so it can't quietly grow your per-prompt cost. Treat them as leads, not the last word — they're ranked by keyword match, not by meaning, so the injected note tells Claude to check them before relying on them. When 3 aren't enough, Claude (or you) runs `subrosa search` for the full ranked list — widen it with `-n 20` — and nothing is ever lost: the whole archive stays searchable no matter what recall surfaced.
 
 ## Why keyword search instead of embeddings?
 
-A deliberate trade. Embeddings need model weights or API calls — that breaks the single static binary, the 5-crate supply chain, and zero-cost capture. Porter stemming covers word forms (`deploy` finds `deployed`/`deploying`) while identifiers like `TICKET-123` and `my-app-prod` stay exact-match. If real-world misses pile up, an opt-in trigram index is the planned fallback — still local, still no model.
+A deliberate trade. Embeddings (meaning-based search) need model weights or API calls — that breaks the single static binary, the 5-crate supply chain, and zero-cost capture. Instead it matches word roots, so `deploy` finds `deployed` and `deploying`, while identifiers like `TICKET-123` and `my-app-prod` stay exact. If misses become a real problem, the planned fallback is an extra opt-in index — still local, still no model.
 
 ## How do I verify the binary?
 
