@@ -45,6 +45,17 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 - Always test against a throwaway dir, never live data: `SUBROSA_DIR=/tmp/x SUBROSA_PROJECTS_DIR=/tmp/x/projects cargo run -- init`.
 - Smoke recipe: write a synthetic transcript `.jsonl` under `/tmp/x/projects/-tmp-demo/`, then `init` → `ingest` → `search` → `session <id>` → `fact upsert --memdir /tmp/x/memdir --leaf note.md` → `generate --memdir /tmp/x/memdir --dry-run` → pipe `{"prompt":"...","cwd":"...","session_id":"..."}` into `hook user-prompt-submit` → pipe `{"transcript_path":"…","session_id":"…"}` into `hook session-end` → check `hook.log`, `pending`, the nudge from `hook session-start`, and that secrets in the stored turns are redacted.
 
+## Verification gate (before commit, push, and release)
+
+Non-negotiable for any code change — never skip a step because it "looks safe". Tests are wired into the pre-commit hook (`.githooks/pre-commit`) and CI; the other three are run by hand, and all four must be green before anything reaches the public.
+
+1. **Tests** — `cargo test --locked` (unit + the golden tests in `tests/`). A red test blocks the commit. Golden-format changes are deliberate: update the golden on purpose, never to silence a failure.
+2. **Performance** — `scripts/bench.sh` (needs `hyperfine`; covers the recall hot path, search, ingest, startup). The latency numbers are a product promise the README/FAQ cite, so a regression is a defect. Run it before push/release and on any change touching `recall.rs`, `search.rs`, `ingest.rs`, or the FTS schema.
+3. **Security review** — `cargo audit` (dependency CVEs, also a CI job) plus `/security-review` over the branch diff. Run before pushing code and always before a release — this repo is public.
+4. **Docs in sync** — update every affected markdown file (`README.md`, `docs/*.md`, `CLAUDE.md`, skill docs) in the same change as the behavior it documents. Token/latency claims, flags, and limits in the docs must match the code; a code change that lands without its doc update is incomplete.
+
+Before a public release, run all four green, then follow the steps below. Never tag or push a release on an unverified or undocumented tree.
+
 ## Releasing
 
 First bump the version in **both** `Cargo.toml` and `.claude-plugin/plugin.json` — they must match. `plugin.json` is the version `/plugin` shows and uses to detect updates, so bumping `Cargo.toml` alone ships a release no installed plugin will pull. Then tag `vX.Y.Z` and push the tag — GitHub Actions builds the 4 targets and publishes the release with `sha256sums.txt`. Then pin the new checksums into `hooks/sha256sums.txt` + `hooks/binary-version` (the plugin bootstrap verifies against these), and update the Homebrew formula in `ij5a/homebrew-tap` with the new version + hashes.
