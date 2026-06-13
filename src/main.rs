@@ -12,6 +12,7 @@ mod search;
 mod session;
 mod setup;
 mod stats;
+mod timeutil;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
