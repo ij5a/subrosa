@@ -16,8 +16,8 @@ Every session is archived into a local SQLite database and becomes searchable: t
 
 - **Zero LLM calls to capture memory.** Archiving is mechanical parsing — saving a session never burns tokens. Most memory plugins run your sessions through an LLM to save them; [the comparison](docs/comparison.md) has the numbers, from their own docs.
 - **Hard token ceilings, enforced in code.** Recall injects at most ~180 tokens per prompt — and usually nothing: it stays silent unless the match is strong. The always-loaded index is capped at 23 KB. Verify it yourself with [`scripts/bench.sh`](#performance).
-- **One 3.7 MB static binary.** No daemon, no worker port, no runtime dependencies. A hook fires, finishes in under 10 ms, and exits.
-- **Your transcripts never leave your machine.** The binary makes zero network calls — no cloud, no telemetry — and obvious secret shapes are masked before storage.
+- **One 3.7 MB static binary.** No daemon, no worker port, no background process. A hook fires, finishes in under 10 ms, and exits.
+- **Your transcripts stay on your machine.** The binary makes zero network calls — no cloud, no telemetry — and obvious secret shapes are masked before storage. Don't take my word for it: [verify every claim yourself](#proof-verify-it-yourself).
 
 <p align="center">
   <img src="assets/demo.gif" alt="subrosa demo: search the archive, automatic recall on a prompt, dashboard" width="800">
@@ -32,6 +32,7 @@ Every session is archived into a local SQLite database and becomes searchable: t
   <a href="#make-claude-search-the-archive-itself">Make Claude search the archive itself</a><br/>
   <a href="#where-your-data-lives">Where your data lives</a> ·
   <a href="#privacy-model">Privacy model</a> ·
+  <a href="#proof-verify-it-yourself">Proof</a> ·
   <a href="#performance">Performance</a> ·
   <a href="#development">Development</a> ·
   <a href="docs/comparison.md">How it compares</a> ·
@@ -193,6 +194,29 @@ Everything is overridable with env vars: `SUBROSA_DIR`, `SUBROSA_DB`, `SUBROSA_P
 - The database is `0600`, its directory `0700`.
 - Secret shapes are redacted before storage. The source transcripts under `~/.claude/projects` remain as Claude Code wrote them — full-disk encryption is the real at-rest control for those.
 - Two things touch the network, neither is the binary and neither carries your data out: the plugin's one-time bootstrap downloads the program from GitHub releases (checksum-verified, uploads nothing), and the optional backup mirror copies a snapshot file into a folder you pick — if you pick an iCloud/Dropbox-synced folder, your sync client uploads it. Your call, off by default.
+
+## Proof: verify it yourself
+
+Privacy claims are only worth the commands that check them. Everything below runs against this repo or your own install — the whole thing is ~5,200 lines of Rust across `src/`, MIT, small enough to read in an afternoon.
+
+| Claim | Check it | What you'll see |
+|---|---|---|
+| The binary makes zero network calls | `cargo tree -e normal \| grep -Ei 'reqwest\|hyper\|tokio\|rustls\|openssl\|curl'` | no output — there's no HTTP client or socket crate in the tree. For runtime proof, trace it: `strace -f -e trace=network subrosa search x` (Linux) or `sudo dtruss -t connect subrosa search x` (macOS) records no `connect()` |
+| Secrets are masked before storage | `cargo test redact` | the round-trip tests pass; redaction runs on the one write path (`src/ingest.rs`), so the database and its index only ever hold the masked copy |
+| The archive is locked to your user | `ls -ld ~/.claude/subrosa && ls -l ~/.claude/subrosa/memory.db` | `drwx------` (0700) on the directory, `-rw-------` (0600) on the database |
+| The supply chain is small and audited | `cargo tree --depth 1` · `cargo audit` | 5 direct dependencies, no known advisories. CI runs `cargo audit` on every push, and release binaries ship a `sha256sums.txt` that the installer and Homebrew formula pin |
+| Nothing runs in the background | `ps aux \| grep subrosa` between prompts | nothing — every hook is a short-lived process that opens the database, does its work, and exits |
+
+### What it does not protect
+
+Being precise about the gaps is part of the same contract:
+
+- **Redaction is best-effort shape-matching, not sanitization.** It masks PEM private-key blocks, AWS keys (`AKIA`/`ASIA`), `Bearer` tokens, and labeled values (`password=`, `token:`, `api_key=`). A secret that doesn't fit one of those shapes — a GitHub `ghp_…`, an OpenAI `sk-…`, a bare JWT — is stored as written. It reduces obvious leakage; it doesn't remove it.
+- **Your original transcripts [stay in cleartext](https://code.claude.com/docs/en/claude-directory).** Claude Code writes them under `~/.claude/projects` and subrosa never edits those — redaction only covers its own archive copy. Full-disk encryption is the real at-rest control.
+- **Recall re-injects your own stored text.** On a strong match it puts up to 3 short snippets back into the model's context, so anything that did leak into the archive can resurface there. The injection block tells Claude to treat it as unverified.
+- **`0600`/`0700` is access control, not encryption** — and it's enforced on Unix only; on Windows the files fall back to default ACLs.
+- **One snapshot can leave the machine, by your choice.** The optional backup mirror (`subrosa setup`, off by default) copies a snapshot to a folder you pick; aim it at an iCloud/Dropbox folder and your sync client uploads it. The live database is never synced.
+- **Three small `unsafe` blocks**, all libc calls for terminal width and `SIGPIPE` (`src/stats.rs`, `src/main.rs`), each with a safety note, none in the data path. `grep -rn unsafe src/` shows all three.
 
 ## Performance
 
