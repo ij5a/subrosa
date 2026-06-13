@@ -20,6 +20,10 @@ No — by design, and full-disk encryption is the control. The database is `0600
 
 Recall injects at most ~180 tokens per prompt, and usually injects nothing — it stays silent unless your prompt shares at least two distinctive terms (one identifier-grade) with a past session, and it never re-injects the same session into one conversation. The always-loaded `MEMORY.md` index is hard-capped at 23 KB. Saving sessions costs zero tokens: archiving is mechanical parsing, no LLM involved. Run [`scripts/bench.sh`](../scripts/bench.sh) to verify the latency numbers on your machine.
 
+## Does it get more expensive or slower as the archive grows?
+
+No — both stay flat. Token cost doesn't scale with size: saving is always zero tokens, and recall is capped at ~180 per prompt whether you have 100 sessions or 100,000 — the cap is a constant, not a percentage. Search is an FTS5 index, not a linear scan, so it stays fast as data grows — ~5–11 ms over a 50,000-turn archive. Disk grows only by text: a year of heavy use is a few hundred MB. When the auto-recall snippets aren't enough, Claude runs `subrosa search` on demand — a bounded, ranked result list (default 15 lines), which costs far fewer tokens than rediscovering the answer from scratch.
+
 ## Why don't I see subrosa's messages in the chat?
 
 Hook output isn't chat. Claude Code adds SessionStart and UserPromptSubmit hook stdout to *Claude's context* — Claude sees and acts on it, but it doesn't render as a message to you. The dashboard (`subrosa`) and `subrosa search` are the human-facing views.
