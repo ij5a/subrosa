@@ -22,6 +22,7 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 | import_existing.rs | one-time import of a MEMORY.md + leaves into the facts table |
 | session.rs | session dump + checkpoint queue ops (drop/enqueue/mark-current) |
 | stats.rs | dashboard (also the bare `subrosa` default) |
+| timeutil.rs | ISO-8601 ↔ Unix-epoch helpers (no chrono); shared by stats + recall |
 | backup.rs | throttled snapshots via SQLite backup API + mirror copy |
 | setup.rs | interactive first-run config (mirror folder question) |
 | hook.rs | hook entrypoints: stdin JSON in, log to file, always exit 0 |

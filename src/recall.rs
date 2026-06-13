@@ -4,12 +4,15 @@
 //!
 //! Relevance gate (to avoid noise on every prompt): the prompt must contain
 //! at least 2 distinctive terms (identifiers, or words of 4+ chars that
-//! aren't stopwords); a past turn only counts if it contains at least 2 of
-//! those terms, one of them anchor-grade (identifier-like or 6+ chars);
-//! scoped to the current project; the live session is excluded. Source
+//! aren't stopwords); a past turn counts only if at least `min_required` of
+//! those terms match a turn token — stem/prefix-aware, not substring — one of
+//! them anchor-grade (identifier-like or 6+ chars). `min_required` scales
+//! mildly with prompt length. Survivors are kept by a relative bm25 floor,
+//! re-ranked with a mild recency tie-break, deduped one-per-session, top 3.
+//! The snippet is FTS5 match-centered so the injected line shows why it hit.
+//! Scoped to the current project; the live session is excluded. Source
 //! sessions already injected into this live session are skipped
-//! (recall-seen.log) so a same-topic conversation doesn't re-inject them
-//! on every prompt.
+//! (recall-seen.log) so a same-topic conversation doesn't re-inject them.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -19,11 +22,20 @@ use std::sync::OnceLock;
 use regex::Regex;
 use serde_json::Value;
 
-use crate::{db, paths};
+use crate::{db, paths, timeutil};
 
 const MAX_INJECT: usize = 3;
-const SNIPPET_LEN: usize = 160;
+// Hard cap on the rendered snippet: holds recall at the documented ~180 tokens/prompt
+// even though the snippet is now match-centered, not the turn's first 160 chars.
+const SNIPPET_CHARS: usize = 160;
 const MIN_TERMS: usize = 2;
+// bm25 floor: keep candidates within this factor of the best hit (scores are negative,
+// lower = better) — worst_kept = best / FACTOR. Calibrated against a real archive.
+const BM25_FLOOR_FACTOR: f64 = 1.6;
+// Recency tie-break (half-life 30 days), scaled by the best score's magnitude (itself
+// capped) so it only reorders genuine bm25 near-ties, never overrides a real gap.
+const RECENCY_WEIGHT: f64 = 0.15;
+const RECENCY_ABS_CAP: f64 = 10.0;
 // FTS candidate query: cap the OR-union so a pasted wall of text can't explode
 // into a hundred-branch posting-list merge. The post-filter still sees every term.
 const MAX_FTS_TERMS: usize = 12;
@@ -278,6 +290,58 @@ fn fmt_ts(ts: Option<&str>) -> String {
     }
 }
 
+/// One FTS candidate: the full text gates term matching (#2); the snippet is
+/// the match-centered display string; bm25 drives the floor (#3) and re-rank (#4).
+struct Candidate {
+    session_id: String,
+    ts: Option<String>,
+    text: Option<String>,
+    snippet: Option<String>,
+    bm25: f64,
+}
+
+/// Split a turn into lowercase tokens, keeping `_` and `-` so identifiers like
+/// `cache-prod` and `TICKET-123` stay whole (caller lowercases the text first).
+fn turn_tokens(text_low: &str) -> Vec<&str> {
+    text_low
+        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// Stem/prefix-aware token match (both args already lowercased): exact, or one
+/// is a prefix of the other. Approximates porter's two-way stemming
+/// (`deploy`↔`deployed`, `service`↔`services`) while rejecting the substring
+/// false positive the old `contains` had (`spec` is not a prefix of `respect`).
+fn token_matches(tok: &str, term: &str) -> bool {
+    tok == term || tok.starts_with(term) || term.starts_with(tok)
+}
+
+/// The bm25 cutoff for the floor (#3): drop candidates worse than `best / FACTOR`.
+/// `best` is the most-negative (best) score. Returns None when scores are
+/// degenerate (best >= 0 or NaN) — meaning "no floor, keep all".
+fn floor_threshold(best: f64) -> Option<f64> {
+    (best < 0.0).then_some(best / BM25_FLOOR_FACTOR)
+}
+
+/// Recency-blended rank from a raw score and age in days (half-life 30 days),
+/// scaled by `scale` (the capped best-score magnitude). Lower sorts first.
+/// Split out from `rank_value` so the blend is unit-testable without timestamps.
+fn blended_rank(bm25: f64, age_days: f64, scale: f64) -> f64 {
+    bm25 - RECENCY_WEIGHT * scale * 0.5f64.powf(age_days / 30.0)
+}
+
+/// `blended_rank` for a candidate: an unparseable/missing timestamp gets no
+/// bonus (treated as infinitely old, so `0.5^∞ = 0`).
+fn rank_value(c: &Candidate, now: i64, scale: f64) -> f64 {
+    let age_days =
+        c.ts.as_deref()
+            .and_then(timeutil::parse_ts)
+            .map(|epoch| ((now - epoch).max(0) as f64) / 86_400.0)
+            .unwrap_or(f64::INFINITY);
+    blended_rank(c.bm25, age_days, scale)
+}
+
 /// Build the injection block for this prompt, or None to stay silent.
 pub fn run(input: &Value) -> Option<String> {
     let prompt = input
@@ -313,8 +377,12 @@ pub fn run(input: &Value) -> Option<String> {
     // No archive yet, or locked — stay quiet.
     let conn = db::connect_readonly().ok()?;
 
+    // turns_fts is a fixed literal; MATCH/project/session stay bound params. The snippet
+    // token budget (20) is a literal (not user input), sized to roughly fill the 160-char
+    // cap; bm25 is selected so the floor and recency re-rank can read the score.
     let mut sql = String::from(
-        "SELECT t.session_id, t.ts, t.text \
+        "SELECT t.session_id, t.ts, t.text, bm25(turns_fts), \
+                snippet(turns_fts, 0, '«', '»', '…', 20) \
          FROM turns_fts JOIN turns t ON t.id = turns_fts.rowid \
          WHERE turns_fts MATCH ?",
     );
@@ -330,9 +398,15 @@ pub fn run(input: &Value) -> Option<String> {
     sql.push_str(" ORDER BY bm25(turns_fts) LIMIT 30");
 
     let mut stmt = conn.prepare(&sql).ok()?;
-    let rows: Vec<(String, Option<String>, Option<String>)> = stmt
+    let rows: Vec<Candidate> = stmt
         .query_map(rusqlite::params_from_iter(binds.iter()), |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            Ok(Candidate {
+                session_id: r.get(0)?,
+                ts: r.get(1)?,
+                text: r.get(2)?,
+                bm25: r.get(3)?,
+                snippet: r.get(4)?,
+            })
         })
         .ok()?
         .flatten()
@@ -343,24 +417,58 @@ pub fn run(input: &Value) -> Option<String> {
         .iter()
         .map(|t| (t.to_lowercase(), is_anchor(t)))
         .collect();
+    // #5 adaptive gate: ask for more matched terms on longer prompts, never fewer than 2.
+    // The anchor requirement is left untouched — scaling it would drop valid hits.
+    let min_required = MIN_TERMS.max(terms.len() / 5);
+
+    // #2 stem/prefix term match on the full turn text (not the snippet), plus the anchor rule.
+    let mut qualified: Vec<Candidate> = Vec::new();
+    for c in rows {
+        let text_low = c.text.as_deref().unwrap_or("").to_lowercase();
+        let toks = turn_tokens(&text_low);
+        let matched: Vec<&(String, bool)> = term_meta
+            .iter()
+            .filter(|(low, _)| toks.iter().any(|tok| token_matches(tok, low)))
+            .collect();
+        if matched.len() < min_required || !matched.iter().any(|(_, anchor)| *anchor) {
+            continue;
+        }
+        qualified.push(c);
+    }
+    if qualified.is_empty() {
+        return None;
+    }
+
+    // #3 relative bm25 floor on raw scores: keep candidates within FACTOR of the best
+    // (scores negative, lower = better). best >= 0 or NaN is degenerate → keep all.
+    let best = qualified
+        .iter()
+        .map(|c| c.bm25)
+        .fold(f64::INFINITY, f64::min);
+    let floor = floor_threshold(best);
+
+    // #4 recency tie-break: compute each rank once (one parse_ts per survivor), then sort.
+    // Scale is the capped best magnitude, so a very strong match can't override a real gap.
+    let now = timeutil::now_unix();
+    let scale = best.abs().min(RECENCY_ABS_CAP);
+    let mut ranked: Vec<(f64, Candidate)> = qualified
+        .into_iter()
+        .filter(|c| floor.map_or(true, |t| c.bm25 <= t))
+        .map(|c| (rank_value(&c, now, scale), c))
+        .collect();
+    ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    // One hit per session; skip sources already injected into this live session; top 3.
     let seen_log = paths::recall_seen_log();
     let seen_text = std::fs::read_to_string(&seen_log).unwrap_or_default();
     let already = already_injected(&seen_text, cur_session);
-    let mut picked = Vec::new();
+    let mut picked: Vec<Candidate> = Vec::new();
     let mut seen_sessions = HashSet::new();
-    for (sid, ts, text) in rows {
-        let text_low = text.as_deref().unwrap_or("").to_lowercase();
-        let matched: Vec<&(String, bool)> = term_meta
-            .iter()
-            .filter(|(low, _)| text_low.contains(low.as_str()))
-            .collect();
-        if matched.len() < MIN_TERMS || !matched.iter().any(|(_, anchor)| *anchor) {
+    for (_, c) in ranked {
+        if already.contains(&c.session_id) || !seen_sessions.insert(c.session_id.clone()) {
             continue;
         }
-        if already.contains(&sid) || !seen_sessions.insert(sid.clone()) {
-            continue;
-        }
-        picked.push((sid, ts, text));
+        picked.push(c);
         if picked.len() >= MAX_INJECT {
             break;
         }
@@ -369,28 +477,85 @@ pub fn run(input: &Value) -> Option<String> {
         return None;
     }
 
+    // #1 render from the FTS match-centered snippet, whitespace-collapsed, hard-capped.
     let mut lines = vec![String::from(
         "[subrosa recall] Possibly relevant past sessions from the local archive — verify before \
          relying on them; run `subrosa search` for the full text:",
     )];
-    for (sid, ts, text) in &picked {
-        let snip: String = text
+    for c in &picked {
+        let snip: String = c
+            .snippet
             .as_deref()
             .unwrap_or_default()
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
             .chars()
-            .take(SNIPPET_LEN)
+            .take(SNIPPET_CHARS)
             .collect();
-        let sid8: String = sid.chars().take(8).collect();
-        lines.push(format!("- {} · {}: {}", fmt_ts(ts.as_deref()), sid8, snip));
+        let sid8: String = c.session_id.chars().take(8).collect();
+        lines.push(format!(
+            "- {} · {}: {}",
+            fmt_ts(c.ts.as_deref()),
+            sid8,
+            snip
+        ));
     }
     remember_injected(
         &seen_log,
         &seen_text,
         cur_session,
-        picked.iter().map(|(sid, _, _)| sid.as_str()),
+        picked.iter().map(|c| c.session_id.as_str()),
     );
     Some(lines.join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bm25_floor_drops_weak_tail() {
+        // best = -8, FACTOR 1.6 → threshold -5: keep -8 and -6, drop -2.
+        let t = floor_threshold(-8.0).expect("a negative best yields a floor");
+        assert!((t + 5.0).abs() < 1e-9, "threshold should be -5.0, got {t}");
+        assert!(-8.0 <= t, "the best score stays");
+        assert!(-6.0 <= t, "a within-factor score stays");
+        assert!(-2.0 > t, "the weak tail is dropped");
+    }
+
+    #[test]
+    fn bm25_floor_degenerate_keeps_all() {
+        // best >= 0 or NaN is degenerate — no floor, keep everything.
+        assert!(floor_threshold(0.0).is_none());
+        assert!(floor_threshold(3.5).is_none());
+        assert!(floor_threshold(f64::NAN).is_none());
+    }
+
+    #[test]
+    fn recency_breaks_only_near_ties() {
+        let scale = 8.0; // best.abs() for a -8 best, under RECENCY_ABS_CAP
+                         // Near-tie: a fresh -7.9 edges out a slightly-better but 120-day-old -8.0.
+        assert!(
+            blended_rank(-7.9, 0.0, scale) < blended_rank(-8.0, 120.0, scale),
+            "recency should flip a genuine near-tie"
+        );
+        // Clear gap: a much-stronger but stale -8.0 still beats a fresh -4.0.
+        assert!(
+            blended_rank(-8.0, 120.0, scale) < blended_rank(-4.0, 0.0, scale),
+            "a clearly better bm25 must hold its lead"
+        );
+    }
+
+    #[test]
+    fn token_matches_is_stem_prefix_not_substring() {
+        // Porter-style two-way prefix — the point of the stem-aware gate (#2).
+        assert!(token_matches("deployed", "deploy"));
+        assert!(token_matches("deploy", "deployed"));
+        assert!(token_matches("services", "service"));
+        assert!(token_matches("cache-prod", "cache-prod"));
+        // The substring false positive the old `contains` allowed is now rejected.
+        assert!(!token_matches("respect", "spec"));
+        assert!(!token_matches("spec", "respect"));
+    }
 }

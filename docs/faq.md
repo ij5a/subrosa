@@ -42,7 +42,7 @@ That output isn't a chat message. Claude Code puts it straight into *Claude's co
 
 ## Recall only shows 3 results — doesn't it miss things?
 
-The automatic recall is a small, cheap nudge, not the full answer. It injects the top 3 matches (~180 tokens) ranked by relevance, capped so it can't quietly grow your per-prompt cost. Treat them as leads, not the last word — they're ranked by keyword match, not by meaning, so the injected note tells Claude to check them before relying on them. When 3 aren't enough, Claude (or you) runs `subrosa search` for the full ranked list — widen it with `-n 20` — and nothing is ever lost: the whole archive stays searchable no matter what recall surfaced.
+The automatic recall is a small, cheap nudge, not the full answer. It injects the top 3 matches (~180 tokens) ranked by relevance, capped so it can't quietly grow your per-prompt cost. Treat them as leads, not the last word — they're ranked by keyword match (with fresher sessions breaking near-ties), not by meaning, and the snippet is centered on the matching text so you can see why it surfaced. The injected note tells Claude to check them before relying on them. When 3 aren't enough, Claude (or you) runs `subrosa search` for the full ranked list — widen it with `-n 20` — and nothing is ever lost: the whole archive stays searchable no matter what recall surfaced.
 
 ## Why keyword search instead of embeddings?
 
