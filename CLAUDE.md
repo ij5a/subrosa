@@ -47,4 +47,4 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 
 ## Releasing
 
-Tag `vX.Y.Z` and push the tag — GitHub Actions builds the 4 targets and publishes the release with `sha256sums.txt`. Then pin the new checksums into `hooks/sha256sums.txt` + `hooks/binary-version` (the plugin bootstrap verifies against these), and update the Homebrew formula in `ij5a/homebrew-tap` with the new version + hashes.
+First bump the version in **both** `Cargo.toml` and `.claude-plugin/plugin.json` — they must match. `plugin.json` is the version `/plugin` shows and uses to detect updates, so bumping `Cargo.toml` alone ships a release no installed plugin will pull. Then tag `vX.Y.Z` and push the tag — GitHub Actions builds the 4 targets and publishes the release with `sha256sums.txt`. Then pin the new checksums into `hooks/sha256sums.txt` + `hooks/binary-version` (the plugin bootstrap verifies against these), and update the Homebrew formula in `ij5a/homebrew-tap` with the new version + hashes.
