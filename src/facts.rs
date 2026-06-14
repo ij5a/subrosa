@@ -1,11 +1,13 @@
 //! Curated facts: the rows MEMORY.md is generated from. Used by the checkpoint
 //! skills and by hand. Corrections soft-delete (status/superseded_at), never rm.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::OnceLock;
 
 use clap::ValueEnum;
+use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{db, paths};
@@ -17,6 +19,7 @@ pub enum FactAction {
     Pin,
     Unpin,
     List,
+    Link,
 }
 
 #[derive(ValueEnum, Clone, Copy, PartialEq)]
@@ -94,6 +97,50 @@ pub fn parse_frontmatter(text: &str) -> HashMap<String, String> {
         }
     }
     fm
+}
+
+/// The leaf body after the YAML frontmatter block (or the whole text if there's
+/// no frontmatter). Wiki links are scanned here, never in the frontmatter.
+fn body_after_frontmatter(text: &str) -> &str {
+    let Some(rest) = text.strip_prefix("---") else {
+        return text;
+    };
+    let Some(end) = rest.find("\n---") else {
+        return text;
+    };
+    // Skip past the closing `---` line to the body that follows it.
+    let after_marker = &rest[end + 1..];
+    match after_marker.find('\n') {
+        Some(nl) => &after_marker[nl + 1..],
+        None => "",
+    }
+}
+
+/// `[[slug]]` link targets in a leaf body, first-seen order, de-duplicated
+/// case-insensitively. Links inside ``` fenced code blocks are skipped — those
+/// are examples, not real cross-references.
+pub fn extract_wiki_links(body: &str) -> Vec<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"\[\[([^\[\]\n]+)\]\]").unwrap());
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut in_fence = false;
+    for line in body.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        for cap in re.captures_iter(line) {
+            let slug = cap[1].trim().to_string();
+            if !slug.is_empty() && seen.insert(slug.to_ascii_lowercase()) {
+                out.push(slug);
+            }
+        }
+    }
+    out
 }
 
 /// Infer a fact type from the leaf filename prefix.
@@ -288,6 +335,206 @@ fn list(conn: &Connection, project: &str, status: StatusFilter) -> rusqlite::Res
     Ok(())
 }
 
+/// One curated fact, reduced to what `fact link` needs.
+struct LinkFact {
+    name: Option<String>,
+    type_: Option<String>,
+    title: Option<String>,
+    hook: Option<String>,
+    leaf_path: String,
+    status: String,
+}
+
+impl LinkFact {
+    /// The slug other leaves resolve against: the `name` slug, or the leaf
+    /// filename without `.md` when `name` is absent.
+    fn slug(&self) -> String {
+        self.name
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| leaf_stem(&self.leaf_path))
+    }
+    /// The one-line label next to a link: hook, then title, then slug.
+    fn label(&self) -> String {
+        let h = self.hook.as_deref().filter(|s| !s.is_empty());
+        let t = self.title.as_deref().filter(|s| !s.is_empty());
+        h.or(t).map(str::to_string).unwrap_or_else(|| self.slug())
+    }
+    /// `[type]` tag, with `, archived` appended for soft-deleted facts.
+    fn tag(&self) -> String {
+        let t = self.type_.as_deref().unwrap_or("?");
+        if self.status == "active" {
+            t.to_string()
+        } else {
+            format!("{t}, archived")
+        }
+    }
+}
+
+/// `reference_foo.md` → `reference_foo`.
+fn leaf_stem(leaf: &str) -> String {
+    leaf.strip_suffix(".md").unwrap_or(leaf).to_string()
+}
+
+/// Normalize a written link target or anchor argument to its resolution key.
+fn link_key(s: &str) -> String {
+    s.trim().trim_end_matches(".md").to_ascii_lowercase()
+}
+
+fn load_link_facts(conn: &Connection, project: &str) -> rusqlite::Result<Vec<LinkFact>> {
+    let mut stmt = conn.prepare(
+        "SELECT name, type, title, hook, leaf_path, status FROM facts \
+         WHERE project=? AND leaf_path IS NOT NULL \
+         ORDER BY index_seq IS NULL, index_seq, leaf_path",
+    )?;
+    let rows = stmt
+        .query_map([project], |r| {
+            Ok(LinkFact {
+                name: r.get(0)?,
+                type_: r.get(1)?,
+                title: r.get(2)?,
+                hook: r.get(3)?,
+                leaf_path: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                status: r
+                    .get::<_, Option<String>>(5)?
+                    .unwrap_or_else(|| "active".into()),
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows
+        .into_iter()
+        .filter(|f| !f.leaf_path.is_empty())
+        .collect())
+}
+
+/// `subrosa fact link <anchor>` — the curated `[[slug]]` links into and out of
+/// one fact, flagging links that resolve to nothing. Read-only.
+fn link(anchor: Option<String>, project: Option<String>, memdir: Option<PathBuf>) -> ExitCode {
+    // No archive yet → nothing to link. Quiet, like `related`.
+    let Ok(conn) = db::connect_readonly() else {
+        println!("[subrosa] no facts yet");
+        return ExitCode::SUCCESS;
+    };
+    let memdir = memdir
+        .map(|p| paths::expanduser(&p))
+        .unwrap_or_else(|| db::current_memdir(Some(&conn)));
+    let project = project.unwrap_or_else(|| project_of(&memdir));
+    let Some(anchor) = anchor else {
+        eprintln!("[subrosa] fact link needs an anchor (a fact slug or leaf filename)");
+        return ExitCode::from(2);
+    };
+
+    let facts = match load_link_facts(&conn, &project) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[subrosa] fact link query failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Resolve every slug/stem (lowercased) to its fact. `name` wins over a
+    // colliding leaf-stem, so seed stems first, then overwrite with names.
+    let mut by_key: HashMap<String, usize> = HashMap::new();
+    for (i, f) in facts.iter().enumerate() {
+        by_key.insert(leaf_stem(&f.leaf_path).to_ascii_lowercase(), i);
+    }
+    for (i, f) in facts.iter().enumerate() {
+        if let Some(n) = f.name.as_deref().filter(|s| !s.is_empty()) {
+            by_key.insert(n.to_ascii_lowercase(), i);
+        }
+    }
+
+    let Some(&anchor_idx) = by_key.get(&link_key(&anchor)) else {
+        println!("[subrosa] no fact matches \"{anchor}\"");
+        return ExitCode::SUCCESS;
+    };
+
+    // Each fact's outbound links, extracted once (the anchor's own set included).
+    let links: Vec<Vec<String>> = facts
+        .iter()
+        .map(|f| {
+            std::fs::read_to_string(memdir.join(&f.leaf_path))
+                .map(|t| extract_wiki_links(body_after_frontmatter(&t)))
+                .unwrap_or_default()
+        })
+        .collect();
+
+    // The anchor's identity keys, for matching inbound links by name or stem.
+    let anchor_fact = &facts[anchor_idx];
+    let anchor_keys: HashSet<String> = [
+        anchor_fact
+            .name
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_ascii_lowercase()),
+        Some(leaf_stem(&anchor_fact.leaf_path).to_ascii_lowercase()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    render_links(&facts, anchor_idx, &by_key, &links, &anchor_keys);
+    ExitCode::SUCCESS
+}
+
+fn render_links(
+    facts: &[LinkFact],
+    anchor_idx: usize,
+    by_key: &HashMap<String, usize>,
+    links: &[Vec<String>],
+    anchor_keys: &HashSet<String>,
+) {
+    println!("links for «{}»\n", facts[anchor_idx].slug());
+
+    // Outbound: the anchor's own [[...]] links, in document order.
+    println!("links to (outbound):");
+    let mut outbound = 0usize;
+    let mut dangling = 0usize;
+    if links[anchor_idx].is_empty() {
+        println!("  (none)");
+    }
+    for written in &links[anchor_idx] {
+        outbound += 1;
+        match by_key.get(&link_key(written)) {
+            Some(&i) if i == anchor_idx => println!("  → {}  [self]", facts[i].slug()),
+            Some(&i) => println!(
+                "  → {}  [{}] {}",
+                facts[i].slug(),
+                facts[i].tag(),
+                facts[i].label()
+            ),
+            None => {
+                dangling += 1;
+                println!("  → {}  [dangling]", written.trim());
+            }
+        }
+    }
+
+    // Inbound: other facts whose bodies link to the anchor (by name or stem).
+    println!("\nlinked from (inbound):");
+    let mut inbound = 0usize;
+    for (i, f) in facts.iter().enumerate() {
+        if i == anchor_idx {
+            continue;
+        }
+        if links[i].iter().any(|w| anchor_keys.contains(&link_key(w))) {
+            inbound += 1;
+            println!("  ← {}  [{}] {}", f.slug(), f.tag(), f.label());
+        }
+    }
+    if inbound == 0 {
+        println!("  (none)");
+    }
+
+    let dang = if dangling > 0 {
+        format!(" ({dangling} dangling)")
+    } else {
+        String::new()
+    };
+    println!("\n[subrosa] {outbound} outbound{dang}, {inbound} inbound");
+}
+
 /// `subrosa fact <action> ...` entry point.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -301,7 +548,12 @@ pub fn run(
     project: Option<String>,
     memdir: Option<PathBuf>,
     status: StatusFilter,
+    anchor: Option<String>,
 ) -> ExitCode {
+    // `link` is read-only — open read-only before the read-write connect below.
+    if let FactAction::Link = action {
+        return link(anchor, project, memdir);
+    }
     let conn = match db::connect() {
         Ok(c) => c,
         Err(e) => {
@@ -371,7 +623,7 @@ pub fn run(
                 params![now, project, leaf],
             )
             .map(|n| println!("[subrosa] unpinned {n} fact(s): {leaf}")),
-        FactAction::List => unreachable!(),
+        FactAction::List | FactAction::Link => unreachable!(),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -379,5 +631,36 @@ pub fn run(
             eprintln!("[subrosa] fact {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_links_dedup_and_first_seen_order() {
+        // [[Alpha]] dedups against [[alpha]]; first-seen casing is kept.
+        let got = extract_wiki_links("to [[alpha]] then [[beta]], and [[Alpha]] again");
+        assert_eq!(got, ["alpha", "beta"].map(String::from));
+    }
+
+    #[test]
+    fn extract_links_skips_code_fences() {
+        let got = extract_wiki_links("real [[alpha]]\n```\n[[fenced]]\n```\nafter [[beta]]");
+        assert_eq!(got, ["alpha", "beta"].map(String::from));
+    }
+
+    #[test]
+    fn extract_links_ignores_empty_and_nonlinks() {
+        assert!(extract_wiki_links("just [single] brackets, nothing here").is_empty());
+        assert!(extract_wiki_links("empty [[]] and [[   ]] targets").is_empty());
+    }
+
+    #[test]
+    fn body_after_frontmatter_strips_yaml_block() {
+        let leaf = "---\nname: foo\ndescription: x\n---\nbody [[bar]] here\n";
+        assert_eq!(body_after_frontmatter(leaf), "body [[bar]] here\n");
+        assert_eq!(body_after_frontmatter("plain [[bar]]"), "plain [[bar]]");
     }
 }

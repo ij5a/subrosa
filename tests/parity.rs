@@ -218,3 +218,52 @@ fn session_ambiguous_prefix_dumps_nothing() {
     let full = run(&env, &["session", "dupe-0000-4000-8000-000000001111"], None);
     assert!(full.contains("dup note 1111"), "full id dumps its turns");
 }
+
+#[test]
+fn fact_link_matches_golden() {
+    let env = setup("factlink");
+    let memdir = env.data.join("memdir");
+    fs::create_dir_all(&memdir).unwrap();
+
+    // alpha is the anchor: out to gamma (resolves), missing (dangling), itself
+    // (self), and a fenced link that must be ignored.
+    fs::write(
+        memdir.join("project_alpha.md"),
+        "---\nname: alpha\ndescription: Anchor fact\ntype: project\n---\n\
+         Alpha links to [[gamma]] and a [[missing]] one, and to [[alpha]] itself.\n\
+         A fenced example that must be ignored:\n\
+         ```\n[[fenced-link]]\n```\n",
+    )
+    .unwrap();
+    // beta and gamma both link back to alpha (inbound).
+    fs::write(
+        memdir.join("reference_beta.md"),
+        "---\nname: beta-thing\ndescription: Beta\ntype: reference\n---\n\
+         Beta points at [[alpha]].\n",
+    )
+    .unwrap();
+    fs::write(
+        memdir.join("project_gamma.md"),
+        "---\nname: gamma\ndescription: Gamma\ntype: project\n---\n\
+         Gamma points back at [[alpha]] too.\n",
+    )
+    .unwrap();
+
+    let md = memdir.to_str().unwrap();
+    for (leaf, hook) in [
+        ("project_alpha.md", "the anchor fact"),
+        ("reference_beta.md", "beta points at alpha"),
+        ("project_gamma.md", "gamma both ways"),
+    ] {
+        run(
+            &env,
+            &[
+                "fact", "upsert", "--leaf", leaf, "--memdir", md, "--hook", hook,
+            ],
+            None,
+        );
+    }
+
+    let out = run(&env, &["fact", "link", "alpha", "--memdir", md], None);
+    assert_eq!(out, golden("fact_link.golden"));
+}

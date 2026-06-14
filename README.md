@@ -96,6 +96,7 @@ subrosa          # the dashboard
 - **Builds long-term memory.** Ended sessions wait in a queue; the bundled `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog` commands read them and save the important points as curated facts (one fact per small markdown file). `subrosa generate` then builds `MEMORY.md` — a short index Claude Code loads every session, capped in size so it can never overflow.
 - **Makes everything searchable.** `subrosa search <terms>` runs ranked full-text search, so identifiers like `my-app-prod` or `TICKET-123` stay searchable — with `--fuzzy` for partial names and typos.
 - **Shows what clusters together.** `subrosa related <identifier>` ranks the terms and past sessions that keep showing up alongside something like `auth.ts` or `TICKET-123` — read straight from the archive, not guessed. It answers "what did this work touch" the way `search` (which finds text) can't.
+- **Follows your curated links.** Memory notes can point at each other with `[[name]]` links; `subrosa fact link <slug>` lists what a note links to and what links back, and flags any link to a note that doesn't exist.
 - **Shows you the picture.** `subrosa` alone prints the dashboard: activity sparkline, store size, per-project share, index budget.
 - **Backs itself up.** Consistent snapshots on a 24h throttle, plus an optional mirror of the latest snapshot to a folder you pick.
 - **Masks secrets at the door.** Private key blocks, AWS keys, bearer tokens, and `password=`-style values are redacted before they're written.
@@ -113,6 +114,7 @@ subrosa related TICKET-123 --project api # what clustered around it, scoped to o
 
 subrosa fact list                        # curated facts for the current project
 subrosa fact upsert --leaf note.md       # add/update a fact from a markdown file (one fact per file)
+subrosa fact link auth-decision          # show [[name]] links into/out of a fact (flags dead links)
 subrosa generate                         # rebuild MEMORY.md (byte-budgeted)
 subrosa import ~/.claude/projects/<project>/memory   # one-time import of an existing MEMORY.md
 

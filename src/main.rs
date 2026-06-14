@@ -115,10 +115,12 @@ enum Cmd {
     },
     /// Show the memory archive dashboard (activity, store, by-project share)
     Stats(stats::Args),
-    /// Mutate curated facts (upsert/archive/pin/unpin/list)
+    /// Inspect or mutate curated facts (link/list/upsert/archive/pin/unpin)
     Fact {
         #[arg(value_enum)]
         action: facts::FactAction,
+        /// For `link`: a fact slug or leaf filename to show links for
+        anchor: Option<String>,
         /// Leaf filename, e.g. reference_foo.md (bare filename, no path)
         #[arg(long)]
         leaf: Option<String>,
@@ -271,6 +273,7 @@ fn main() -> ExitCode {
         Cmd::Stats(args) => stats::run(&args),
         Cmd::Fact {
             action,
+            anchor,
             leaf,
             type_,
             title,
@@ -291,6 +294,7 @@ fn main() -> ExitCode {
             project,
             memdir,
             status,
+            anchor,
         ),
         Cmd::Generate {
             project,

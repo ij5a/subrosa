@@ -19,7 +19,7 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 | related.rs | `related` verb: co-occurrence over the archive (anchor → terms + sessions; FTS-count idf down-weight) |
 | recall.rs | UserPromptSubmit relevance gate + context injection |
 | text.rs | shared tokenizer/term-quality helpers (STOPWORDS, extract_terms, is_anchor, turn_tokens, token_matches); used by recall + related |
-| facts.rs | curated facts CRUD, frontmatter parsing, type weights |
+| facts.rs | curated facts CRUD, frontmatter parsing, type weights, `fact link` ([[name]] graph reader) |
 | generate.rs | byte-budgeted MEMORY.md from the facts table |
 | import_existing.rs | one-time import of a MEMORY.md + leaves into the facts table |
 | session.rs | session dump (full id or unique prefix) + checkpoint queue ops (drop/enqueue/mark-current) |

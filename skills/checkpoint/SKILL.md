@@ -36,6 +36,7 @@ The user is about to run `/clear` or `/compact`. Without saving first, `/clear` 
    - Create or update the leaf file with frontmatter: `name`, `description`, `type`
    - Use the **Why:** / **How to apply:** structure for `feedback` and `project` types — the *why* is what lets future-you judge edge cases
    - Register it: `subrosa fact upsert --leaf <file.md> --hook "<one-line hook, under ~150 chars>"`. Type and title come from the leaf frontmatter; pass `--pin` for a guardrail that must always load regardless of budget. New facts append to the curated order; updates keep their place.
+   - Link related leaves in the body with `[[slug]]` — the other leaf's `name`. A `[[slug]]` naming a leaf you haven't written yet is fine. After registering, run `subrosa fact link <slug>` to check the links resolve; anything shown `[dangling]` is a typo or a leaf still to write.
 
 5. **Convert relative dates to absolute** before writing. "Yesterday", "last Thursday", "next sprint" all rot fast — use today's date as the anchor and write the absolute date.
 

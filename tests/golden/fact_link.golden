@@ -1,0 +1,12 @@
+links for «alpha»
+
+links to (outbound):
+  → gamma  [project] gamma both ways
+  → missing  [dangling]
+  → alpha  [self]
+
+linked from (inbound):
+  ← beta-thing  [reference] beta points at alpha
+  ← gamma  [project] gamma both ways
+
+[subrosa] 3 outbound (1 dangling), 2 inbound
