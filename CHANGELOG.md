@@ -5,6 +5,16 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-06-14
+
+### Added
+
+- GitHub community health files: Code of conduct (Contributor Covenant 2.1), `CONTRIBUTING.md`, `SECURITY.md`, and issue + pull-request templates.
+
+### Changed
+
+- `/subrosa:checkpoint-backlog` now checkpoints a multi-project queue in parallel — one sub-agent per project, all run at once, with each project's sessions handled serially so a project's `MEMORY.md` never races itself. A single-project queue stays sequential, exactly as before. The orchestrator clears a session from the queue only after its lane reports it done, so a failed lane simply leaves its sessions queued for the next run.
+
 ## [0.6.0] - 2026-06-14
 
 ### Changed
@@ -65,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.7.0]: https://github.com/ij5a/subrosa/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ij5a/subrosa/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ij5a/subrosa/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/ij5a/subrosa/compare/v0.4.1...v0.4.2
