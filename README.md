@@ -95,6 +95,7 @@ subrosa          # the dashboard
 - **Recalls on its own.** When you submit a prompt with enough distinctive terms, the top matching past sessions from the same project are injected into context — quiet unless the match is strong.
 - **Builds long-term memory.** Ended sessions wait in a queue; the bundled `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog` commands read them and save the important points as curated facts (one fact per small markdown file). `subrosa generate` then builds `MEMORY.md` — a short index Claude Code loads every session, capped in size so it can never overflow.
 - **Makes everything searchable.** `subrosa search <terms>` runs ranked full-text search, so identifiers like `my-app-prod` or `TICKET-123` stay searchable — with `--fuzzy` for partial names and typos.
+- **Shows what clusters together.** `subrosa related <identifier>` ranks the terms and past sessions that keep showing up alongside something like `auth.ts` or `TICKET-123` — read straight from the archive, not guessed. It answers "what did this work touch" the way `search` (which finds text) can't.
 - **Shows you the picture.** `subrosa` alone prints the dashboard: activity sparkline, store size, per-project share, index budget.
 - **Backs itself up.** Consistent snapshots on a 24h throttle, plus an optional mirror of the latest snapshot to a folder you pick.
 - **Masks secrets at the door.** Private key blocks, AWS keys, bearer tokens, and `password=`-style values are redacted before they're written.
@@ -107,6 +108,8 @@ subrosa search aurora failover           # find that thing from three weeks ago
 subrosa search --project api deploy      # scope to one project
 subrosa search -n 30 --raw 'cache OR redis'
 subrosa search --fuzzy ratelimiter       # substring/typo matching (builds a trigram index on first use)
+subrosa related cache-prod               # terms + sessions that co-occur with an identifier
+subrosa related TICKET-123 --project api # what clustered around it, scoped to one project
 
 subrosa fact list                        # curated facts for the current project
 subrosa fact upsert --leaf note.md       # add/update a fact from a markdown file (one fact per file)
@@ -232,6 +235,7 @@ A hook that runs on every prompt has to be invisible. Measured with `scripts/ben
 | A full hook fire as Claude Code runs it (shell wrapper + binary) | under 10 ms |
 | Session-start catch-up sweep, nothing changed | ~5 ms |
 | `subrosa search` over 50,000 turns | 5–11 ms |
+| `subrosa related <identifier>` over 50,000 turns | 0.3–0.4 s |
 | Archiving 50,000 turns from scratch (first install) | ~1.1 s |
 
 One static 3.7 MB binary, no background process, no runtime dependencies — every hook

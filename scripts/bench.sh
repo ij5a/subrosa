@@ -97,6 +97,13 @@ hyperfine --warmup 3 --runs 25 \
   -n "search identifier" "'$BIN' search cache-gateway-prod -n 5" \
   -n "search two terms" "'$BIN' search deploy rollout -n 5"
 
+# Co-occurrence verb: a focused identifier (few sessions) vs a ubiquitous word
+# (every session — the worst case that the session-scan cap bounds).
+echo "== related (co-occurrence over the archive) =="
+hyperfine --warmup 2 --runs 15 \
+  -n "related identifier" "'$BIN' related svc-cache-prod -n 10" \
+  -n "related common word (worst case)" "'$BIN' related deploy -n 10"
+
 echo "== process startup floor =="
 hyperfine --warmup 5 --runs 50 -n "subrosa --version" "'$BIN' --version"
 

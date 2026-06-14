@@ -152,3 +152,23 @@ fn redaction_and_noise_filtering_hold() {
     assert!(!dump.contains("injected block"), "recall header archived");
     assert!(!dump.contains("<command-name>"), "command noise archived");
 }
+
+#[test]
+fn related_matches_golden() {
+    let env = setup("related");
+    ingest_golden_transcript(&env);
+    // A second session sharing cache-prod + TICKET-123 + rollout + cluster, so
+    // co-occurrence ranks (one session alone makes every co-occurring term a singleton).
+    let t2 = env.projects.join("-tmp-demo/cccc-dddd-2222.jsonl");
+    fs::write(
+        &t2,
+        "{\"type\":\"user\",\"timestamp\":\"2026-06-12T02:00:00Z\",\"uuid\":\"s2u1\",\
+         \"cwd\":\"/tmp/demo\",\"message\":{\"role\":\"user\",\"content\":\
+         \"the cache-prod rollout for TICKET-123 hit the cluster again\"}}\n",
+    )
+    .unwrap();
+    run(&env, &["ingest", t2.to_str().unwrap()], None);
+    let out = run(&env, &["related", "cache-prod"], None);
+    let want = golden("related.golden").replace("{{PROJECTS_DIR}}", env.projects.to_str().unwrap());
+    assert_eq!(out, want);
+}

@@ -1,0 +1,14 @@
+related to «cache-prod» — 2 session(s) scanned
+
+terms (co-occur in 2+ sessions):
+    2  cluster
+    2  rollout
+    2  TICKET-123
+
+sessions:
+ 1. [2026-06-12 02:00] user · -tmp-demo · cccc-ddd  (cluster, rollout, TICKET-123)
+    the «cache-prod» rollout for TICKET-123 hit the cluster again
+ 2. [2026-06-12 01:00] user · -tmp-demo · aaaa-bbb  (cluster, rollout, TICKET-123)
+    deploying «cache-prod» today, password=‹redacted› should be masked
+
+[subrosa] 2 of 2 session(s). Open a session: {{PROJECTS_DIR}}/<project>/<session_id>.jsonl

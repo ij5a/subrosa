@@ -16,7 +16,9 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 | redact.rs | secret masking before storage |
 | ingest.rs | JSONL flatten → turns rows, sweep, checkpoint queue |
 | search.rs | FTS5 query building + result output |
+| related.rs | `related` verb: co-occurrence over the archive (anchor → terms + sessions; FTS-count idf down-weight) |
 | recall.rs | UserPromptSubmit relevance gate + context injection |
+| text.rs | shared tokenizer/term-quality helpers (STOPWORDS, extract_terms, is_anchor, turn_tokens, token_matches); used by recall + related |
 | facts.rs | curated facts CRUD, frontmatter parsing, type weights |
 | generate.rs | byte-budgeted MEMORY.md from the facts table |
 | import_existing.rs | one-time import of a MEMORY.md + leaves into the facts table |

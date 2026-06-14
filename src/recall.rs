@@ -17,12 +17,10 @@
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
-use std::sync::OnceLock;
 
-use regex::Regex;
 use serde_json::Value;
 
-use crate::{db, paths, timeutil};
+use crate::{db, paths, text, timeutil};
 
 const MAX_INJECT: usize = 3;
 // Hard cap on the rendered snippet: holds recall at the documented ~180 tokens/prompt
@@ -42,173 +40,6 @@ const MAX_FTS_TERMS: usize = 12;
 // Trim the dedup log once it's clearly past any live-session working set.
 const SEEN_TRIM_AT: usize = 4000;
 const SEEN_KEEP: usize = 2000;
-
-const STOPWORDS: &[&str] = &[
-    "the",
-    "a",
-    "an",
-    "and",
-    "or",
-    "but",
-    "if",
-    "then",
-    "else",
-    "of",
-    "to",
-    "in",
-    "on",
-    "at",
-    "for",
-    "with",
-    "from",
-    "by",
-    "as",
-    "is",
-    "are",
-    "was",
-    "were",
-    "be",
-    "been",
-    "being",
-    "this",
-    "that",
-    "these",
-    "those",
-    "it",
-    "its",
-    "do",
-    "does",
-    "did",
-    "can",
-    "could",
-    "should",
-    "would",
-    "will",
-    "shall",
-    "may",
-    "might",
-    "must",
-    "not",
-    "no",
-    "yes",
-    "ok",
-    "okay",
-    "i",
-    "you",
-    "we",
-    "they",
-    "he",
-    "she",
-    "him",
-    "her",
-    "his",
-    "our",
-    "your",
-    "their",
-    "what",
-    "which",
-    "who",
-    "whom",
-    "how",
-    "why",
-    "when",
-    "where",
-    "here",
-    "there",
-    "please",
-    "let",
-    "lets",
-    "just",
-    "only",
-    "also",
-    "more",
-    "most",
-    "some",
-    "any",
-    "all",
-    "every",
-    "each",
-    "other",
-    "than",
-    "too",
-    "very",
-    "much",
-    "many",
-    "few",
-    "need",
-    "want",
-    "make",
-    "made",
-    "sure",
-    "able",
-    "part",
-    "flow",
-    "doing",
-    "something",
-    "thing",
-    "things",
-    "get",
-    "got",
-    "use",
-    "used",
-    "using",
-    "update",
-    "updated",
-    "add",
-    "added",
-    "fix",
-    "fixed",
-    "change",
-    "changed",
-    "check",
-    "checked",
-    "look",
-    "looking",
-    "go",
-    "going",
-    "know",
-    "think",
-    "see",
-    "say",
-];
-
-/// Terms worth searching for: identifiers (digits/underscore/hyphen or
-/// all-caps), or words >= 4 chars that aren't stopwords. Deduped, order kept.
-fn distinctive_terms(prompt: &str) -> Vec<String> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"[A-Za-z0-9][A-Za-z0-9._-]*").unwrap());
-    let mut terms = Vec::new();
-    let mut seen = HashSet::new();
-    for m in re.find_iter(prompt) {
-        let tok = m.as_str();
-        let low = tok.to_lowercase();
-        if seen.contains(&low) {
-            continue;
-        }
-        let identifierish = tok
-            .chars()
-            .any(|c| c.is_ascii_digit() || c == '_' || c == '-')
-            || (tok.len() >= 2
-                && tok.chars().any(|c| c.is_ascii_uppercase())
-                && !tok.chars().any(|c| c.is_ascii_lowercase()));
-        if (identifierish || tok.len() >= 4) && !STOPWORDS.contains(&low.as_str()) {
-            terms.push(tok.to_string());
-            seen.insert(low);
-        }
-    }
-    terms
-}
-
-/// Anchor-grade terms justify an injection: identifier-like (digit, `_`, `-`,
-/// `.`, or ALL-CAPS) or 6+ chars. Two short generic words never fire alone.
-fn is_anchor(tok: &str) -> bool {
-    tok.chars()
-        .any(|c| c.is_ascii_digit() || c == '_' || c == '-' || c == '.')
-        || (tok.len() >= 2
-            && tok.chars().any(|c| c.is_ascii_uppercase())
-            && !tok.chars().any(|c| c.is_ascii_lowercase()))
-        || tok.chars().count() >= 6
-}
 
 /// Source sessions already injected into this live session — never repeat them.
 /// Takes the log text (read once per prompt) rather than re-reading the file.
@@ -300,23 +131,6 @@ struct Candidate {
     bm25: f64,
 }
 
-/// Split a turn into lowercase tokens, keeping `_` and `-` so identifiers like
-/// `cache-prod` and `TICKET-123` stay whole (caller lowercases the text first).
-fn turn_tokens(text_low: &str) -> Vec<&str> {
-    text_low
-        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
-        .filter(|t| !t.is_empty())
-        .collect()
-}
-
-/// Stem/prefix-aware token match (both args already lowercased): exact, or one
-/// is a prefix of the other. Approximates porter's two-way stemming
-/// (`deploy`↔`deployed`, `service`↔`services`) while rejecting the substring
-/// false positive the old `contains` had (`spec` is not a prefix of `respect`).
-fn token_matches(tok: &str, term: &str) -> bool {
-    tok == term || tok.starts_with(term) || term.starts_with(tok)
-}
-
 /// The bm25 cutoff for the floor (#3): drop candidates worse than `best / FACTOR`.
 /// `best` is the most-negative (best) score. Returns None when scores are
 /// degenerate (best >= 0 or NaN) — meaning "no floor, keep all".
@@ -352,7 +166,7 @@ pub fn run(input: &Value) -> Option<String> {
     if prompt.chars().count() < 8 {
         return None;
     }
-    let terms = distinctive_terms(prompt);
+    let terms = text::extract_terms(prompt);
     if terms.len() < MIN_TERMS {
         return None;
     }
@@ -365,7 +179,7 @@ pub fn run(input: &Value) -> Option<String> {
     // first, then longer words. Under the cap the query is byte-identical.
     let mut fts_terms: Vec<&String> = terms.iter().collect();
     if fts_terms.len() > MAX_FTS_TERMS {
-        fts_terms.sort_by_key(|t| (!is_anchor(t), std::cmp::Reverse(t.chars().count())));
+        fts_terms.sort_by_key(|t| (!text::is_anchor(t), std::cmp::Reverse(t.chars().count())));
         fts_terms.truncate(MAX_FTS_TERMS);
     }
     let fts_match = fts_terms
@@ -415,7 +229,7 @@ pub fn run(input: &Value) -> Option<String> {
     // (lowercased term, anchor-grade) — anchor judged on the original casing.
     let term_meta: Vec<(String, bool)> = terms
         .iter()
-        .map(|t| (t.to_lowercase(), is_anchor(t)))
+        .map(|t| (t.to_lowercase(), text::is_anchor(t)))
         .collect();
     // #5 adaptive gate: ask for more matched terms on longer prompts, never fewer than 2.
     // The anchor requirement is left untouched — scaling it would drop valid hits.
@@ -425,10 +239,10 @@ pub fn run(input: &Value) -> Option<String> {
     let mut qualified: Vec<Candidate> = Vec::new();
     for c in rows {
         let text_low = c.text.as_deref().unwrap_or("").to_lowercase();
-        let toks = turn_tokens(&text_low);
+        let toks = text::turn_tokens(&text_low);
         let matched: Vec<&(String, bool)> = term_meta
             .iter()
-            .filter(|(low, _)| toks.iter().any(|tok| token_matches(tok, low)))
+            .filter(|(low, _)| toks.iter().any(|tok| text::token_matches(tok, low)))
             .collect();
         if matched.len() < min_required || !matched.iter().any(|(_, anchor)| *anchor) {
             continue;
@@ -545,17 +359,5 @@ mod tests {
             blended_rank(-8.0, 120.0, scale) < blended_rank(-4.0, 0.0, scale),
             "a clearly better bm25 must hold its lead"
         );
-    }
-
-    #[test]
-    fn token_matches_is_stem_prefix_not_substring() {
-        // Porter-style two-way prefix — the point of the stem-aware gate (#2).
-        assert!(token_matches("deployed", "deploy"));
-        assert!(token_matches("deploy", "deployed"));
-        assert!(token_matches("services", "service"));
-        assert!(token_matches("cache-prod", "cache-prod"));
-        // The substring false positive the old `contains` allowed is now rejected.
-        assert!(!token_matches("respect", "spec"));
-        assert!(!token_matches("spec", "respect"));
     }
 }

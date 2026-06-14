@@ -8,10 +8,12 @@ mod ingest;
 mod paths;
 mod recall;
 mod redact;
+mod related;
 mod search;
 mod session;
 mod setup;
 mod stats;
+mod text;
 mod timeutil;
 
 use std::path::PathBuf;
@@ -96,6 +98,20 @@ enum Cmd {
         /// Substring/typo matching via a trigram index (built on first use)
         #[arg(long)]
         fuzzy: bool,
+    },
+    /// Find terms and sessions that co-occur with an identifier across the archive
+    Related {
+        /// The anchor identifier (phrase-quoted; hyphens and dots are safe)
+        identifier: String,
+        /// Max related terms to show
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: i64,
+        /// Restrict to a project (substring match)
+        #[arg(long)]
+        project: Option<String>,
+        /// Max sessions to list
+        #[arg(long, default_value_t = 10)]
+        sessions: i64,
     },
     /// Show the memory archive dashboard (activity, store, by-project share)
     Stats(stats::Args),
@@ -246,6 +262,12 @@ fn main() -> ExitCode {
             session.as_deref(),
             fuzzy,
         ),
+        Cmd::Related {
+            identifier,
+            limit,
+            project,
+            sessions,
+        } => related::run(&identifier, limit, project.as_deref(), sessions),
         Cmd::Stats(args) => stats::run(&args),
         Cmd::Fact {
             action,
