@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions and FAQ
+    url: https://github.com/ij5a/subrosa/blob/main/docs/faq.md
+    about: Read the FAQ first — it answers most setup and usage questions.
