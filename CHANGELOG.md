@@ -5,6 +5,12 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-06-15
+
+### Added
+
+- `subrosa fact link <anchor>`: a read-only verb that shows the `[[name]]` links into and out of a curated fact. It lists what the fact links to (outbound) and which facts link back (inbound), resolves each slug to its title, and flags links that point to a fact that doesn't exist (`[dangling]`), to the fact itself (`[self]`), or to an archived fact. It's the curated counterpart to `related`: the links are written by hand, so the connections are exact rather than guessed from co-occurrence. The `/subrosa:checkpoint` skill now writes these links when saving a fact and verifies them with `subrosa fact link`.
+
 ## [0.8.1] - 2026-06-14
 
 ### Changed
