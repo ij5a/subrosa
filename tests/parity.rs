@@ -172,3 +172,49 @@ fn related_matches_golden() {
     let want = golden("related.golden").replace("{{PROJECTS_DIR}}", env.projects.to_str().unwrap());
     assert_eq!(out, want);
 }
+
+#[test]
+fn session_resolves_a_unique_prefix() {
+    let env = setup("sessprefix");
+    ingest_golden_transcript(&env); // session aaaa-bbbb-1111
+    let full = run(&env, &["session", "aaaa-bbbb-1111"], None);
+    let pref = run(&env, &["session", "aaaa"], None);
+    assert!(!full.is_empty(), "full id must dump");
+    assert_eq!(
+        pref, full,
+        "a unique prefix must dump the same as the full id"
+    );
+    assert!(
+        pref.contains("# session aaaa-bbbb-1111"),
+        "header shows the resolved full id, got:\n{pref}"
+    );
+}
+
+#[test]
+fn session_ambiguous_prefix_dumps_nothing() {
+    let env = setup("sessambig");
+    // Two sessions sharing the prefix "dupe-0000-4000-8000-00000000".
+    for sfx in ["1111", "2222"] {
+        let f = env
+            .projects
+            .join(format!("-tmp-demo/dupe-0000-4000-8000-00000000{sfx}.jsonl"));
+        fs::write(
+            &f,
+            format!(
+                "{{\"type\":\"user\",\"timestamp\":\"2026-06-12T01:00:00Z\",\"uuid\":\"u{sfx}\",\
+                 \"cwd\":\"/tmp/demo\",\"message\":{{\"role\":\"user\",\"content\":\"dup note {sfx}\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        run(&env, &["ingest", f.to_str().unwrap()], None);
+    }
+    // The shared prefix matches both → ambiguous → nothing on stdout (it errors to stderr).
+    let ambiguous = run(&env, &["session", "dupe"], None);
+    assert!(
+        ambiguous.is_empty(),
+        "an ambiguous prefix must not dump a session, got:\n{ambiguous}"
+    );
+    // The full id still resolves and dumps.
+    let full = run(&env, &["session", "dupe-0000-4000-8000-000000001111"], None);
+    assert!(full.contains("dup note 1111"), "full id dumps its turns");
+}

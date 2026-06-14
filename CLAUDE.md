@@ -22,7 +22,7 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 | facts.rs | curated facts CRUD, frontmatter parsing, type weights |
 | generate.rs | byte-budgeted MEMORY.md from the facts table |
 | import_existing.rs | one-time import of a MEMORY.md + leaves into the facts table |
-| session.rs | session dump + checkpoint queue ops (drop/enqueue/mark-current) |
+| session.rs | session dump (full id or unique prefix) + checkpoint queue ops (drop/enqueue/mark-current) |
 | stats.rs | dashboard (also the bare `subrosa` default) |
 | timeutil.rs | ISO-8601 ↔ Unix-epoch helpers (no chrono); shared by stats + recall |
 | backup.rs | throttled snapshots via SQLite backup API + mirror copy |

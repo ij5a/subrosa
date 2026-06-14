@@ -116,7 +116,7 @@ subrosa fact upsert --leaf note.md       # add/update a fact from a markdown fil
 subrosa generate                         # rebuild MEMORY.md (byte-budgeted)
 subrosa import ~/.claude/projects/<project>/memory   # one-time import of an existing MEMORY.md
 
-subrosa session <id>                     # dump one archived session
+subrosa session <id>                     # dump one archived session (full id or unique prefix)
 subrosa pending                          # sessions queued for checkpointing
 subrosa checkpoint-drop <id>             # de-queue one session after saving it
 

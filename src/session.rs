@@ -7,14 +7,65 @@ use rusqlite::OptionalExtension;
 
 use crate::{db, ingest, paths};
 
+/// Cap on how many candidates an ambiguous prefix lists before "+N more".
+const AMBIGUOUS_LIST_CAP: usize = 10;
+
 /// Missing fields render as the literal `None` — part of the session-dump
 /// format the checkpoint skills consume (pinned by golden tests).
 fn opt_str(v: Option<&str>) -> &str {
     v.unwrap_or("None")
 }
 
-/// Print a session's flattened turns (for the in-session model to read).
-pub fn dump(sid: &str) -> ExitCode {
+/// What a session argument resolves to: a single id, nothing, or several.
+enum Resolved {
+    One(String),
+    None,
+    Ambiguous(Vec<String>),
+}
+
+/// Resolve a session argument to one archived session id. An exact id wins
+/// outright (even if it also prefixes another); otherwise it's treated as a
+/// prefix — the 8-char `sid8` that `search`/`related` print. Resolves against
+/// the `turns` table so it only ever points at a dumpable session. `substr(…)=`
+/// (not `LIKE`) so `%`/`_` in the input aren't read as wildcards.
+fn resolve_session(conn: &rusqlite::Connection, arg: &str) -> Resolved {
+    if arg.is_empty() {
+        return Resolved::None;
+    }
+    let exact = conn
+        .query_row(
+            "SELECT 1 FROM turns WHERE session_id = ? LIMIT 1",
+            [arg],
+            |_| Ok(()),
+        )
+        .optional()
+        .unwrap_or(None);
+    if exact.is_some() {
+        return Resolved::One(arg.to_string());
+    }
+    let matches: Vec<String> = conn
+        .prepare(
+            "SELECT DISTINCT session_id FROM turns \
+             WHERE substr(session_id, 1, ?1) = ?2 ORDER BY session_id",
+        )
+        .and_then(|mut s| {
+            s.query_map(rusqlite::params![arg.chars().count() as i64, arg], |r| {
+                r.get::<_, String>(0)
+            })?
+            .collect()
+        })
+        .unwrap_or_default();
+    match matches.len() {
+        0 => Resolved::None,
+        1 => Resolved::One(matches.into_iter().next().unwrap()),
+        _ => Resolved::Ambiguous(matches),
+    }
+}
+
+/// Print a session's flattened turns (for the in-session model to read). Accepts
+/// the full session id or any unique prefix (e.g. the 8-char id `search` and
+/// `related` print).
+pub fn dump(arg: &str) -> ExitCode {
     let conn = match db::connect_readonly() {
         Ok(c) => c,
         Err(e) => {
@@ -22,10 +73,30 @@ pub fn dump(sid: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let sid = match resolve_session(&conn, arg) {
+        Resolved::One(id) => id,
+        Resolved::None => {
+            eprintln!("[subrosa] no archived turns for session {arg} (not ingested?)");
+            return ExitCode::FAILURE;
+        }
+        Resolved::Ambiguous(ids) => {
+            eprintln!(
+                "[subrosa] \"{arg}\" matches {} sessions — use a longer prefix or the full id:",
+                ids.len()
+            );
+            for id in ids.iter().take(AMBIGUOUS_LIST_CAP) {
+                eprintln!("  {id}");
+            }
+            if ids.len() > AMBIGUOUS_LIST_CAP {
+                eprintln!("  … and {} more", ids.len() - AMBIGUOUS_LIST_CAP);
+            }
+            return ExitCode::from(2);
+        }
+    };
     let rows: Result<Vec<(String, Option<String>)>, _> = conn
         .prepare("SELECT role, text FROM turns WHERE session_id=? ORDER BY seq")
         .and_then(|mut s| {
-            s.query_map([sid], |r| Ok((r.get(0)?, r.get(1)?)))?
+            s.query_map([sid.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect()
         });
     let rows = match rows {
@@ -48,7 +119,7 @@ pub fn dump(sid: &str) -> ExitCode {
     let meta: Option<Meta> = conn
         .query_row(
             "SELECT project, cwd, first_ts, last_ts FROM sessions WHERE session_id=?",
-            [sid],
+            [sid.as_str()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()
