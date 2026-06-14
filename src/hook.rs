@@ -79,7 +79,7 @@ fn nudge_lines(input: &Value) -> Vec<String> {
         if n > 0 {
             out.push(format!(
                 "[subrosa] {n} session(s) queued for checkpoint — run /subrosa:checkpoint-backlog \
-                 to save them to memory now (in-session; handles up to 5, clears each as it goes)."
+                 to save them to memory now (in-session; handles up to 5, clears them as it finishes)."
             ));
         }
     }
