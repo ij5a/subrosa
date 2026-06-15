@@ -29,6 +29,16 @@ Almost nothing — and the cost is fixed by constants in the code, not by how mu
 4. **Claude reads the injected notes + your prompt** — the ≤180 tokens from step 3 (`0` if nothing matched).
 5. **Claude does the task** (reads files, reasons, writes) — **N tokens**: normal usage, nothing to do with subrosa.
 
+An injected block (step 3) looks like this — just the snippet lines, not the full sessions:
+
+```
+[subrosa recall] Possibly relevant past sessions from the local archive — verify before relying on them; run `subrosa search` for the full text:
+- 2026-05-20 · 7f3a9c2: rotating the «aurora» reader creds broke «pgbouncer» auth — bounce the pooler after the secret swap, not before
+- 2026-04-11 · c81e0d4: «aurora» failover test: replica promotion took ~40s, within SLO
+```
+
+Claude reads those snippet lines as leads — it doesn't open the full transcripts. If a lead is worth more, Claude (or you) pulls that one session with `subrosa session <id>` — a separate, on-demand step, not automatic.
+
 Outside the per-prompt loop: `MEMORY.md` loads once at session start (**≤ 23 KB** of always-loaded context, like `CLAUDE.md` — subrosa builds it for `0`, Claude reads it once); archiving the session at the end is `0`; and `/subrosa:checkpoint` is Claude's own work (**N**), though you trigger it and the `subrosa` CLI calls it makes are `0`.
 
 **Bottom line:** subrosa never spends your model tokens on its own work — tokens flow only when Claude reads what it surfaced (capped: ≤180 per prompt, plus the ≤23 KB once-per-session index) or does your actual task.
