@@ -15,7 +15,7 @@
 Every session is archived into a local SQLite database and becomes searchable: the work you did last month is one `subrosa search` away, relevant past sessions resurface automatically when you type a related prompt, and Claude stops rediscovering things it already figured out. That last part is where it pays for itself: pulling up last month's answer costs a few hundred tokens, while having Claude re-derive it from scratch — re-reading files, redoing the investigation — runs into the thousands.
 
 - **No LLM calls to save memory.** Saving a session is plain text parsing — it never spends tokens. Most memory plugins run your sessions through an LLM to save them; [the comparison](docs/comparison.md) has the numbers, from their own docs.
-- **Hard token limits, set in the code.** Recall adds at most ~180 tokens to a prompt, and usually nothing — it stays silent unless the match is strong. The always-loaded index is capped at 23 KB. [Check it yourself](#proof-verify-it-yourself).
+- **Hard token limits, set in the code.** Recall adds at most ~180 tokens to a prompt, and usually nothing — it stays silent unless the match is strong. The always-loaded index is capped at 23 KB. [Check it yourself](#proof-verify-it-yourself), or see [where your tokens go, step by step](docs/faq.md#how-many-tokens-does-it-cost-me).
 - **One 3.7 MB static binary.** No daemon, no worker port, no background process. A hook fires, finishes in under 10 ms, and exits.
 - **Your transcripts stay on your machine.** The binary makes zero network calls — no cloud, no telemetry — and obvious secret shapes are masked before storage. Don't take my word for it: [verify every claim yourself](#proof-verify-it-yourself).
 
