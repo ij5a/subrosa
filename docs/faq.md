@@ -18,7 +18,22 @@ No — by design, and full-disk encryption is the control. The database is `0600
 
 ## How many tokens does it cost me?
 
-Almost nothing — and the cost is fixed by constants in the code, not by how much you use it. Every operation and what it costs:
+Almost nothing — and the cost is fixed by constants in the code, not by how much you use it.
+
+**Step by step, for one prompt:**
+
+1. **You type a prompt** — `0` extra; subrosa adds nothing to your message.
+2. **subrosa recall runs** (local search + a relevance gate) — `0`, no model call.
+3. **subrosa adds any strong match to context** — `0` on a weak match (the usual case), otherwise **≤ ~180 tokens**.
+   **← Claude takes over here.** Steps 1–3 are subrosa: local, mechanical, zero model tokens.
+4. **Claude reads the injected notes + your prompt** — the ≤180 tokens from step 3 (`0` if nothing matched).
+5. **Claude does the task** (reads files, reasons, writes) — **N tokens**: normal usage, nothing to do with subrosa.
+
+Outside the per-prompt loop: `MEMORY.md` loads once at session start (**≤ 23 KB** of always-loaded context, like `CLAUDE.md` — subrosa builds it for `0`, Claude reads it once); archiving the session at the end is `0`; and `/subrosa:checkpoint` is Claude's own work (**N**), though you trigger it and the `subrosa` CLI calls it makes are `0`.
+
+**Bottom line:** subrosa never spends your model tokens on its own work — tokens flow only when Claude reads what it surfaced (capped: ≤180 per prompt, plus the ≤23 KB once-per-session index) or does your actual task.
+
+Every operation and what it costs:
 
 | Operation | When it runs | Token cost |
 |---|---|---|
