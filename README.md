@@ -41,7 +41,7 @@ Every session is archived into a local SQLite database and becomes searchable: t
 
 ## Why "subrosa"?
 
-In ancient Rome, a rose hung over the table meant everything said under it stayed in the room — *sub rosa*, "under the rose." That's the contract this tool makes with your data: every transcript stays on your machine, in a local database, with obvious secret shapes masked before they're stored. No cloud service, no telemetry — your data never leaves your machine. What's said under the rose stays under the rose.
+In ancient Rome, a rose hung over the table meant everything said under it stayed in the room — *sub rosa*, "under the rose." That's the contract this tool makes with your data: every transcript stays on your machine, in a local database, with obvious secret shapes masked before they're stored. No cloud, no telemetry — what's said under the rose stays under the rose.
 
 ## Quick start
 
@@ -95,7 +95,7 @@ subrosa          # the dashboard
 - **Recalls on its own.** When you submit a prompt with enough distinctive terms, the top matching past sessions from the same project are injected into context — quiet unless the match is strong.
 - **Builds long-term memory.** Ended sessions wait in a queue; the bundled `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog` commands read them and save the important points as curated facts (one fact per small markdown file). `subrosa generate` then builds `MEMORY.md` — a short index Claude Code loads every session, capped in size so it can never overflow.
 - **Makes everything searchable.** `subrosa search <terms>` runs ranked full-text search, so identifiers like `my-app-prod` or `TICKET-123` stay searchable — with `--fuzzy` for partial names and typos.
-- **Shows what clusters together.** `subrosa related <identifier>` ranks the terms and past sessions that keep showing up alongside something like `auth.ts` or `TICKET-123` — read straight from the archive, not guessed. It answers "what did this work touch" the way `search` (which finds text) can't.
+- **Shows what clusters together.** `subrosa related <identifier>` ranks the terms and past sessions that keep showing up alongside something like `auth.ts` or `TICKET-123` — read from the archive, not guessed. It answers "what did this work touch," which `search` can't.
 - **Follows your curated links.** Memory notes can point at each other with `[[name]]` links; `subrosa fact link <slug>` lists what a note links to and what links back, and flags any link to a note that doesn't exist.
 - **Shows you the picture.** `subrosa` alone prints the dashboard: activity sparkline, store size, per-project share, index budget.
 - **Backs itself up.** Consistent snapshots on a 24h throttle, plus an optional mirror of the latest snapshot to a folder you pick.
@@ -216,8 +216,6 @@ Claims are only worth the commands that check them. Everything below runs agains
 
 ### What it does not protect
 
-Here's what it does not protect:
-
 - **Redaction matches known shapes — it's not a full clean-up.** It hides private-key blocks, AWS keys (starting with `AKIA` or `ASIA`), `Bearer` tokens, and labeled secrets like `password=` or `token:`. A secret that doesn't fit one of those patterns — a GitHub `ghp_…` token, an OpenAI `sk-…` key, a bare JWT — is stored as written. It cuts down obvious leaks; it doesn't remove them all.
 - **Your original transcripts [stay in cleartext](https://code.claude.com/docs/en/claude-directory#plaintext-storage).** Claude Code writes them under `~/.claude/projects` and subrosa never edits those — redaction only covers its own archive copy. Full-disk encryption is the real at-rest control.
 - **Recall re-injects your own stored text.** On a strong match it puts up to 3 short snippets back into the model's context, so anything that did leak into the archive can resurface there. The injection block tells Claude to treat it as unverified.
@@ -240,8 +238,7 @@ A hook that runs on every prompt has to be invisible. Measured with `scripts/ben
 | `subrosa related <identifier>` over 50,000 turns | 0.3–0.4 s |
 | Archiving 50,000 turns from scratch (first install) | ~1.1 s |
 
-One static 3.7 MB binary, no background process, no runtime dependencies — every hook
-is a short-lived process that opens the database, does its work, and exits. Reproduce
+One static 3.7 MB binary, no background process, no runtime dependencies. Reproduce
 the numbers with `scripts/bench.sh` (needs `hyperfine`).
 
 ## Development
