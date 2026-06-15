@@ -24,9 +24,9 @@ Almost nothing — and the cost is fixed by constants in the code, not by how mu
 
 1. **You type a prompt** — `0` extra; subrosa adds nothing to your message.
 2. **subrosa recall runs** (local search + a relevance gate) — `0`, no model call.
-3. **subrosa adds any strong match to context** — `0` on a weak match (the usual case), otherwise **≤ ~180 tokens**.
+3. **subrosa adds any strong match to context** — `0` on a weak match (the usual case), otherwise **~180 tokens**.
    **← Claude takes over here.** Steps 1–3 are subrosa: local, mechanical, zero model tokens.
-4. **Claude reads the injected notes + your prompt** — the ≤180 tokens from step 3 (`0` if nothing matched).
+4. **Claude reads the injected notes + your prompt** — the ~180 tokens from step 3 (`0` if nothing matched).
 5. **Claude does the task** (reads files, reasons, writes) — **N tokens**: normal usage, nothing to do with subrosa.
 
 An injected block (step 3) looks like this — just the snippet lines, not the full sessions:
@@ -41,7 +41,7 @@ Claude reads those snippet lines as leads — it doesn't open the full transcrip
 
 Outside the per-prompt loop: `MEMORY.md` loads once at session start (**≤ 23 KB** of always-loaded context, like `CLAUDE.md` — subrosa builds it for `0`, Claude reads it once); archiving the session at the end is `0`; and `/subrosa:checkpoint` is Claude's own work (**N**), though you trigger it and the `subrosa` CLI calls it makes are `0`.
 
-**Bottom line:** subrosa never spends your model tokens on its own work — tokens flow only when Claude reads what it surfaced (capped: ≤180 per prompt, plus the ≤23 KB once-per-session index) or does your actual task.
+**Bottom line:** subrosa never spends your model tokens on its own work — tokens flow only when Claude reads what it surfaced (capped: ~180 per prompt, plus the ≤23 KB once-per-session index) or does your actual task.
 
 Every operation and what it costs:
 
@@ -49,17 +49,17 @@ Every operation and what it costs:
 |---|---|---|
 | Saving a session | session end + catch-up at start | **0** — mechanical parsing, no LLM |
 | Auto-recall, no match | every prompt (the usual case) | **0** — stays silent |
-| Auto-recall, strong match | every prompt | **≤ ~180** — top 3 snippets, hard-capped |
+| Auto-recall, strong match | every prompt | **~180** — top 3 snippets, hard-capped |
 | `MEMORY.md` index load | once per session start | **≤ 23 KB (≈ 6k tokens)**, usually far less |
 | `subrosa search` | only when you or Claude run it | **~a few hundred** (15 ranked lines), net-cheaper than rediscovery |
 
-**Example — a 30-prompt session.** The index loads once at the start (a few KB for a typical project — this is normal always-loaded context, like `CLAUDE.md`). Across the 30 prompts, most don't match anything in your past work, so nothing is injected; recall only fires on a strong match (at least 2 matching words, one of them a specific name or ID), and each fire adds ≤180 tokens. Say 4 of them match: ≤720 tokens for the whole session. Saving all 30 turns when you quit: 0. Ask Claude to dig into the archive twice → two `subrosa search` calls, a few hundred tokens each, each replacing a multi-thousand-token rediscovery.
+**Example — a 30-prompt session.** The index loads once at the start (a few KB for a typical project — this is normal always-loaded context, like `CLAUDE.md`). Across the 30 prompts, most don't match anything in your past work, so nothing is injected; recall only fires on a strong match (at least 2 matching words, one of them a specific name or ID), and each fire adds ~180 tokens. Say 4 of them match: ~720 tokens for the whole session. Saving all 30 turns when you quit: 0. Ask Claude to dig into the archive twice → two `subrosa search` calls, a few hundred tokens each, each replacing a multi-thousand-token rediscovery.
 
 So the cost is flat and predictable — a small one-time index load plus capped, usually-silent recall. There's no per-save LLM bill that grows with how much you do. For how this token cost compares to LLM-summarizing plugins, see the [comparison](comparison.md).
 
 ## Does it get more expensive or slower as the archive grows?
 
-No — both stay flat. Token cost doesn't scale with size: saving is always zero tokens, and recall is capped at ~180 per prompt whether you have 100 sessions or 100,000 — the cap is a constant, not a percentage. Search is an FTS5 index, not a linear scan, so it stays fast as data grows — ~5–11 ms over a 50,000-turn archive. Disk grows only by text: a year of heavy use is a few hundred MB. When the auto-recall snippets aren't enough, Claude runs `subrosa search` on demand — a bounded, ranked result list (default 15 lines), which costs far fewer tokens than rediscovering the answer from scratch. Run [`scripts/bench.sh`](../scripts/bench.sh) to confirm the latency numbers on your own machine.
+No — both stay flat. Token cost doesn't scale with size: saving is always zero tokens, and recall is capped at ~180 per prompt whether you have 100 sessions or 100,000 — the cap is a constant, not a percentage. Search is an FTS5 index, not a linear scan, so it stays fast as data grows — ~5–11 ms over a 50,000-turn archive. Disk grows only by text: a year of heavy use is a few hundred MB. When the auto-recall snippets aren't enough, Claude runs `subrosa search` on demand — a bounded, ranked result list (default 15 lines), which costs far fewer tokens than rediscovering the answer from scratch. Run [`scripts/bench.sh`](../scripts/bench.sh) to confirm the latency and recall-token numbers on your own machine.
 
 ## Why don't I see subrosa's messages in the chat?
 

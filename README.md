@@ -15,7 +15,7 @@
 Every session is archived into a local SQLite database and becomes searchable: the work you did last month is one `subrosa search` away, relevant past sessions resurface automatically when you type a related prompt, and Claude stops rediscovering things it already figured out. That last part is where it pays for itself: pulling up last month's answer costs a few hundred tokens, while having Claude re-derive it from scratch — re-reading files, redoing the investigation — runs into the thousands.
 
 - **No LLM calls to save memory.** Saving a session is plain text parsing — it never spends tokens. Most memory plugins run your sessions through an LLM to save them; [the comparison](docs/comparison.md) has the numbers, from their own docs.
-- **Hard token limits, set in the code.** Recall adds at most ~180 tokens to a prompt, and usually nothing — it stays silent unless the match is strong. The always-loaded index is capped at 23 KB. [Check it yourself](#proof-verify-it-yourself), or see [where your tokens go, step by step](docs/faq.md#how-many-tokens-does-it-cost-me).
+- **Hard token limits, set in the code.** Recall adds ~180 tokens to a prompt on a strong match, and usually nothing — it stays silent otherwise. The always-loaded index is capped at 23 KB. [Check it yourself](#proof-verify-it-yourself), or see [where your tokens go, step by step](docs/faq.md#how-many-tokens-does-it-cost-me).
 - **One 3.7 MB static binary.** No daemon, no worker port, no background process. A hook fires, finishes in under 10 ms, and exits.
 - **Your transcripts stay on your machine.** The binary makes zero network calls — no cloud, no telemetry — and obvious secret shapes are masked before storage. Don't take my word for it: [verify every claim yourself](#proof-verify-it-yourself).
 
@@ -208,6 +208,7 @@ Claims are only worth the commands that check them. Everything below runs agains
 | Claim | Check it | What you'll see |
 |---|---|---|
 | The token limits are constants in the code | read `MAX_INJECT` + `SNIPPET_CHARS` in `src/recall.rs`, and `DEFAULT_BUDGET` in `src/generate.rs` | `MAX_INJECT = 3`, `SNIPPET_CHARS = 160` (a match-centered snippet, hard-capped at 160 chars ≈ 180 tokens at recall), and a 23 KB index budget — values you can read, not settings that can drift |
+| Recall stays near ~180 tokens a prompt | `scripts/bench.sh` — the `recall injection` line | the injected block weighed in bytes → ~170 tokens on a strong match (3 snippets); the `MAX_INJECT` × `SNIPPET_CHARS` cap holds it there |
 | The binary makes zero network calls | `cargo tree -e normal \| grep -Ei 'reqwest\|hyper\|tokio\|rustls\|openssl\|curl'` | no output — there's no HTTP or networking library in the build. For runtime proof, trace it: `strace -f -e trace=network subrosa search x` (Linux) or `sudo dtruss -t connect subrosa search x` (macOS) records no `connect()` |
 | Secrets are masked before storage | `cargo test redact` | the round-trip tests pass; redaction runs on the one write path (`src/ingest.rs`), so the database and its index only ever hold the masked copy |
 | The archive is locked to your user | `ls -ld ~/.claude/subrosa && ls -l ~/.claude/subrosa/memory.db` | `drwx------` (0700) on the directory, `-rw-------` (0600) on the database |

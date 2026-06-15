@@ -87,6 +87,27 @@ hyperfine --warmup 5 --runs 50 \
   -n "recall (match + inject)" "printf '%s' '$HIT' | '$BIN' hook user-prompt-submit" \
   -n "recall (no match, silent)" "printf '%s' '$MISS' | '$BIN' hook user-prompt-submit"
 
+# Recall injection size: the per-prompt token cost behind the "~180 tokens" promise.
+# hyperfine (above) times the hook; this weighs what it actually emits into context.
+echo "== recall injection: token cost of a strong match =="
+rm -f "$SUBROSA_DIR/recall-seen.log"   # the timed runs above logged this session; clear it or dedup hides the hit
+INJECT="$(printf '%s' "$HIT" | "$BIN" hook user-prompt-submit)"
+IBYTES=$(printf '%s' "$INJECT" | wc -c | tr -d ' ')
+ISNIPS=$(printf '%s\n' "$INJECT" | grep -c '^- ' || true)
+# Estimate only: bytes/3.8 is the docs' heuristic (23 KB index ~= 6k tokens), not a real tokenizer.
+ITOK=$(awk -v b="$IBYTES" 'BEGIN { printf "%.0f", b / 3.8 }')
+echo "injected $ISNIPS snippet(s), $IBYTES bytes ~= $ITOK tokens (est., bytes/3.8 — not a tokenizer)"
+printf '%s\n' "$INJECT" | sed 's/^/    | /'
+# Gross-regression guard: the MAX_INJECT x SNIPPET_CHARS cap should hold recall near ~180 tokens.
+# This trips only if the cap logic breaks (e.g. SNIPPET_CHARS bumped); it sits above the heavy-match
+# worst case (~199 tok with full match-marked snippets, measured 2026-06-16), so real hits never trip it.
+CEILING_TOKENS=220
+if [ "$ITOK" -gt "$CEILING_TOKENS" ]; then
+  echo "bench: recall injection ${ITOK} tokens exceeds the ${CEILING_TOKENS}-token guard — recall cap regressed?" >&2
+  exit 1
+fi
+echo
+
 echo "== hook session-start (idle catch-up sweep over $SESSIONS transcripts) =="
 hyperfine --warmup 3 --runs 25 \
   -n "session-start (nothing changed)" \
