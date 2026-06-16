@@ -246,7 +246,7 @@ fn bucketize(vals: &[i64], nbins: usize) -> Vec<i64> {
 fn sparkline(counts: &[i64]) -> String {
     let hi = *counts.iter().max().unwrap_or(&0);
     if hi <= 0 {
-        let ch: String = std::iter::repeat(SPARK[0]).take(counts.len()).collect();
+        let ch: String = std::iter::repeat_n(SPARK[0], counts.len()).collect();
         return c2(&ch, "cyan", "dim");
     }
     counts

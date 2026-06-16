@@ -2,7 +2,7 @@
 name = "subrosa"
 version = "0.9.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.85"
 description = "Persistent, private memory for Claude Code. Archives every session into a local SQLite FTS5 database and makes it searchable."
 repository = "https://github.com/ij5a/subrosa"
 license = "MIT"

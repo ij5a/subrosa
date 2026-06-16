@@ -267,7 +267,7 @@ pub fn run(input: &Value) -> Option<String> {
     let scale = best.abs().min(RECENCY_ABS_CAP);
     let mut ranked: Vec<(f64, Candidate)> = qualified
         .into_iter()
-        .filter(|c| floor.map_or(true, |t| c.bm25 <= t))
+        .filter(|c| floor.is_none_or(|t| c.bm25 <= t))
         .map(|c| (rank_value(&c, now, scale), c))
         .collect();
     ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
