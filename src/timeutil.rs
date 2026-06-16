@@ -1,7 +1,10 @@
 //! Shared ISO-8601 ↔ Unix-epoch helpers. No chrono — hand-rolled to keep the
 //! dependency tree small: parse a stored timestamp (Z or ±HH:MM offset) to a
-//! Unix epoch i64, and read the wall clock. Used by the dashboard (stats) and
-//! by recall's recency tie-break, so it lives apart from either module.
+//! Unix epoch i64, read the wall clock, and humanize an age. Used by the
+//! dashboard (stats) and by recall (recency tie-break + age hint), so it lives
+//! apart from either module. `now_unix` honors a `SUBROSA_NOW` epoch override —
+//! a global wall-clock seam for deterministic tests that also shifts the
+//! dashboard's "today" at runtime.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -94,11 +97,39 @@ pub(crate) fn civil_to_days(y: i64, mo: u32, d: u32) -> Option<i64> {
     Some(era * 146_097 + doe - 719_468)
 }
 
+/// The wall clock as a Unix timestamp (seconds). Honors a `SUBROSA_NOW` epoch
+/// override when it is set and parses as an i64 — a global test seam (it also
+/// shifts the dashboard's "today"/age at runtime). Empty or unparseable values
+/// fall back to the real clock, so a typo can't silently zero the clock.
 pub(crate) fn now_unix() -> i64 {
+    if let Some(epoch) = std::env::var("SUBROSA_NOW")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<i64>().ok())
+    {
+        return epoch;
+    }
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Humanize an age in seconds to a compact relative string for recall lines:
+/// `today` (same day) then `Nd` / `Nw` / `Nmo` / `Ny`, on integer days. Bucket
+/// edges are chosen so no unit ever renders zero. Pure integer math (no chrono).
+pub(crate) fn fmt_age(secs: i64) -> String {
+    let days = secs.max(0) / 86_400;
+    if days == 0 {
+        "today".to_string()
+    } else if days < 7 {
+        format!("{days}d")
+    } else if days < 30 {
+        format!("{}w", days / 7)
+    } else if days < 365 {
+        format!("{}mo", days / 30)
+    } else {
+        format!("{}y", days / 365)
+    }
 }
 
 #[cfg(test)]
@@ -127,5 +158,46 @@ mod tests {
         assert_eq!(civil_to_days(1970, 1, 1), Some(0));
         assert_eq!(civil_to_days(1970, 1, 2), Some(1));
         assert_eq!(civil_to_days(1969, 12, 31), Some(-1));
+    }
+
+    #[test]
+    fn fmt_age_buckets_have_no_zero_unit() {
+        let day = 86_400;
+        assert_eq!(fmt_age(0), "today");
+        assert_eq!(fmt_age(day - 1), "today"); // under a day rounds to same-day
+        assert_eq!(fmt_age(day), "1d");
+        assert_eq!(fmt_age(6 * day), "6d");
+        assert_eq!(fmt_age(7 * day), "1w"); // weeks start at d=7, never 0w
+        assert_eq!(fmt_age(29 * day), "4w");
+        assert_eq!(fmt_age(30 * day), "1mo"); // months start at d=30, never 0mo
+        assert_eq!(fmt_age(59 * day), "1mo");
+        assert_eq!(fmt_age(60 * day), "2mo");
+        assert_eq!(fmt_age(364 * day), "12mo");
+        assert_eq!(fmt_age(365 * day), "1y"); // years start at d=365, never 0y
+        assert_eq!(fmt_age(730 * day), "2y");
+        assert_eq!(fmt_age(-5 * day), "today"); // future-dated clamps to today
+    }
+
+    #[test]
+    fn now_unix_honors_parseable_subrosa_now_else_real_clock() {
+        let key = "SUBROSA_NOW";
+        let saved = std::env::var(key).ok();
+
+        std::env::set_var(key, "1799999999");
+        assert_eq!(now_unix(), 1_799_999_999, "set + parseable is honored");
+
+        std::env::set_var(key, "");
+        assert!(now_unix() > 1_700_000_000, "empty falls back to real clock");
+
+        std::env::set_var(key, "not-a-number");
+        assert!(
+            now_unix() > 1_700_000_000,
+            "garbage falls back to real clock"
+        );
+
+        match saved {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
     }
 }

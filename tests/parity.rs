@@ -32,6 +32,8 @@ fn run(env: &TestEnv, args: &[&str], stdin: Option<&str>) -> String {
         .args(args)
         .env("SUBROSA_DIR", &env.data)
         .env("SUBROSA_PROJECTS_DIR", &env.projects)
+        // Pin the clock (2027-01-12Z) so recall's age hints render deterministically.
+        .env("SUBROSA_NOW", "1799712000")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
