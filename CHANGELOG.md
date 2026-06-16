@@ -5,6 +5,15 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-06-16
+
+### Added
+
+- Auto-derived session tags. When a session is archived, subrosa reads its stored (already-redacted) turns and derives three kinds of read-only tag — `tool:bash` (tools the session used), `ext:rs` (file types it touched), and `topic:cache-prod` (the distinctive terms it was about). They're computed locally with no LLM, cost zero tokens, and are recomputed (never hand-edited) on each archive. A new `session_tags` table holds them — schema v3, an additive migration with a one-time backfill for existing archives.
+- `subrosa search` filters: `--after` / `--before` (UTC `YYYY-MM-DD`, inclusive) narrow by date, and `--tag` (repeatable, ANDed) narrows by tag. The filters run before `bm25`, so ranking is unchanged.
+- `subrosa sessions`: a new verb that lists past sessions newest-first with their tags, filterable by `--project`, `--after`/`--before`, and `--tag`. It's the by-session view of the archive — find work by what it was about without remembering a keyword.
+- `subrosa session <id> --tags`: an opt-in flag that adds the session's tags to the dump header. The default output is byte-for-byte unchanged.
+
 ## [0.10.0] - 2026-06-16
 
 ### Added
@@ -103,6 +112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.11.0]: https://github.com/ij5a/subrosa/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/ij5a/subrosa/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/ij5a/subrosa/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/ij5a/subrosa/compare/v0.8.0...v0.8.1
