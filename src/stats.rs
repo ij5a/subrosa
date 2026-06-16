@@ -8,7 +8,7 @@ use std::process::{Command, ExitCode};
 use rusqlite::Connection;
 
 use crate::paths;
-use crate::timeutil::{civil_to_days, now_unix, parse_ts};
+use crate::timeutil::{civil_from_days, civil_to_days, now_unix, parse_ts};
 
 // MEMORY.md byte cap that keeps it under the ~24.4 KB load limit (matches generate::DEFAULT_BUDGET).
 const INDEX_BUDGET: u64 = 23_000;
@@ -164,21 +164,8 @@ fn strip_trailing_zeros(s: &str) -> String {
 }
 
 // ---- ISO-8601 timestamp helpers --------------------------------------------
-// parse_ts / now_unix / civil_to_days live in crate::timeutil (shared with recall).
-
-// Howard Hinnant's days-to-civil (mirrors db.rs exactly).
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
+// parse_ts / now_unix / civil_to_days / civil_from_days live in crate::timeutil
+// (shared with recall, search, and sessions).
 
 // Display a stored ISO timestamp as "YYYY-MM-DD HH:MM" — same slice approach as search.rs.
 fn fmt_ts(ts: &str) -> String {

@@ -11,8 +11,10 @@ mod redact;
 mod related;
 mod search;
 mod session;
+mod sessions;
 mod setup;
 mod stats;
+mod tags;
 mod text;
 mod timeutil;
 
@@ -98,6 +100,15 @@ enum Cmd {
         /// Substring/typo matching via a trigram index (built on first use)
         #[arg(long)]
         fuzzy: bool,
+        /// Only turns on or after this UTC date (YYYY-MM-DD, inclusive)
+        #[arg(long)]
+        after: Option<String>,
+        /// Only turns on or before this UTC date (YYYY-MM-DD, inclusive)
+        #[arg(long)]
+        before: Option<String>,
+        /// Only sessions carrying this tag (e.g. tool:bash); repeatable, ANDed
+        #[arg(long)]
+        tag: Vec<String>,
     },
     /// Find terms and sessions that co-occur with an identifier across the archive
     Related {
@@ -112,6 +123,24 @@ enum Cmd {
         /// Max sessions to list
         #[arg(long, default_value_t = 10)]
         sessions: i64,
+    },
+    /// List archived sessions (newest first), filterable by project/date/tag
+    Sessions {
+        /// Restrict to a project (substring match)
+        #[arg(long)]
+        project: Option<String>,
+        /// Only sessions ending on or after this UTC date (YYYY-MM-DD, inclusive)
+        #[arg(long)]
+        after: Option<String>,
+        /// Only sessions starting on or before this UTC date (YYYY-MM-DD, inclusive)
+        #[arg(long)]
+        before: Option<String>,
+        /// Only sessions carrying this tag (e.g. tool:bash); repeatable, ANDed
+        #[arg(long)]
+        tag: Vec<String>,
+        /// Max sessions to list
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: i64,
     },
     /// Show the memory archive dashboard (activity, store, by-project share)
     Stats(stats::Args),
@@ -185,6 +214,9 @@ enum Cmd {
     Session {
         /// Session id (transcript filename stem)
         id: String,
+        /// Also print the session's auto-derived tags (one extra `# tags:` line)
+        #[arg(long)]
+        tags: bool,
     },
     /// List sessions queued for checkpoint
     Pending,
@@ -256,6 +288,9 @@ fn main() -> ExitCode {
             project,
             session,
             fuzzy,
+            after,
+            before,
+            tag,
         } => search::run(
             &terms,
             limit,
@@ -263,6 +298,9 @@ fn main() -> ExitCode {
             project.as_deref(),
             session.as_deref(),
             fuzzy,
+            after.as_deref(),
+            before.as_deref(),
+            &tag,
         ),
         Cmd::Related {
             identifier,
@@ -270,6 +308,19 @@ fn main() -> ExitCode {
             project,
             sessions,
         } => related::run(&identifier, limit, project.as_deref(), sessions),
+        Cmd::Sessions {
+            project,
+            after,
+            before,
+            tag,
+            limit,
+        } => sessions::run(
+            project.as_deref(),
+            after.as_deref(),
+            before.as_deref(),
+            &tag,
+            limit,
+        ),
         Cmd::Stats(args) => stats::run(&args),
         Cmd::Fact {
             action,
@@ -309,7 +360,7 @@ fn main() -> ExitCode {
             no_backup,
             project,
         } => import_existing::run(memdir, no_backup, project),
-        Cmd::Session { id } => session::dump(&id),
+        Cmd::Session { id, tags } => session::dump(&id, tags),
         Cmd::Pending => run_pending(),
         Cmd::CheckpointDrop { id } => session::drop_sid(&id),
         Cmd::CheckpointEnqueue { id } => session::enqueue(&id),

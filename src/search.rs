@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use rusqlite::params_from_iter;
 
-use crate::{db, paths};
+use crate::{db, paths, timeutil};
 
 /// Quote each whitespace term as a phrase so identifiers like `my-app-prod` /
 /// `TICKET-123` match instead of tripping FTS5's column/NOT operators on the hyphen.
@@ -31,6 +31,7 @@ fn fmt_ts(ts: &str) -> String {
         .unwrap_or_else(|| ts.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     terms: &[String],
     limit: i64,
@@ -38,11 +39,37 @@ pub fn run(
     project: Option<&str>,
     session: Option<&str>,
     fuzzy: bool,
+    after: Option<&str>,
+    before: Option<&str>,
+    tags: &[String],
 ) -> ExitCode {
     if terms.is_empty() {
         eprintln!("[subrosa] give search terms");
         return ExitCode::from(2);
     }
+    // Validate + normalize the date bounds up front (mirrors the empty-terms guard).
+    // Normalizing to zero-padded YYYY-MM-DD keeps the lexical ts comparison correct.
+    let after_bound = match after {
+        None => None,
+        Some(s) => match timeutil::parse_ymd(s) {
+            Some((y, mo, d)) => Some(format!("{y:04}-{mo:02}-{d:02}")),
+            None => {
+                eprintln!("[subrosa] bad --after date (want YYYY-MM-DD): {s}");
+                return ExitCode::from(2);
+            }
+        },
+    };
+    let before_bound = match before {
+        None => None,
+        Some(s) => match timeutil::parse_ymd(s).and_then(|(y, mo, d)| timeutil::next_day(y, mo, d))
+        {
+            Some(nd) => Some(nd),
+            None => {
+                eprintln!("[subrosa] bad --before date (want YYYY-MM-DD): {s}");
+                return ExitCode::from(2);
+            }
+        },
+    };
     let conn = match db::connect() {
         Ok(c) => c,
         Err(e) => {
@@ -86,6 +113,24 @@ pub fn run(
     if let Some(s) = session {
         sql.push_str(" AND t.session_id LIKE ?");
         binds.push(format!("{s}%"));
+    }
+    // Date bounds: ISO timestamps sort lexically, so a string compare is correct.
+    if let Some(a) = &after_bound {
+        sql.push_str(" AND t.ts >= ?");
+        binds.push(a.clone());
+    }
+    if let Some(b) = &before_bound {
+        sql.push_str(" AND t.ts < ?");
+        binds.push(b.clone());
+    }
+    // EXISTS, not JOIN: a JOIN would multiply result rows per matching tag, which
+    // corrupts bm25() ranking and LIMIT. Repeated --tag is ANDed.
+    for tg in tags {
+        sql.push_str(
+            " AND EXISTS (SELECT 1 FROM session_tags st \
+             WHERE st.session_id = t.session_id AND st.tag = ?)",
+        );
+        binds.push(tg.clone());
     }
     // limit is a typed integer from clap — safe to inline; strings stay parameterized.
     sql.push_str(&format!(" ORDER BY bm25({table}) LIMIT {limit}"));

@@ -363,6 +363,13 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
             now_iso()
         ],
     )?;
+    // Auto-derive read-only tags from the just-stored (already-redacted) turns.
+    // Swallow-and-log: a tagging failure must never fail an ingest that already
+    // stored its turns. ingest_file is the single funnel for every write path,
+    // so this one call covers sweep / SessionEnd / PreCompact / catch-up / CLI.
+    if let Err(e) = crate::tags::derive_tags(conn, &sid) {
+        eprintln!("[subrosa] tag derivation {sid}: {e}");
+    }
     Ok((inserted, scanned))
 }
 

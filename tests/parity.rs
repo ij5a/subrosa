@@ -49,6 +49,27 @@ fn run(env: &TestEnv, args: &[&str], stdin: Option<&str>) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+// Like run(), but keeps the full Output so a test can assert the exit code.
+fn run_full(env: &TestEnv, args: &[&str], stdin: Option<&str>) -> std::process::Output {
+    let mut child = Command::new(bin())
+        .args(args)
+        .env("SUBROSA_DIR", &env.data)
+        .env("SUBROSA_PROJECTS_DIR", &env.projects)
+        .env("SUBROSA_NOW", "1799712000")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(stdin.unwrap_or("").as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
 fn golden(name: &str) -> String {
     fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -268,4 +289,83 @@ fn fact_link_matches_golden() {
 
     let out = run(&env, &["fact", "link", "alpha", "--memdir", md], None);
     assert_eq!(out, golden("fact_link.golden"));
+}
+
+#[test]
+fn sessions_matches_golden() {
+    let env = setup("sessions");
+    ingest_golden_transcript(&env);
+    let out = run(&env, &["sessions"], None);
+    let want =
+        golden("sessions.golden").replace("{{PROJECTS_DIR}}", env.projects.to_str().unwrap());
+    assert_eq!(out, want);
+}
+
+#[test]
+fn session_tags_line_is_opt_in() {
+    let env = setup("sesstags");
+    ingest_golden_transcript(&env);
+    // --tags adds a `# tags:` header line. A contains-assert (not a golden) so the
+    // exact derived set can evolve without touching the pinned session_dump.golden.
+    let with = run(&env, &["session", "aaaa-bbbb-1111", "--tags"], None);
+    assert!(
+        with.contains("# tags: tool:bash"),
+        "tags line present, got:\n{with}"
+    );
+    // The default dump never carries it (keeps session_dump.golden byte-identical).
+    let without = run(&env, &["session", "aaaa-bbbb-1111"], None);
+    assert!(!without.contains("# tags:"), "default dump shows no tags");
+}
+
+#[test]
+fn search_tag_filter_composes() {
+    let env = setup("searchtag");
+    ingest_golden_transcript(&env);
+    // The rollout turn lives in a tool:bash session → the tag-scoped search keeps it.
+    let hit = run(&env, &["search", "rollout", "--tag", "tool:bash"], None);
+    assert!(
+        hit.contains("\u{ab}rollout\u{bb}"),
+        "tag-scoped search returns the hit, got:\n{hit}"
+    );
+    // A tag the session lacks filters the hit out entirely.
+    let miss = run(
+        &env,
+        &["search", "rollout", "--tag", "topic:nonexistent"],
+        None,
+    );
+    assert!(
+        miss.contains("no matches"),
+        "absent tag filters the hit out, got:\n{miss}"
+    );
+}
+
+#[test]
+fn date_filters_inclusive_and_validated() {
+    let env = setup("dates");
+    ingest_golden_transcript(&env);
+    // --before D is inclusive of all of D (next-day `<` boundary). The fixture turns
+    // are at 2026-06-12T01:0x:00Z; a naive `ts <= '2026-06-12'` would wrongly drop them.
+    let incl = run(&env, &["sessions", "--before", "2026-06-12"], None);
+    assert!(
+        incl.contains("aaaa-bbb"),
+        "the 06-12 session is included by --before 2026-06-12, got:\n{incl}"
+    );
+    let incl_s = run(
+        &env,
+        &["search", "cache-prod", "--before", "2026-06-12"],
+        None,
+    );
+    assert!(
+        incl_s.contains("\u{ab}cache-prod\u{bb}"),
+        "search --before is inclusive of day D, got:\n{incl_s}"
+    );
+    // A window entirely after the archive is empty.
+    let empty = run(&env, &["sessions", "--after", "2030-01-01"], None);
+    assert!(
+        empty.contains("no sessions match"),
+        "a future --after is empty, got:\n{empty}"
+    );
+    // A bad date is rejected with exit 2 (mirrors the empty-terms guard).
+    let bad = run_full(&env, &["search", "rollout", "--after", "2026-13-99"], None);
+    assert_eq!(bad.status.code(), Some(2), "a bad --after date exits 2");
 }

@@ -58,6 +58,8 @@ Every operation and what it costs:
 | Auto-recall, strong match | every prompt | **~180** — top 3 snippets, hard-capped |
 | `MEMORY.md` index load | once per session start | **≤ 23 KB (≈ 6k tokens)**, usually far less |
 | `subrosa search` | only when you or Claude run it | **~a few hundred** (15 ranked lines), net-cheaper than rediscovery |
+| `subrosa sessions` | only when you or Claude run it | **~a few hundred** (a page of session lines), like search |
+| Deriving session tags | session end + catch-up at start | **0** — local text parsing, no LLM |
 
 **Example — a 30-prompt session.** The index loads once at the start; most prompts match nothing, so nothing is injected; recall fires only on a strong match (~180 tokens). Say 4 match: ~720 tokens for the session, plus `0` to save all 30 turns on quit. Flat and predictable — no per-save LLM bill that grows with use. For how this compares to LLM-summarizing plugins, see the [comparison](comparison.md).
 
@@ -76,6 +78,10 @@ The automatic recall is a small, cheap nudge, not the full answer — the top 3 
 ## Why keyword search instead of embeddings?
 
 A deliberate trade. Embeddings (meaning-based search) need model weights or API calls — that breaks the single static binary, the 5-crate supply chain, and zero-cost capture. Instead subrosa matches word roots, so `deploy` finds `deployed` and `deploying`, while identifiers like `TICKET-123` and `my-app-prod` stay exact. For partial names and typos, `subrosa search --fuzzy` adds a local trigram index (built on first use) — still no model. Meaning-based search stays the deliberate omission.
+
+## What are session tags?
+
+Short labels subrosa derives for each session at archive time — locally, no LLM, zero tokens. Three kinds: `tool:bash` (tools the session used), `ext:rs` (file types it touched), and `topic:cache-prod` (the distinctive terms it was about). They let you filter the archive without remembering a keyword: `subrosa sessions --tag tool:kubectl`, or `subrosa search deploy --tag topic:aurora`. They're read-only by design — recomputed from the stored (already-redacted) text every time a session is archived, never hand-edited. See one session's tags with `subrosa session <id> --tags`.
 
 ## How do I verify the binary?
 

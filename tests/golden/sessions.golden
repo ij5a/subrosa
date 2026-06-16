@@ -1,0 +1,4 @@
+ 1. [2026-06-12 01:00 .. 01:05] -tmp-demo · aaaa-bbb · 4 turns
+    tags: tool:bash, topic:cache-prod, topic:running, topic:deploying, topic:password, topic:masked, topic:rolling, topic:cluster, topic:command, topic:kubectl, topic:pod-1
+
+[subrosa] 1 session(s). Open a session: {{PROJECTS_DIR}}/<project>/<session_id>.jsonl

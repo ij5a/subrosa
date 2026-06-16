@@ -12,26 +12,28 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 |---|---|
 | main.rs | clap dispatch + small command runners |
 | paths.rs | data locations, env overrides, KEY=VALUE config file |
-| db.rs | schema (compatibility-critical), connect/connect_readonly, migrate, now_iso, encode_cwd, current_memdir |
+| db.rs | schema (compatibility-critical, incl. `session_tags`), connect/connect_readonly, migrate, now_iso, encode_cwd, current_memdir |
 | redact.rs | secret masking before storage |
-| ingest.rs | JSONL flatten → turns rows, sweep, checkpoint queue |
-| search.rs | FTS5 query building + result output |
+| ingest.rs | JSONL flatten → turns rows, sweep, checkpoint queue, tag derivation hook |
+| search.rs | FTS5 query building + result output (incl. `--after`/`--before`/`--tag` filters) |
+| sessions.rs | `sessions` verb: list past sessions newest-first, filter by project/date/tag |
 | related.rs | `related` verb: co-occurrence over the archive (anchor → terms + sessions; FTS-count idf down-weight) |
 | recall.rs | UserPromptSubmit relevance gate + context injection |
-| text.rs | shared tokenizer/term-quality helpers (STOPWORDS, extract_terms, is_anchor, turn_tokens, token_matches); used by recall + related |
+| text.rs | shared tokenizer/term-quality helpers (STOPWORDS, extract_terms, is_anchor, turn_tokens, token_matches); used by recall + related + tags |
+| tags.rs | auto-derived read-only session tags (`tool:`/`ext:`/`topic:`): `derive_tags` at ingest, `backfill` at schema v3; fully deterministic |
 | facts.rs | curated facts CRUD, frontmatter parsing, type weights, `fact link` ([[name]] graph reader) |
 | generate.rs | byte-budgeted MEMORY.md from the facts table |
 | import_existing.rs | one-time import of a MEMORY.md + leaves into the facts table |
-| session.rs | session dump (full id or unique prefix) + checkpoint queue ops (drop/enqueue/mark-current) |
+| session.rs | session dump (full id or unique prefix, opt-in `--tags`) + checkpoint queue ops (drop/enqueue/mark-current) |
 | stats.rs | dashboard (also the bare `subrosa` default) |
-| timeutil.rs | ISO-8601 ↔ Unix-epoch helpers (no chrono); shared by stats + recall |
+| timeutil.rs | ISO-8601 ↔ Unix-epoch helpers (no chrono): parse/now/civil_to_days/civil_from_days/parse_ymd/next_day; shared by stats + recall + search/sessions |
 | backup.rs | throttled snapshots via SQLite backup API + mirror copy |
 | setup.rs | interactive first-run config (mirror folder question) |
 | hook.rs | hook entrypoints: stdin JSON in, log to file, always exit 0 |
 
 ## Invariants (the load-bearing decisions)
 
-- **Schema and output formats are compatibility-critical.** Existing archives must keep working across versions. The stored-text, session-dump, MEMORY.md, and recall formats are pinned byte-for-byte by the golden tests in `tests/` — a failing golden test means a format change that needs a deliberate decision, never a quick golden-file update.
+- **Schema and output formats are compatibility-critical.** Existing archives must keep working across versions. The stored-text, session-dump, MEMORY.md, recall, related, fact-link, and sessions-listing formats are pinned byte-for-byte by the golden tests in `tests/` — a failing golden test means a format change that needs a deliberate decision, never a quick golden-file update. Schema changes are additive only, through `migrate()` (the v3 `session_tags` add + backfill is the latest).
 - **Hooks never fail, never block.** They log to `$SUBROSA_DIR/hook.log` and exit 0 no matter what. Stdout is reserved for intentional context injection (the session-start nudge, recall hits) — never error noise. They never spawn `claude` (recursion).
 - **The live DB never goes in a synced folder.** iCloud/Dropbox-style sync corrupts live SQLite WAL/SHM sidecars mid-write. Only static snapshot files mirror out (backup.rs). Don't add anything that moves the live DB.
 - **Redact before write.** Any new path that stores transcript text must go through `redact::redact`.
@@ -46,7 +48,7 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 - `git config core.hooksPath .githooks` once per clone. The pre-commit hook runs `scripts/sweep.sh` (secret shapes, database files, stray legacy naming), then fmt/clippy/tests.
 - Checks CI runs: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build --locked`, `cargo test --locked`, `scripts/sweep.sh`, and a cargo-audit job.
 - Always test against a throwaway dir, never live data: `SUBROSA_DIR=/tmp/x SUBROSA_PROJECTS_DIR=/tmp/x/projects cargo run -- init`.
-- Smoke recipe: write a synthetic transcript `.jsonl` under `/tmp/x/projects/-tmp-demo/`, then `init` → `ingest` → `search` → `session <id>` → `fact upsert --memdir /tmp/x/memdir --leaf note.md` → `generate --memdir /tmp/x/memdir --dry-run` → pipe `{"prompt":"...","cwd":"...","session_id":"..."}` into `hook user-prompt-submit` → pipe `{"transcript_path":"…","session_id":"…"}` into `hook session-end` → check `hook.log`, `pending`, the nudge from `hook session-start`, and that secrets in the stored turns are redacted.
+- Smoke recipe: write a synthetic transcript `.jsonl` under `/tmp/x/projects/-tmp-demo/`, then `init` → `ingest` → `search` (try `--after`/`--before`/`--tag`) → `sessions --tag tool:bash` → `session <id> --tags` → `fact upsert --memdir /tmp/x/memdir --leaf note.md` → `generate --memdir /tmp/x/memdir --dry-run` → pipe `{"prompt":"...","cwd":"...","session_id":"..."}` into `hook user-prompt-submit` → pipe `{"transcript_path":"…","session_id":"…"}` into `hook session-end` → check `hook.log`, `pending`, the nudge from `hook session-start`, that secrets in the stored turns are redacted, and that tags were derived.
 
 ## Verification gate (before commit, push, and release)
 

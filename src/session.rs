@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use rusqlite::OptionalExtension;
 
-use crate::{db, ingest, paths};
+use crate::{db, ingest, paths, tags};
 
 /// Cap on how many candidates an ambiguous prefix lists before "+N more".
 const AMBIGUOUS_LIST_CAP: usize = 10;
@@ -64,8 +64,9 @@ fn resolve_session(conn: &rusqlite::Connection, arg: &str) -> Resolved {
 
 /// Print a session's flattened turns (for the in-session model to read). Accepts
 /// the full session id or any unique prefix (e.g. the 8-char id `search` and
-/// `related` print).
-pub fn dump(arg: &str) -> ExitCode {
+/// `related` print). With `show_tags`, adds one `# tags:` line to the header;
+/// the default output stays byte-identical (pinned by session_dump.golden).
+pub fn dump(arg: &str, show_tags: bool) -> ExitCode {
     let conn = match db::connect_readonly() {
         Ok(c) => c,
         Err(e) => {
@@ -133,7 +134,17 @@ pub fn dump(arg: &str) -> ExitCode {
             opt_str(first.as_deref()),
             opt_str(last.as_deref())
         );
-        println!("# memdir: {}\n", memdir.display());
+        // Default output ends here (a memdir line + blank line). --tags slots one
+        // extra line in before the blank, so session_dump.golden stays untouched.
+        println!("# memdir: {}", memdir.display());
+        if show_tags {
+            let line = match tags::tags_for_session(&conn, &sid) {
+                Ok(t) if !t.is_empty() => t.join(", "),
+                _ => "—".to_string(),
+            };
+            println!("# tags: {line}");
+        }
+        println!();
     }
     for (role, text) in rows {
         println!("## {role}\n{}\n", text.unwrap_or_default());

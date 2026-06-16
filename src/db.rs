@@ -12,7 +12,8 @@ use crate::paths;
 // The DDL is compatibility-critical: archives created by any past version
 // must keep working byte-for-byte, so schema changes go through migrate() only.
 // v2: porter-stemmed FTS (word forms match; identifiers pass through unchanged).
-const SCHEMA_VERSION: i64 = 2;
+// v3: session_tags (auto-derived, read-only tags) + a one-time backfill.
+const SCHEMA_VERSION: i64 = 3;
 const SCHEMA: &str = r#"
 PRAGMA journal_mode=WAL;
 
@@ -105,6 +106,20 @@ CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
   INSERT INTO facts_fts(facts_fts, rowid, title, hook, description) VALUES('delete', old.id, old.title, old.hook, old.description);
   INSERT INTO facts_fts(rowid, title, hook, description) VALUES (new.id, new.title, new.hook, new.description);
 END;
+
+-- Auto-derived, read-only session tags (ns = 'tool' | 'ext' | 'topic'). `tag` holds
+-- the whole "ns:value" for cheap = / LIKE filtering; `rank` is per-(session,ns) order,
+-- 0 = strongest. Unrelated to the freeform facts.tags column. Recomputed per session
+-- on ingest (delete-and-recompute), so no FK is needed for referential cleanup.
+CREATE TABLE IF NOT EXISTS session_tags (
+  session_id TEXT NOT NULL,
+  ns         TEXT NOT NULL,
+  tag        TEXT NOT NULL,
+  rank       INTEGER NOT NULL,
+  PRIMARY KEY (session_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_session_tags_tag ON session_tags(tag, session_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_ts ON sessions(last_ts);
 "#;
 
 /// Open the DB read-write: creates the schema, tightens perms, applies migrations.
@@ -281,6 +296,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            title, hook, description, content='facts', content_rowid='id', \
            tokenize='porter unicode61');",
     )?;
+    // v3: derive tags for sessions that have none yet. Idempotent and resumable —
+    // user_version only reaches 3 once this returns Ok, so an interrupted backfill
+    // picks up the remainder on the next connect.
+    crate::tags::backfill(conn)?;
     Ok(())
 }
 
@@ -358,22 +377,8 @@ pub fn now_iso() -> String {
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
     let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    let (y, mo, d) = civil_from_days(days);
+    let (y, mo, d) = crate::timeutil::civil_from_days(days);
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}+00:00")
-}
-
-// Howard Hinnant's days-to-civil algorithm (public domain).
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 #[cfg(test)]
@@ -453,6 +458,64 @@ END;
         // Re-running is a no-op (porter already present → no rebuild path).
         init_schema(&conn).unwrap();
         assert_eq!(count_match(&conn, "deploy"), 2);
+        drop(conn);
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn migrate_v3_backfills_session_tags() {
+        let p = std::env::temp_dir().join(format!("subrosa-tagmig-{}.db", std::process::id()));
+        let _ = fs::remove_file(&p);
+        let conn = Connection::open(&p).unwrap();
+        // Seed a session + turn, then pretend the archive predates v3 (no tags yet).
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute("INSERT INTO sessions(session_id) VALUES('s1')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO turns(session_id, seq, text) \
+             VALUES('s1', 0, '\u{2699} Bash ran kubectl, cache-prod rollout TICKET-123')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        let n0: i64 = conn
+            .query_row("SELECT count(*) FROM session_tags", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n0, 0, "no tags before the upgrade");
+
+        init_schema(&conn).unwrap();
+
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION, "version bumped to 3");
+        let total: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM session_tags WHERE session_id='s1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(total > 0, "backfill derived tags");
+        let bash: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM session_tags WHERE session_id='s1' AND tag='tool:bash'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bash, 1, "tool:bash derived from the marker");
+
+        // Resumable + idempotent: a second pass changes nothing (s1 already tagged).
+        init_schema(&conn).unwrap();
+        let total2: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM session_tags WHERE session_id='s1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total, total2, "re-running backfill is a no-op");
         drop(conn);
         let _ = fs::remove_file(&p);
     }

@@ -97,6 +97,43 @@ pub(crate) fn civil_to_days(y: i64, mo: u32, d: u32) -> Option<i64> {
     Some(era * 146_097 + doe - 719_468)
 }
 
+/// Parse a strict `YYYY-MM-DD` UTC date into civil parts, range-checking the
+/// month and day. The input form for the `--after`/`--before` archive filters.
+pub(crate) fn parse_ymd(s: &str) -> Option<(i64, u32, u32)> {
+    let p: Vec<&str> = s.splitn(3, '-').collect();
+    if p.len() != 3 {
+        return None;
+    }
+    let y: i64 = p[0].parse().ok()?;
+    let mo: u32 = p[1].parse().ok()?;
+    let d: u32 = p[2].parse().ok()?;
+    civil_to_days(y, mo, d)?; // rejects out-of-range month/day
+    Some((y, mo, d))
+}
+
+/// The calendar day after `(y, mo, d)`, formatted `YYYY-MM-DD`. The exclusive
+/// upper bound for an inclusive `--before D` — comparing `ts < next_day` keeps the
+/// whole of day D and is robust to sub-second timestamps.
+pub(crate) fn next_day(y: i64, mo: u32, d: u32) -> Option<String> {
+    let (ny, nmo, nd) = civil_from_days(civil_to_days(y, mo, d)? + 1);
+    Some(format!("{ny:04}-{nmo:02}-{nd:02}"))
+}
+
+// Howard Hinnant's days-to-civil (public domain) — the inverse of civil_to_days.
+// Shared by now_iso (db), the dashboard (stats), and search/sessions date bounds.
+pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
 /// The wall clock as a Unix timestamp (seconds). Honors a `SUBROSA_NOW` epoch
 /// override when it is set and parses as an i64 — a global test seam (it also
 /// shifts the dashboard's "today"/age at runtime). Empty or unparseable values
