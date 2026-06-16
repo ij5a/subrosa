@@ -1,6 +1,6 @@
 # How subrosa compares
 
-Persistent-memory options for Claude Code, as of 2026-06-13. This compares what each project **documents** — its own docs, README, or issue tracker, all linked so you can check — not hands-on testing of the other tools. If a claim is wrong or out of date, [open an issue](https://github.com/ij5a/subrosa/issues) and I'll fix it.
+Persistent-memory options for Claude Code, as of 2026-06-13. This compares what each project **documents** — its own docs, README, or issue tracker, all linked so you can check — not hands-on testing. If a claim is wrong or out of date, [open an issue](https://github.com/ij5a/subrosa/issues) and I'll fix it.
 
 | | subrosa | claude-mem | Remember (Anthropic) | memsearch | claude-supermemory |
 |---|---|---|---|---|---|
@@ -17,12 +17,12 @@ Persistent-memory options for Claude Code, as of 2026-06-13. This compares what 
 
 ## When something else is the better choice
 
-- **claude-mem** if you want meaning-based search, a web timeline view, or capture across Gemini CLI and OpenCode — and you're fine with a background worker that summarizes each session through Claude. It's popular for a reason.
-- **memsearch** if you want local meaning-based search and Markdown files you can read directly.
-- **Remember** if you want the official Anthropic option with zero setup and accept the per-save cost.
-- **claude-supermemory** if team-shared memory is the point — that's a cloud-shaped feature subrosa deliberately doesn't have.
+- **claude-mem** for meaning-based search, a web timeline, or capture across Gemini CLI and OpenCode — if you're fine with a background worker summarizing each session through Claude. It's popular for a reason.
+- **memsearch** for local meaning-based search over Markdown files you can read directly.
+- **Remember** for the official Anthropic option with zero setup, if you accept the per-save cost.
+- **claude-supermemory** if team-shared memory is the point — a cloud feature subrosa deliberately doesn't have.
 
-What subrosa won't do: meaning-based search with embeddings (keyword search is the deliberate trade for a 5-crate static binary and zero saving cost), multi-user memory, or anything that needs your transcripts to leave your machine.
+What subrosa won't do: meaning-based search with embeddings (keyword search is the trade for a 5-crate static binary and zero saving cost), multi-user memory, or anything that needs your transcripts to leave your machine.
 
 [^cm-readme]: claude-mem README — "Worker Service - HTTP API on port 37777 … managed by Bun": <https://github.com/thedotmack/claude-mem>
 [^cm-arch]: claude-mem hooks architecture — "Sends to Claude Agent SDK for summarization": <https://docs.claude-mem.ai/hooks-architecture>

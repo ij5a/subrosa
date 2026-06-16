@@ -12,12 +12,12 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/ij5a/subrosa" alt="MIT license"></a>
 </p>
 
-Every session is archived into a local SQLite database and becomes searchable: the work you did last month is one `subrosa search` away, relevant past sessions resurface automatically when you type a related prompt, and Claude stops rediscovering things it already figured out. That last part is where it pays for itself: pulling up last month's answer costs a few hundred tokens, while having Claude re-derive it from scratch — re-reading files, redoing the investigation — runs into the thousands.
+Every session is archived into a local SQLite database and made searchable: last month's work is one `subrosa search` away, relevant past sessions resurface when you type a related prompt, and Claude stops rediscovering what it already figured out. Pulling up an old answer costs a few hundred tokens; having Claude re-derive it from scratch runs into the thousands.
 
-- **No LLM calls to save memory.** Saving a session is plain text parsing — it never spends tokens. Most memory plugins run your sessions through an LLM to save them; [the comparison](docs/comparison.md) has the numbers, from their own docs.
-- **Hard token limits, set in the code.** Recall adds ~180 tokens to a prompt on a strong match, and usually nothing — it stays silent otherwise. The always-loaded index is capped at 23 KB. [Check it yourself](#proof-verify-it-yourself), or see [where your tokens go, step by step](docs/faq.md#how-many-tokens-does-it-cost-me).
-- **One 3.7 MB static binary.** No daemon, no worker port, no background process. A hook fires, finishes in under 10 ms, and exits.
-- **Your transcripts stay on your machine.** The binary makes zero network calls — no cloud, no telemetry — and obvious secret shapes are masked before storage. Don't take my word for it: [verify every claim yourself](#proof-verify-it-yourself).
+- **No LLM calls to save memory.** Saving a session is plain-text parsing — zero tokens. Most memory plugins run your sessions through an LLM to save them ([the comparison](docs/comparison.md) has the numbers, from their own docs).
+- **Hard token limits, set in the code.** Recall adds ~180 tokens on a strong match, usually nothing — it stays silent otherwise. The always-loaded index is capped at 23 KB. [Check it yourself](#proof-verify-it-yourself), or see [where your tokens go](docs/faq.md#how-many-tokens-does-it-cost-me).
+- **One 3.7 MB static binary.** No daemon, no worker port, no background process — a hook fires, finishes in under 10 ms, and exits.
+- **Your transcripts stay on your machine.** The binary makes zero network calls — no cloud, no telemetry — and obvious secret shapes are masked before storage. [Verify every claim yourself](#proof-verify-it-yourself).
 
 <p align="center">
   <img src="assets/demo.gif" alt="subrosa demo: search the archive, automatic recall on a prompt, dashboard" width="800">
@@ -41,7 +41,7 @@ Every session is archived into a local SQLite database and becomes searchable: t
 
 ## Why "subrosa"?
 
-In ancient Rome, a rose hung over the table meant everything said under it stayed in the room — *sub rosa*, "under the rose." That's the contract this tool makes with your data: every transcript stays on your machine, in a local database, with obvious secret shapes masked before they're stored. No cloud, no telemetry — what's said under the rose stays under the rose.
+In ancient Rome, a rose over the table meant everything said under it stayed in the room — *sub rosa*. That's the contract here: every transcript stays on your machine, in a local database, secret shapes masked before storage. No cloud, no telemetry.
 
 ## Quick start
 
@@ -54,14 +54,12 @@ Inside Claude Code, run these two commands:
 
 Then start a new Claude Code session (quit and reopen, or run `claude` again). That's the whole install:
 
-- On that first start, the plugin downloads the right prebuilt program for your computer (about 2 MB, checksum-verified against this repo) and archives every Claude Code session already on your disk.
-- From then on it runs by itself: each session is archived when it ends, related past sessions are shown to Claude when you type a prompt, and you get a short note when ended sessions are waiting to be saved into long-term memory.
+- On first start, the plugin downloads the right prebuilt program for your computer (~2 MB, checksum-verified against this repo) and archives every session already on your disk.
+- After that it runs itself: archives each session when it ends, shows Claude related past sessions when you prompt, and notes when ended sessions are waiting to be saved into long-term memory.
 
-The one-time download fetches the program itself — your data never goes anywhere.
+The one-time download fetches the program only — your data never moves.
 
-Then one more command, in your terminal, for the best experience — it teaches Claude to
-search the archive at the start of any task, instead of waiting for you to ask
-([what it adds](#make-claude-search-the-archive-itself) — safe to run twice, ~150 tokens):
+One more command, for the best experience — it teaches Claude to search the archive at the start of any task instead of waiting for you to ask ([what it adds](#make-claude-search-the-archive-itself); safe to re-run, ~150 tokens):
 
 ```sh
 ~/.claude/subrosa/bin/subrosa init --claude-md   # or just: subrosa init --claude-md, with the CLI below
@@ -69,7 +67,7 @@ search the archive at the start of any task, instead of waiting for you to ask
 
 ### Optional: the `subrosa` command in your terminal
 
-The plugin works without this. Install the CLI if you also want to search and manage the archive yourself:
+The plugin works without this. Install the CLI to also search and manage the archive yourself:
 
 ```sh
 # homebrew
@@ -91,14 +89,14 @@ subrosa          # the dashboard
 
 ## What it does
 
-- **Archives every session.** When a session ends — quitting Claude Code, running `/clear`, or logging out all count — the plugin saves its transcript into a local database (SQLite with full-text search), and catches up on anything it missed at the next start.
-- **Recalls on its own.** When you submit a prompt with enough distinctive terms, the top matching past sessions from the same project are injected into context — quiet unless the match is strong.
-- **Builds long-term memory.** Ended sessions wait in a queue; the bundled `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog` commands read them and save the important points as curated facts (one fact per small markdown file). `subrosa generate` then builds `MEMORY.md` — a short index Claude Code loads every session, capped in size so it can never overflow.
-- **Makes everything searchable.** `subrosa search <terms>` runs ranked full-text search, so identifiers like `my-app-prod` or `TICKET-123` stay searchable — with `--fuzzy` for partial names and typos.
-- **Shows what clusters together.** `subrosa related <identifier>` ranks the terms and past sessions that keep showing up alongside something like `auth.ts` or `TICKET-123` — read from the archive, not guessed. It answers "what did this work touch," which `search` can't.
-- **Follows your curated links.** Memory notes can point at each other with `[[name]]` links; `subrosa fact link <slug>` lists what a note links to and what links back, and flags any link to a note that doesn't exist.
+- **Archives every session.** When one ends — quitting Claude Code, `/clear`, or logging out — its transcript is saved to a local SQLite (full-text search) database, with a catch-up sweep at the next start.
+- **Recalls on its own.** A prompt with enough distinctive terms pulls the top matching past sessions from the same project into context — silent unless the match is strong.
+- **Builds long-term memory.** Ended sessions queue up; `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog` distill them into curated facts (one per small markdown file). `subrosa generate` then renders `MEMORY.md` — a short, size-capped index Claude Code loads every session.
+- **Makes everything searchable.** `subrosa search <terms>` runs ranked full-text search; identifiers like `my-app-prod` or `TICKET-123` stay exact, and `--fuzzy` handles partial names and typos.
+- **Shows what clusters together.** `subrosa related <identifier>` ranks the terms and sessions that recur alongside something like `auth.ts` or `TICKET-123` — read from the archive, not guessed. It answers "what did this work touch," which `search` can't.
+- **Follows your curated links.** Notes link to each other with `[[name]]`; `subrosa fact link <slug>` shows what a note links to and what links back, and flags dead links.
 - **Shows you the picture.** `subrosa` alone prints the dashboard: activity sparkline, store size, per-project share, index budget.
-- **Backs itself up.** Consistent snapshots on a 24h throttle, plus an optional mirror of the latest snapshot to a folder you pick.
+- **Backs itself up.** Consistent snapshots on a 24h throttle, plus an optional mirror of the latest to a folder you pick.
 - **Masks secrets at the door.** Private key blocks, AWS keys, bearer tokens, and `password=`-style values are redacted before they're written.
 
 ## Commands
@@ -141,18 +139,16 @@ flowchart TD
     archived -.->|stays searchable either way| recall["subrosa search + automatic prompt recall"]
 ```
 
-1. A session ends (you quit Claude Code, run `/clear`, or log out) → it's archived and queued.
-2. At the next session start, a note lands in Claude's context: `[subrosa] N session(s) queued for checkpoint…` — hook output goes to Claude, not to your chat window, so Claude acts on it (or you can run the next step yourself).
-3. Run `/subrosa:checkpoint-backlog` — Claude reads each queued session and saves the important facts into that project's memory (one file per fact, plus the facts database), then rebuilds `MEMORY.md`.
+1. A session ends → it's archived and queued.
+2. At the next start, a note lands in Claude's context (`[subrosa] N session(s) queued for checkpoint…`) — hook output goes to Claude, not your chat window, so Claude acts on it (or you run the next step yourself).
+3. Run `/subrosa:checkpoint-backlog` — Claude saves the important facts from each queued session into that project's memory, then rebuilds `MEMORY.md`.
 4. Before `/clear` or `/compact`, run `/subrosa:checkpoint` to do the same for the live session.
 
-`MEMORY.md` is generated from the facts table under a byte budget — important facts (pinned, feedback) win when space runs out, and everything that doesn't fit stays searchable in the archive.
+`MEMORY.md` is built under a byte budget — important facts (pinned, feedback) win when space runs out, and everything that doesn't fit stays searchable in the archive.
 
 ## Make Claude search the archive itself
 
-Recall only fires when you type a prompt. To have Claude check the archive at the
-start of any task on its own, add one paragraph to your `CLAUDE.md`: `~/.claude/CLAUDE.md`
-covers every project, a repo's own `CLAUDE.md` just that one. Paste and adjust:
+Recall only fires when you type a prompt. To have Claude check the archive at the start of any task on its own, add one paragraph to your `CLAUDE.md` (`~/.claude/CLAUDE.md` covers every project, a repo's own covers just that one) — or run `subrosa init --claude-md` to append it for you (idempotent):
 
 ```markdown
 ## Memory recall (subrosa)
@@ -170,17 +166,7 @@ generated — never hand-edit it; update facts with `subrosa fact` + `subrosa ge
 or run `/subrosa:checkpoint`.
 ```
 
-Or have it appended for you — same text, idempotent, and a no-op if the section
-is already there:
-
-```sh
-subrosa init --claude-md
-```
-
-subrosa never edits your `CLAUDE.md` without asking: this instruction adds about
-150 tokens that load every session, so spending them is your call. In return,
-Claude writes its own searches mid-task and follows leads that prompt-triggered
-recall can't see.
+It adds about 150 tokens of always-loaded context — your call — and in return Claude writes its own searches mid-task, following leads prompt-triggered recall can't see.
 
 ## Where your data lives
 
@@ -195,39 +181,28 @@ Everything is overridable with env vars: `SUBROSA_DIR`, `SUBROSA_DB`, `SUBROSA_P
 
 ## Privacy model
 
-- Local-only. The binary makes zero network calls; recall reads only your local database, and hook output goes only into your own session.
-- Recalled snippets are your own archived text resurfaced verbatim — the injection block tells Claude to verify before relying on them.
-- The database is readable only by you (`0600`), and so is its folder (`0700`).
-- Secret shapes are redacted before storage. The source transcripts under `~/.claude/projects` remain as Claude Code wrote them — full-disk encryption is the real at-rest control for those.
-- Two things touch the network, neither is the binary and neither carries your data out: the plugin's one-time bootstrap downloads the program from GitHub releases (checksum-verified, uploads nothing), and the optional backup mirror copies a snapshot file into a folder you pick — if you pick an iCloud/Dropbox-synced folder, your sync client uploads it. Your call, off by default.
+- **Local-only.** The binary makes zero network calls; recall reads only your local database, and hook output goes only into your own session.
+- **Locked down.** The database and its folder are readable only by you (`0600`/`0700`), and secret shapes are redacted before storage.
+- **One opt-in exit.** The only thing that can leave the machine is a backup-mirror snapshot, if you point it at a synced folder (off by default). The live database is never synced.
+
+Full limits — what redaction misses, why the archive isn't encrypted, what recall re-injects — are in the [FAQ](docs/faq.md#what-does-subrosa-not-protect).
 
 ## Proof: verify it yourself
 
-Claims are only worth the commands that check them. Everything below runs against this repo or your own install — the whole thing is ~5,200 lines of Rust, MIT licensed, small enough to read in an afternoon.
+Claims are only worth the commands that check them. The whole thing is ~5,200 lines of Rust, MIT licensed — small enough to read in an afternoon.
 
 | Claim | Check it | What you'll see |
 |---|---|---|
-| The token limits are constants in the code | read `MAX_INJECT` + `SNIPPET_CHARS` in `src/recall.rs`, and `DEFAULT_BUDGET` in `src/generate.rs` | `MAX_INJECT = 3`, `SNIPPET_CHARS = 160` (a match-centered snippet, hard-capped at 160 chars ≈ 180 tokens at recall), and a 23 KB index budget — values you can read, not settings that can drift |
-| Recall stays near ~180 tokens a prompt | `scripts/bench.sh` — the `recall injection` line | the injected block weighed in bytes → ~170 tokens on a strong match (3 snippets); the `MAX_INJECT` × `SNIPPET_CHARS` cap holds it there |
-| The binary makes zero network calls | `cargo tree -e normal \| grep -Ei 'reqwest\|hyper\|tokio\|rustls\|openssl\|curl'` | no output — there's no HTTP or networking library in the build. For runtime proof, trace it: `strace -f -e trace=network subrosa search x` (Linux) or `sudo dtruss -t connect subrosa search x` (macOS) records no `connect()` |
-| Secrets are masked before storage | `cargo test redact` | the round-trip tests pass; redaction runs on the one write path (`src/ingest.rs`), so the database and its index only ever hold the masked copy |
-| The archive is locked to your user | `ls -ld ~/.claude/subrosa && ls -l ~/.claude/subrosa/memory.db` | `drwx------` (0700) on the directory, `-rw-------` (0600) on the database |
-| The supply chain is small and audited | `cargo tree --depth 1` · `cargo audit` | 5 direct dependencies, no known advisories. CI runs `cargo audit` on every push, and release binaries ship a `sha256sums.txt` that the installer and Homebrew formula pin |
-| Nothing runs in the background | `ps aux \| grep subrosa` between prompts | nothing — every hook is a short-lived process that opens the database, does its work, and exits |
+| Token limits are constants in the code | read `MAX_INJECT` + `SNIPPET_CHARS` in `src/recall.rs`, `DEFAULT_BUDGET` in `src/generate.rs` | `MAX_INJECT = 3`, `SNIPPET_CHARS = 160` (≈ 180 tokens at recall), and a 23 KB index budget — values you can read, not settings that drift |
+| Recall stays near ~180 tokens a prompt | `scripts/bench.sh` — the `recall injection` line | the injected block weighed in bytes → ~180 tokens on a strong match (3 snippets) |
+| The binary makes zero network calls | `cargo tree -e normal \| grep -Ei 'reqwest\|hyper\|tokio\|rustls\|openssl\|curl'` | no output — no HTTP or networking library in the build (trace it live with `strace`/`dtruss` and see no `connect()`) |
+| The supply chain is small and audited | `cargo tree --depth 1` · `cargo audit` | 5 direct dependencies, no known advisories; CI runs `cargo audit` on every push, and release binaries ship a pinned `sha256sums.txt` |
 
-### What it does not protect
-
-- **Redaction matches known shapes — it's not a full clean-up.** It hides private-key blocks, AWS keys (starting with `AKIA` or `ASIA`), `Bearer` tokens, and labeled secrets like `password=` or `token:`. A secret that doesn't fit one of those patterns — a GitHub `ghp_…` token, an OpenAI `sk-…` key, a bare JWT — is stored as written. It cuts down obvious leaks; it doesn't remove them all.
-- **Your original transcripts [stay in cleartext](https://code.claude.com/docs/en/claude-directory#plaintext-storage).** Claude Code writes them under `~/.claude/projects` and subrosa never edits those — redaction only covers its own archive copy. Full-disk encryption is the real at-rest control.
-- **Recall re-injects your own stored text.** On a strong match it puts up to 3 short snippets back into the model's context, so anything that did leak into the archive can resurface there. The injection block tells Claude to treat it as unverified.
-- **`0600`/`0700` is access control, not encryption** — and it's enforced on Unix only; on Windows the files fall back to default ACLs.
-- **One snapshot can leave the machine, by your choice.** The optional backup mirror (`subrosa setup`, off by default) copies a snapshot to a folder you pick; aim it at an iCloud/Dropbox folder and your sync client uploads it. The live database is never synced.
-- **Three small `unsafe` blocks**, all libc calls for terminal width and `SIGPIPE` (`src/stats.rs`, `src/main.rs`), each with a safety note, none in the data path. `grep -rn unsafe src/` shows all three.
+More checks (redaction, file permissions, no background process) and the honest limits are in the [FAQ](docs/faq.md#what-does-subrosa-not-protect).
 
 ## Performance
 
-A hook that runs on every prompt has to be invisible. Measured with `scripts/bench.sh`
-(hyperfine, synthetic 50,000-turn / 28 MB archive, Apple M3 Max):
+A hook that runs on every prompt has to be invisible. Measured with `scripts/bench.sh` (hyperfine, synthetic 50,000-turn / 28 MB archive, Apple M3 Max):
 
 | Operation | Time |
 |---|---|
@@ -239,8 +214,7 @@ A hook that runs on every prompt has to be invisible. Measured with `scripts/ben
 | `subrosa related <identifier>` over 50,000 turns | 0.3–0.4 s |
 | Archiving 50,000 turns from scratch (first install) | ~1.1 s |
 
-One static 3.7 MB binary, no background process, no runtime dependencies. Reproduce
-the numbers with `scripts/bench.sh` (needs `hyperfine`).
+One static 3.7 MB binary, no background process, no runtime dependencies.
 
 ## Development
 
@@ -250,7 +224,7 @@ git config core.hooksPath .githooks   # once per clone: sweep + fmt + clippy + t
 cargo build && cargo test
 ```
 
-The output formats (stored text, session dump, `MEMORY.md`, recall block) are pinned byte-for-byte by the golden tests in `tests/` — a failing golden test means a format change that needs a deliberate decision. Point everything at a throwaway dir so you never touch your live data:
+The output formats (stored text, session dump, `MEMORY.md`, recall block) are pinned byte-for-byte by the golden tests in `tests/` — a failing golden means a deliberate format change. Point everything at a throwaway dir so you never touch live data:
 
 ```sh
 SUBROSA_DIR=/tmp/x SUBROSA_PROJECTS_DIR=/tmp/x/projects cargo run -- init
