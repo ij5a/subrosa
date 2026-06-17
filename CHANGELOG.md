@@ -5,6 +5,12 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-06-17
+
+### Added
+
+- `subrosa search` now shows each hit's relative age after the timestamp — `[2026-05-29 13:42] (7mo old)` — using the same `(today)` / `(3d old)` / `(2w old)` form recall already prints. You can tell how fresh a result is at a glance without doing date math. Both surfaces share one helper, so they always read the same.
+
 ## [0.12.1] - 2026-06-17
 
 ### Changed
@@ -124,6 +130,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.13.0]: https://github.com/ij5a/subrosa/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/ij5a/subrosa/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/ij5a/subrosa/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/ij5a/subrosa/compare/v0.10.0...v0.11.0
