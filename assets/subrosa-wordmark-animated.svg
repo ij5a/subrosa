@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 504 146" width="504" height="146" role="img" aria-label="subrosa">
+  
+  <rect x="0" y="0" width="504" height="146" rx="20" fill="#170B0E"></rect>
+  <text x="46" y="120.0" font-family="IBMPlexMono, ui-monospace, monospace" font-size="100" font-weight="500" letter-spacing="-1.2" fill="#F0E7E3"><tspan>subr</tspan><tspan fill="transparent">o</tspan><tspan>sa</tspan></text>
+  <g transform="translate(271.35 54.35) scale(0.8178)">
+      <circle class="core" cx="48" cy="48" r="4.5" fill="#E0526F"></circle>
+      <g class="rot g1"><circle class="ring c1" cx="48" cy="48" r="13" fill="none" stroke="#C12B4E" stroke-width="4.5" stroke-linecap="round" pathLength="100" stroke-dasharray="86 14"></circle><animateTransform attributeName="transform" attributeType="XML" type="rotate" from="0 48 48" to="360 48 48" dur="6s" repeatCount="indefinite"></animateTransform></g>
+      <g class="rot g2"><circle class="ring c2" cx="48" cy="48" r="22" fill="none" stroke="#C12B4E" stroke-width="4.5" stroke-linecap="round" pathLength="100" stroke-dasharray="88 12"></circle><animateTransform attributeName="transform" attributeType="XML" type="rotate" from="360 48 48" to="0 48 48" dur="9s" repeatCount="indefinite"></animateTransform></g>
+      <g class="rot g3"><circle class="ring c3" cx="48" cy="48" r="31" fill="none" stroke="#C12B4E" stroke-width="4.5" stroke-linecap="round"></circle></g>
+  </g>
+</svg>

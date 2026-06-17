@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/subrosa-banner.png" alt="subrosa" width="100%">
+  <img src="assets/subrosa-wordmark-animated.svg" alt="subrosa" width="100%">
 </p>
 
 <p align="center">
