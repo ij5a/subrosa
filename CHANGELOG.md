@@ -5,6 +5,12 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-06-17
+
+### Added
+
+- Near-real-time archiving of the in-progress session. A `Stop` hook now runs `subrosa hook stop` after each assistant turn, incrementally ingesting just the active transcript (not a full sweep), so the current session is searchable with `subrosa search` before it ends — handy when a second terminal or agent needs to see this session, or when you switch sessions fast and want the one you just left already archived. It adds ~7 ms per turn and runs after the reply is on screen. Automatic prompt recall still skips the current session on purpose, so it never echoes your own turns back.
+
 ## [0.11.0] - 2026-06-16
 
 ### Added
@@ -112,6 +118,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.12.0]: https://github.com/ij5a/subrosa/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/ij5a/subrosa/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/ij5a/subrosa/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/ij5a/subrosa/compare/v0.8.1...v0.9.0
