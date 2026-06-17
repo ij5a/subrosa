@@ -249,6 +249,8 @@ pub enum HookEvent {
     UserPromptSubmit,
     /// PreCompact: archive the conversation so far + reset recall dedup
     PreCompact,
+    /// Stop: incrementally ingest the in-progress transcript (near-real-time)
+    Stop,
 }
 
 fn main() -> ExitCode {

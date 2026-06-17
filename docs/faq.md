@@ -75,6 +75,10 @@ That output isn't a chat message — Claude Code puts it straight into *Claude's
 
 The automatic recall is a small, cheap nudge, not the full answer — the top 3 matches (~180 tokens) ranked by relevance, capped so it can't quietly grow your per-prompt cost. Treat them as leads: they're ranked by keyword match (fresher sessions break near-ties), not meaning, and each snippet is centered on the matching text so you see why it surfaced. When 3 aren't enough, Claude (or you) runs `subrosa search` for the full ranked list (`-n 20` to widen it) — nothing is ever lost, the whole archive stays searchable.
 
+## Is my current session searchable while it's still running?
+
+Yes. After each assistant turn subrosa archives the in-progress transcript (the `Stop` hook), so the live session shows up in `subrosa search` before you ever end it — handy when a second terminal or agent needs to see what this one is doing, or when you switch sessions fast and want the one you just left already archived. It costs ~7 ms per turn and runs after the reply is on screen, so you never feel it. The automatic prompt recall still skips the current session on purpose — it's already in Claude's context, so re-injecting it would only burn tokens — so this helps *across* sessions, not echo the one you're in.
+
 ## Why keyword search instead of embeddings?
 
 A deliberate trade. Embeddings (meaning-based search) need model weights or API calls — that breaks the single static binary, the 5-crate supply chain, and zero-cost capture. Instead subrosa matches word roots, so `deploy` finds `deployed` and `deploying`, while identifiers like `TICKET-123` and `my-app-prod` stay exact. For partial names and typos, `subrosa search --fuzzy` adds a local trigram index (built on first use) — still no model. Meaning-based search stays the deliberate omission.

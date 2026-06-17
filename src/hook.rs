@@ -29,6 +29,7 @@ pub fn run(event: HookEvent) -> ExitCode {
         HookEvent::SessionEnd => session_end(&input),
         HookEvent::UserPromptSubmit => user_prompt_submit(&input),
         HookEvent::PreCompact => pre_compact(&input),
+        HookEvent::Stop => stop(&input),
     };
     if let Err(e) = result {
         let name = match event {
@@ -36,6 +37,7 @@ pub fn run(event: HookEvent) -> ExitCode {
             HookEvent::SessionEnd => "session-end",
             HookEvent::UserPromptSubmit => "user-prompt-submit",
             HookEvent::PreCompact => "pre-compact",
+            HookEvent::Stop => "stop",
         };
         log(&format!("{name} error: {e}"));
     }
@@ -162,6 +164,26 @@ fn pre_compact(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(sid) = input.get("session_id").and_then(Value::as_str) {
         recall::forget_session(&paths::recall_seen_log(), sid);
         log(&format!("pre-compact recall-dedup reset {sid}"));
+    }
+    Ok(())
+}
+
+/// Stop fires after each assistant turn: incrementally ingest the in-progress
+/// transcript so the live session is searchable before SessionEnd. Ingest only
+/// — no checkpoint enqueue, backup, or recall reset. Exit 0 always; a non-zero
+/// exit would block the turn from ending.
+fn stop(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(tp) = input.get("transcript_path").and_then(Value::as_str) {
+        let p = Path::new(tp);
+        if p.is_file() {
+            let conn = db::connect()?;
+            match ingest::ingest_file(&conn, p) {
+                Ok((inserted, scanned)) => log(&format!(
+                    "stop ingest {tp}: +{inserted} turns ({scanned} records scanned)"
+                )),
+                Err(e) => log(&format!("stop ingest error {tp}: {e}")),
+            }
+        }
     }
     Ok(())
 }

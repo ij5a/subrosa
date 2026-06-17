@@ -369,3 +369,70 @@ fn date_filters_inclusive_and_validated() {
     let bad = run_full(&env, &["search", "rollout", "--after", "2026-13-99"], None);
     assert_eq!(bad.status.code(), Some(2), "a bad --after date exits 2");
 }
+
+#[test]
+fn hook_stop_ingests_in_progress_session_incrementally() {
+    let env = setup("hookstop");
+    // An in-progress transcript: on disk but never run through `ingest`. Only the
+    // Stop hook archives it, the way it happens mid-session in real use.
+    let sid = "live-7777-8888-9999";
+    let tp = env.projects.join(format!("-tmp-demo/{sid}.jsonl"));
+    fs::write(
+        &tp,
+        "{\"type\":\"user\",\"timestamp\":\"2026-06-17T05:00:00Z\",\"uuid\":\"l1\",\
+         \"cwd\":\"/tmp/demo\",\"message\":{\"role\":\"user\",\"content\":\
+         \"chase the wombatprobe regression\"}}\n",
+    )
+    .unwrap();
+    let payload = format!(
+        "{{\"transcript_path\":\"{}\",\"session_id\":\"{sid}\",\"cwd\":\"/tmp/demo\",\
+         \"hook_event_name\":\"Stop\"}}",
+        tp.to_str().unwrap()
+    );
+
+    // First Stop: the live session is searchable before it ever ends, and exit is 0.
+    let first = run_full(&env, &["hook", "stop"], Some(&payload));
+    assert_eq!(first.status.code(), Some(0), "the Stop hook always exits 0");
+    let hit = run(&env, &["search", "wombatprobe"], None);
+    assert!(
+        hit.contains("\u{ab}wombatprobe\u{bb}"),
+        "the in-progress session is searchable after Stop, got:\n{hit}"
+    );
+
+    // Append a turn and fire Stop again: the new turn lands, the old one isn't re-inserted.
+    let mut f = fs::OpenOptions::new().append(true).open(&tp).unwrap();
+    f.write_all(
+        b"{\"type\":\"assistant\",\"timestamp\":\"2026-06-17T05:01:00Z\",\"uuid\":\"l2\",\
+          \"cwd\":\"/tmp/demo\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\
+          \"text\",\"text\":\"the carrotlatch held after the patch\"}]}}\n",
+    )
+    .unwrap();
+    run(&env, &["hook", "stop"], Some(&payload));
+    let hit2 = run(&env, &["search", "carrotlatch"], None);
+    assert!(
+        hit2.contains("\u{ab}carrotlatch\u{bb}"),
+        "the appended turn is searchable after the next Stop, got:\n{hit2}"
+    );
+    // Idempotent re-read: the first turn appears exactly once, not duplicated.
+    let again = run(&env, &["search", "wombatprobe", "-n", "10"], None);
+    assert_eq!(
+        again.matches("\u{ab}wombatprobe\u{bb}").count(),
+        1,
+        "the first turn is ingested once across two Stop passes, got:\n{again}"
+    );
+
+    // Stop must NOT queue the live session for checkpoint — that's SessionEnd's job.
+    let pending = run(&env, &["pending"], None);
+    assert!(
+        !pending.contains(sid),
+        "Stop leaves the in-progress session out of the checkpoint queue, got:\n{pending}"
+    );
+
+    // A payload with no transcript_path is a clean no-op, still exit 0.
+    let noop = run_full(&env, &["hook", "stop"], Some("{\"session_id\":\"x\"}"));
+    assert_eq!(
+        noop.status.code(),
+        Some(0),
+        "a missing transcript_path no-ops at exit 0"
+    );
+}

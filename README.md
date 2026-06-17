@@ -55,7 +55,7 @@ Inside Claude Code, run these two commands:
 Then start a new Claude Code session (quit and reopen, or run `claude` again). That's the whole install:
 
 - On first start, the plugin downloads the right prebuilt program for your computer (~2 MB, checksum-verified against this repo) and archives every session already on your disk.
-- After that it runs itself: archives each session when it ends, shows Claude related past sessions when you prompt, and notes when ended sessions are waiting to be saved into long-term memory.
+- After that it runs itself: archives each session as you work and again when it ends, shows Claude related past sessions when you prompt, and notes when ended sessions are waiting to be saved into long-term memory.
 
 The one-time download fetches the program only — your data never moves.
 
@@ -218,6 +218,7 @@ A hook that runs on every prompt has to be invisible. Measured with `scripts/ben
 | Prompt recall check, match found and injected | ~14 ms |
 | A full hook fire as Claude Code runs it (shell wrapper + binary) | under 10 ms |
 | Session-start catch-up sweep, nothing changed | ~5 ms |
+| Live-session ingest after a turn (one active transcript) | ~7 ms |
 | `subrosa search` over 50,000 turns | 5–11 ms |
 | `subrosa related <identifier>` over 50,000 turns | 0.3–0.4 s |
 | Archiving 50,000 turns from scratch (first install) | ~1.1 s |
