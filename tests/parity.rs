@@ -371,6 +371,19 @@ fn date_filters_inclusive_and_validated() {
 }
 
 #[test]
+fn search_line_carries_relative_age() {
+    let env = setup("searchage");
+    ingest_golden_transcript(&env);
+    // Clock pinned to 2027-01-12; the fixture turns are 2026-06-12 → 7 months old.
+    // Same suffix recall renders, so the two surfaces stay consistent.
+    let hit = run(&env, &["search", "rollout"], None);
+    assert!(
+        hit.contains("(7mo old)"),
+        "search line carries the relative age after the timestamp, got:\n{hit}"
+    );
+}
+
+#[test]
 fn hook_stop_ingests_in_progress_session_incrementally() {
     let env = setup("hookstop");
     // An in-progress transcript: on disk but never run through `ingest`. Only the

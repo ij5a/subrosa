@@ -169,6 +169,18 @@ pub(crate) fn fmt_age(secs: i64) -> String {
     }
 }
 
+/// The parenthesized age suffix shared by recall and search: " (today)" the same
+/// day, " ({age} old)" otherwise. Leading space so it drops in right after the
+/// timestamp. `secs` is `now - record_epoch`.
+pub(crate) fn age_suffix(secs: i64) -> String {
+    let a = fmt_age(secs);
+    if a == "today" {
+        " (today)".to_string()
+    } else {
+        format!(" ({a} old)")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

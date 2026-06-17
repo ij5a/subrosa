@@ -176,6 +176,7 @@ pub fn run(
         }
         return ExitCode::SUCCESS;
     }
+    let now = timeutil::now_unix();
     for (i, (sid, ts, role, project, snip)) in rows.iter().enumerate() {
         let snip = snip
             .as_deref()
@@ -184,10 +185,17 @@ pub fn run(
             .collect::<Vec<_>>()
             .join(" ");
         let sid8: String = sid.chars().take(8).collect();
+        // Relative age after the timestamp, shared with recall (`(7mo old)` etc.);
+        // empty when the timestamp is missing or unparseable.
+        let age = match ts.as_deref().and_then(timeutil::parse_ts) {
+            Some(epoch) => timeutil::age_suffix(now - epoch),
+            None => String::new(),
+        };
         println!(
-            "{:>2}. [{}] {} · {} · {}",
+            "{:>2}. [{}]{} {} · {} · {}",
             i + 1,
             fmt_ts(ts.as_deref().unwrap_or("")),
+            age,
             role,
             project.as_deref().unwrap_or("?"),
             sid8

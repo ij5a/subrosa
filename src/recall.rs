@@ -308,17 +308,10 @@ pub fn run(input: &Value) -> Option<String> {
             .take(SNIPPET_CHARS)
             .collect();
         let sid8: String = c.session_id.chars().take(8).collect();
-        // Age hint after the date: "(today)" same-day, "({age} old)" otherwise;
-        // nothing when the timestamp is missing/unparseable (no empty parens).
+        // Age hint after the date, shared with `search`; empty (no parens) when the
+        // timestamp is missing or unparseable.
         let age = match c.ts.as_deref().and_then(timeutil::parse_ts) {
-            Some(epoch) => {
-                let a = timeutil::fmt_age(now - epoch);
-                if a == "today" {
-                    " (today)".to_string()
-                } else {
-                    format!(" ({a} old)")
-                }
-            }
+            Some(epoch) => timeutil::age_suffix(now - epoch),
             None => String::new(),
         };
         lines.push(format!(
