@@ -202,6 +202,22 @@ pub(crate) fn token_matches(tok: &str, term: &str) -> bool {
     tok == term || tok.starts_with(term) || term.starts_with(tok)
 }
 
+/// Separator-insensitive `token_matches`: folds `-`, `_`, `.` together so the
+/// recall post-filter agrees with FTS5 `unicode61` (which splits all three) — a
+/// stored `cache_prod` matches a prompt's `cache-prod`. Recall-only; it re-checks
+/// rows FTS already returned, so it can re-admit a hit but never widen the set.
+pub(crate) fn token_matches_loose(tok: &str, term: &str) -> bool {
+    fn norm(s: &str) -> std::borrow::Cow<'_, str> {
+        if s.bytes().any(|b| b == b'_' || b == b'.') {
+            std::borrow::Cow::Owned(s.replace(['_', '.'], "-"))
+        } else {
+            std::borrow::Cow::Borrowed(s)
+        }
+    }
+    let (a, b) = (norm(tok), norm(term));
+    token_matches(a.as_ref(), b.as_ref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +232,18 @@ mod tests {
         // The substring false positive the old `contains` allowed is now rejected.
         assert!(!token_matches("respect", "spec"));
         assert!(!token_matches("spec", "respect"));
+    }
+
+    #[test]
+    fn token_matches_loose_folds_separator_variants() {
+        // FTS5 unicode61 splits -, _, . alike; the post-filter must agree so the
+        // same identifier written with a different separator still matches.
+        assert!(token_matches_loose("cache_prod", "cache-prod"));
+        assert!(token_matches_loose("cache-prod", "cache_prod"));
+        assert!(token_matches_loose("rewst.prod", "rewst-prod"));
+        // Stem/prefix still works; the substring false positive stays rejected.
+        assert!(token_matches_loose("deployed", "deploy"));
+        assert!(!token_matches_loose("respect", "spec"));
     }
 
     #[test]

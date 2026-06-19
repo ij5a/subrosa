@@ -5,9 +5,10 @@
 //! Relevance gate (to avoid noise on every prompt): the prompt must contain
 //! at least 2 distinctive terms (identifiers, or words of 4+ chars that
 //! aren't stopwords); a past turn counts only if at least `min_required` of
-//! those terms match a turn token — stem/prefix-aware, not substring — one of
-//! them anchor-grade (identifier-like or 6+ chars). `min_required` scales
-//! mildly with prompt length. Survivors are kept by a relative bm25 floor,
+//! those terms match a turn token — stem/prefix-aware and separator-insensitive,
+//! not substring — one of them anchor-grade (identifier-like or 6+ chars).
+//! `min_required` scales mildly with prompt length (capped). Survivors are kept
+//! by a relative bm25 floor,
 //! re-ranked with a mild recency tie-break, deduped one-per-session, top 3.
 //! The snippet is FTS5 match-centered so the injected line shows why it hit.
 //! Scoped to the current project; the live session is excluded. Source
@@ -37,6 +38,9 @@ const RECENCY_ABS_CAP: f64 = 10.0;
 // FTS candidate query: cap the OR-union so a pasted wall of text can't explode
 // into a hundred-branch posting-list merge. The post-filter still sees every term.
 const MAX_FTS_TERMS: usize = 12;
+// Cap the adaptive gate: a long pasted prompt shouldn't demand more than this many
+// matched terms — the anchor rule already blocks generic-word noise.
+const MAX_MIN_REQUIRED: usize = 3;
 // Trim the dedup log once it's clearly past any live-session working set.
 const SEEN_TRIM_AT: usize = 4000;
 const SEEN_KEEP: usize = 2000;
@@ -156,6 +160,13 @@ fn rank_value(c: &Candidate, now: i64, scale: f64) -> f64 {
     blended_rank(c.bm25, age_days, scale)
 }
 
+/// Matched-term bar for a prompt of `n` distinctive terms: scales mildly with
+/// length but clamped to `[MIN_TERMS, MAX_MIN_REQUIRED]` so a pasted wall of text
+/// can't over-filter. Pure so the clamp is unit-testable.
+fn min_required_terms(n: usize) -> usize {
+    MIN_TERMS.max(n / 5).min(MAX_MIN_REQUIRED)
+}
+
 /// Build the injection block for this prompt, or None to stay silent.
 pub fn run(input: &Value) -> Option<String> {
     let prompt = input
@@ -231,9 +242,9 @@ pub fn run(input: &Value) -> Option<String> {
         .iter()
         .map(|t| (t.to_lowercase(), text::is_anchor(t)))
         .collect();
-    // #5 adaptive gate: ask for more matched terms on longer prompts, never fewer than 2.
-    // The anchor requirement is left untouched — scaling it would drop valid hits.
-    let min_required = MIN_TERMS.max(terms.len() / 5);
+    // #5 adaptive gate: more matched terms on longer prompts, clamped to
+    // [MIN_TERMS, MAX_MIN_REQUIRED] so a pasted wall can't over-filter. Anchor rule untouched.
+    let min_required = min_required_terms(terms.len());
 
     // #2 stem/prefix term match on the full turn text (not the snippet), plus the anchor rule.
     let mut qualified: Vec<Candidate> = Vec::new();
@@ -242,7 +253,7 @@ pub fn run(input: &Value) -> Option<String> {
         let toks = text::turn_tokens(&text_low);
         let matched: Vec<&(String, bool)> = term_meta
             .iter()
-            .filter(|(low, _)| toks.iter().any(|tok| text::token_matches(tok, low)))
+            .filter(|(low, _)| toks.iter().any(|tok| text::token_matches_loose(tok, low)))
             .collect();
         if matched.len() < min_required || !matched.iter().any(|(_, anchor)| *anchor) {
             continue;
@@ -365,6 +376,17 @@ mod tests {
         assert!(
             blended_rank(-8.0, 120.0, scale) < blended_rank(-4.0, 0.0, scale),
             "a clearly better bm25 must hold its lead"
+        );
+    }
+
+    #[test]
+    fn min_required_terms_scales_then_clamps() {
+        assert_eq!(min_required_terms(4), 2, "short prompt holds at MIN_TERMS");
+        assert_eq!(min_required_terms(15), 3, "scales up with length");
+        assert_eq!(
+            min_required_terms(50),
+            3,
+            "clamped, not 10, on a pasted wall"
         );
     }
 }
