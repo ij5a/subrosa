@@ -91,7 +91,7 @@ subrosa          # the dashboard
 
 - **Archives every session.** When one ends — quitting Claude Code, `/clear`, or logging out — its transcript is saved to a local SQLite (full-text search) database, with a catch-up sweep at the next start.
 - **Recalls on its own.** A prompt with enough distinctive terms pulls the top matching past sessions from the same project into context — silent unless the match is strong.
-- **Builds long-term memory.** Ended sessions queue up; `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog` distill them into curated facts (one per small markdown file). `subrosa generate` then renders `MEMORY.md` — a short, size-capped index Claude Code loads every session.
+- **Builds long-term memory.** Ended sessions queue up; `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog` distill them into curated facts (one per small markdown file). `subrosa generate` then renders `MEMORY.md` — a short, size-capped index Claude Code loads every session, and `subrosa fact search` finds a specific fact once a project has dozens.
 - **Makes everything searchable.** `subrosa search <terms>` runs ranked full-text search; identifiers like `my-app-prod` or `TICKET-123` stay exact, `--fuzzy` handles partial names and typos, `--after`/`--before`/`--tag` narrow by date or by what a session was about, and `-C/--context` prints the turns around each hit so you can read it in context.
 - **Lists and filters sessions.** `subrosa sessions` shows past sessions newest-first, filterable by `--project`, date (`--after`/`--before`), and `--tag`. Each session carries auto-derived tags (`tool:bash`, `ext:rs`, `topic:cache-prod`) — computed locally at archive time, so they cost zero tokens and nothing to maintain.
 - **Shows what clusters together.** `subrosa related <identifier>` ranks the terms and sessions that recur alongside something like `auth.ts` or `TICKET-123` — read from the archive, not guessed. It answers "what did this work touch," which `search` can't.
@@ -119,6 +119,7 @@ subrosa sessions --tag topic:cache-prod --after 2026-05-01   # filter by tag and
 subrosa session <id> --tags              # dump a session and show its auto-derived tags
 
 subrosa fact list                        # curated facts for the current project
+subrosa fact search pgbouncer            # full-text search the curated facts (bm25-ranked)
 subrosa fact upsert --leaf note.md       # add/update a fact from a markdown file (one fact per file)
 subrosa fact link auth-decision          # show [[name]] links into/out of a fact (flags dead links)
 subrosa generate                         # rebuild MEMORY.md (byte-budgeted)

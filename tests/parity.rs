@@ -292,6 +292,104 @@ fn fact_link_matches_golden() {
 }
 
 #[test]
+fn fact_search_matches_content_and_respects_status() {
+    let env = setup("factsearch");
+    let memdir = env.data.join("memdir");
+    fs::create_dir_all(&memdir).unwrap();
+    fs::write(
+        memdir.join("reference_pg.md"),
+        "---\nname: pgbouncer-pool\ndescription: pgbouncer max_client_conn tuning for cache-prod\n\
+         type: reference\n---\nbody\n",
+    )
+    .unwrap();
+    fs::write(
+        memdir.join("reference_dns.md"),
+        "---\nname: dns-ttl\ndescription: route53 ttl defaults for the api zone\n\
+         type: reference\n---\nbody\n",
+    )
+    .unwrap();
+    let md = memdir.to_str().unwrap();
+    run(
+        &env,
+        &[
+            "fact",
+            "upsert",
+            "--leaf",
+            "reference_pg.md",
+            "--memdir",
+            md,
+        ],
+        None,
+    );
+    run(
+        &env,
+        &[
+            "fact",
+            "upsert",
+            "--leaf",
+            "reference_dns.md",
+            "--memdir",
+            md,
+        ],
+        None,
+    );
+
+    // A content word returns its fact and leaves the other one out.
+    let hit = run(&env, &["fact", "search", "pgbouncer", "--memdir", md], None);
+    assert!(
+        hit.contains("pgbouncer-pool"),
+        "content match returned, got:\n{hit}"
+    );
+    assert!(
+        !hit.contains("dns-ttl"),
+        "the non-matching fact stays out, got:\n{hit}"
+    );
+
+    // Porter stemming: the hook says "defaults", a search for "default" still hits.
+    let stem = run(&env, &["fact", "search", "default", "--memdir", md], None);
+    assert!(
+        stem.contains("dns-ttl"),
+        "stemmed match returned, got:\n{stem}"
+    );
+
+    // Archived facts drop out of the default (active) search; --status archived finds them.
+    run(
+        &env,
+        &[
+            "fact",
+            "archive",
+            "--leaf",
+            "reference_pg.md",
+            "--memdir",
+            md,
+        ],
+        None,
+    );
+    let active = run(&env, &["fact", "search", "pgbouncer", "--memdir", md], None);
+    assert!(
+        !active.contains("pgbouncer-pool"),
+        "archived fact excluded by default, got:\n{active}"
+    );
+    let arch = run(
+        &env,
+        &[
+            "fact",
+            "search",
+            "pgbouncer",
+            "--memdir",
+            md,
+            "--status",
+            "archived",
+        ],
+        None,
+    );
+    assert!(
+        arch.contains("pgbouncer-pool"),
+        "archived fact found with --status archived, got:\n{arch}"
+    );
+}
+
+#[test]
 fn sessions_matches_golden() {
     let env = setup("sessions");
     ingest_golden_transcript(&env);

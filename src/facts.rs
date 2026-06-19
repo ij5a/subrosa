@@ -20,6 +20,7 @@ pub enum FactAction {
     Unpin,
     List,
     Link,
+    Search,
 }
 
 #[derive(ValueEnum, Clone, Copy, PartialEq)]
@@ -297,6 +298,15 @@ fn upsert(
 // (type, title, leaf_path, pinned, status)
 type FactListRow = (Option<String>, Option<String>, Option<String>, i64, String);
 
+/// The `📌`/`🗄` flag prefix shared by `fact list` and `fact search`.
+fn fact_flags(pinned: i64, status: &str) -> String {
+    format!(
+        "{}{}",
+        if pinned != 0 { "📌" } else { "  " },
+        if status == "active" { " " } else { "🗄 " }
+    )
+}
+
 fn list(conn: &Connection, project: &str, status: StatusFilter) -> rusqlite::Result<()> {
     let (where_sql, binds): (&str, Vec<String>) = match status {
         StatusFilter::All => ("project=?", vec![project.to_string()]),
@@ -320,19 +330,111 @@ fn list(conn: &Connection, project: &str, status: StatusFilter) -> rusqlite::Res
         })?
         .collect::<Result<_, _>>()?;
     for (type_, title, leaf, pinned, st) in rows {
-        let flags = format!(
-            "{}{}",
-            if pinned != 0 { "📌" } else { "  " },
-            if st == "active" { " " } else { "🗄 " }
-        );
         println!(
-            "{flags} [{}] {} ({})",
+            "{} [{}] {} ({})",
+            fact_flags(pinned, &st),
             type_.as_deref().unwrap_or(""),
             title.as_deref().unwrap_or(""),
             leaf.as_deref().unwrap_or("")
         );
     }
     Ok(())
+}
+
+/// `subrosa fact search <query>` — bm25-ranked full-text search over the curated
+/// facts (title/hook/description via facts_fts), scoped to one project. Read-only.
+fn search_facts(
+    query: Option<String>,
+    project: Option<String>,
+    memdir: Option<PathBuf>,
+    status: StatusFilter,
+) -> ExitCode {
+    // No archive yet → no facts to search. Quiet, like `link`.
+    let Ok(conn) = db::connect_readonly() else {
+        println!("[subrosa] no facts yet");
+        return ExitCode::SUCCESS;
+    };
+    let memdir = memdir
+        .map(|p| paths::expanduser(&p))
+        .unwrap_or_else(|| db::current_memdir(Some(&conn)));
+    let project = project.unwrap_or_else(|| project_of(&memdir));
+    let Some(query) = query.filter(|s| !s.trim().is_empty()) else {
+        eprintln!("[subrosa] fact search needs a query");
+        return ExitCode::from(2);
+    };
+    // Reuse the turns-search term quoting so identifiers like `cache-prod` match
+    // instead of tripping FTS5's operators. Facts have no trigram index, so no --fuzzy.
+    let terms: Vec<String> = query.split_whitespace().map(str::to_string).collect();
+    let m = crate::search::build_match(&terms, false, false);
+
+    let mut sql = String::from(
+        "SELECT f.type, f.title, f.leaf_path, f.pinned, f.status, f.hook \
+         FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid \
+         WHERE facts_fts MATCH ?1 AND f.project = ?2",
+    );
+    let mut binds: Vec<String> = vec![m.clone(), project];
+    if status != StatusFilter::All {
+        sql.push_str(" AND f.status = ?3");
+        binds.push(match status {
+            StatusFilter::Archived => "archived".into(),
+            _ => "active".into(),
+        });
+    }
+    sql.push_str(" ORDER BY bm25(facts_fts)");
+
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[subrosa] fact search query error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    type Row = (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+        String,
+        Option<String>,
+    );
+    let rows: Result<Vec<Row>, _> = stmt
+        .query_map(rusqlite::params_from_iter(binds.iter()), |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })
+        .and_then(|it| it.collect());
+    let rows = match rows {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[subrosa] fact search query error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if rows.is_empty() {
+        println!("[subrosa] no facts match: {m}");
+        return ExitCode::SUCCESS;
+    }
+    for (type_, title, leaf, pinned, st, hook) in &rows {
+        println!(
+            "{} [{}] {} ({})",
+            fact_flags(*pinned, st),
+            type_.as_deref().unwrap_or(""),
+            title.as_deref().unwrap_or(""),
+            leaf.as_deref().unwrap_or("")
+        );
+        // The hook is the curated one-liner — the content the match is usually in.
+        if let Some(h) = hook.as_deref().filter(|s| !s.is_empty()) {
+            println!("      {h}");
+        }
+    }
+    println!("\n[subrosa] {} fact(s) match", rows.len());
+    ExitCode::SUCCESS
 }
 
 /// One curated fact, reduced to what `fact link` needs.
@@ -550,9 +652,12 @@ pub fn run(
     status: StatusFilter,
     anchor: Option<String>,
 ) -> ExitCode {
-    // `link` is read-only — open read-only before the read-write connect below.
+    // `link` and `search` are read-only — open read-only before the read-write connect below.
     if let FactAction::Link = action {
         return link(anchor, project, memdir);
+    }
+    if let FactAction::Search = action {
+        return search_facts(anchor, project, memdir, status);
     }
     let conn = match db::connect() {
         Ok(c) => c,
@@ -623,7 +728,7 @@ pub fn run(
                 params![now, project, leaf],
             )
             .map(|n| println!("[subrosa] unpinned {n} fact(s): {leaf}")),
-        FactAction::List | FactAction::Link => unreachable!(),
+        FactAction::List | FactAction::Link | FactAction::Search => unreachable!(),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

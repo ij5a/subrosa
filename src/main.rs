@@ -147,11 +147,11 @@ enum Cmd {
     },
     /// Show the memory archive dashboard (activity, store, by-project share)
     Stats(stats::Args),
-    /// Inspect or mutate curated facts (link/list/upsert/archive/pin/unpin)
+    /// Inspect or mutate curated facts (search/link/list/upsert/archive/pin/unpin)
     Fact {
         #[arg(value_enum)]
         action: facts::FactAction,
-        /// For `link`: a fact slug or leaf filename to show links for
+        /// For `link`: a fact slug or leaf filename; for `search`: the query terms
         anchor: Option<String>,
         /// Leaf filename, e.g. reference_foo.md (bare filename, no path)
         #[arg(long)]
