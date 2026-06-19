@@ -5,6 +5,15 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-06-19
+
+### Added
+
+- `subrosa search -C/--context N` prints the N turns on each side of every hit (same session), so you can read a match in context without opening the whole session. The default `N=0` keeps the output byte-for-byte as before.
+- `subrosa search --exclude <term>` drops hits that contain the term (repeatable). It's built on the same phrase-quoting as the positive terms, so identifiers stay hyphen-safe, and it's ignored with `--raw`.
+- `subrosa search --any` matches any term instead of all — OR instead of the default AND. It composes with `--exclude` as `(a OR b) NOT c`.
+- `subrosa fact search <terms>` runs a bm25-ranked full-text search over the curated facts (title, hook, description), scoped to the current project, with a `--status` filter (active by default). It finds one fact once a project has dozens.
+
 ## [0.13.0] - 2026-06-17
 
 ### Added
@@ -130,6 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.14.0]: https://github.com/ij5a/subrosa/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/ij5a/subrosa/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/ij5a/subrosa/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/ij5a/subrosa/compare/v0.11.0...v0.12.0
