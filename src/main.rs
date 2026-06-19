@@ -109,6 +109,9 @@ enum Cmd {
         /// Only sessions carrying this tag (e.g. tool:bash); repeatable, ANDed
         #[arg(long)]
         tag: Vec<String>,
+        /// Also print N turns on each side of every hit (same session), for context
+        #[arg(short = 'C', long, default_value_t = 0)]
+        context: i64,
     },
     /// Find terms and sessions that co-occur with an identifier across the archive
     Related {
@@ -293,6 +296,7 @@ fn main() -> ExitCode {
             after,
             before,
             tag,
+            context,
         } => search::run(
             &terms,
             limit,
@@ -303,6 +307,7 @@ fn main() -> ExitCode {
             after.as_deref(),
             before.as_deref(),
             &tag,
+            context,
         ),
         Cmd::Related {
             identifier,

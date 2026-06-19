@@ -384,6 +384,65 @@ fn search_line_carries_relative_age() {
 }
 
 #[test]
+fn search_context_window_shows_surrounding_turns() {
+    let env = setup("searchctx");
+    // A self-contained 5-turn session with distinctive tokens so the ±N window is
+    // unambiguous — plain user strings + assistant text blocks, the shapes ingest flattens.
+    let sid = "ctx0-1111-2222-3333";
+    let tp = env.projects.join(format!("-tmp-demo/{sid}.jsonl"));
+    let turns = [
+        ("user", "alpha aardvark the opening note"),
+        ("assistant", "beta bumblebee acknowledging"),
+        ("user", "gamma wombatbridge the matched middle"),
+        ("assistant", "delta dragonfly the considered reply"),
+        ("user", "epsilon elephant the closing note"),
+    ];
+    let mut body = String::new();
+    for (i, (role, text)) in turns.iter().enumerate() {
+        let content = if *role == "assistant" {
+            format!("[{{\"type\":\"text\",\"text\":\"{text}\"}}]")
+        } else {
+            format!("\"{text}\"")
+        };
+        body.push_str(&format!(
+            "{{\"type\":\"{role}\",\"timestamp\":\"2026-06-12T01:0{i}:00Z\",\"uuid\":\"x{i}\",\
+             \"cwd\":\"/tmp/demo\",\"message\":{{\"role\":\"{role}\",\"content\":{content}}}}}\n"
+        ));
+    }
+    fs::write(&tp, body).unwrap();
+    run(&env, &["ingest", tp.to_str().unwrap()], None);
+
+    // Default (no flag): the snippet only — no neighbouring turns leak into the output.
+    let plain = run(&env, &["search", "wombatbridge"], None);
+    assert!(
+        plain.contains("\u{ab}wombatbridge\u{bb}"),
+        "default hit present, got:\n{plain}"
+    );
+    assert!(
+        !plain.contains("bumblebee") && !plain.contains("dragonfly"),
+        "default search shows no context turns, got:\n{plain}"
+    );
+
+    // --context 1: both immediate neighbours show; the distance-2 turns stay out.
+    let ctx = run(&env, &["search", "wombatbridge", "--context", "1"], None);
+    assert!(
+        ctx.contains("bumblebee") && ctx.contains("dragonfly"),
+        "both immediate neighbours are shown, got:\n{ctx}"
+    );
+    assert!(
+        !ctx.contains("aardvark") && !ctx.contains("elephant"),
+        "turns outside the ±1 window stay out, got:\n{ctx}"
+    );
+
+    // First-turn hit: nothing before it; the next turn still shows (and the -C alias works).
+    let head = run(&env, &["search", "aardvark", "-C", "1"], None);
+    assert!(
+        head.contains("bumblebee"),
+        "after-context shows for a first-turn hit, got:\n{head}"
+    );
+}
+
+#[test]
 fn hook_stop_ingests_in_progress_session_incrementally() {
     let env = setup("hookstop");
     // An in-progress transcript: on disk but never run through `ingest`. Only the

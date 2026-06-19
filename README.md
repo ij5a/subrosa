@@ -92,7 +92,7 @@ subrosa          # the dashboard
 - **Archives every session.** When one ends — quitting Claude Code, `/clear`, or logging out — its transcript is saved to a local SQLite (full-text search) database, with a catch-up sweep at the next start.
 - **Recalls on its own.** A prompt with enough distinctive terms pulls the top matching past sessions from the same project into context — silent unless the match is strong.
 - **Builds long-term memory.** Ended sessions queue up; `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog` distill them into curated facts (one per small markdown file). `subrosa generate` then renders `MEMORY.md` — a short, size-capped index Claude Code loads every session.
-- **Makes everything searchable.** `subrosa search <terms>` runs ranked full-text search; identifiers like `my-app-prod` or `TICKET-123` stay exact, `--fuzzy` handles partial names and typos, and `--after`/`--before`/`--tag` narrow by date or by what a session was about.
+- **Makes everything searchable.** `subrosa search <terms>` runs ranked full-text search; identifiers like `my-app-prod` or `TICKET-123` stay exact, `--fuzzy` handles partial names and typos, `--after`/`--before`/`--tag` narrow by date or by what a session was about, and `-C/--context` prints the turns around each hit so you can read it in context.
 - **Lists and filters sessions.** `subrosa sessions` shows past sessions newest-first, filterable by `--project`, date (`--after`/`--before`), and `--tag`. Each session carries auto-derived tags (`tool:bash`, `ext:rs`, `topic:cache-prod`) — computed locally at archive time, so they cost zero tokens and nothing to maintain.
 - **Shows what clusters together.** `subrosa related <identifier>` ranks the terms and sessions that recur alongside something like `auth.ts` or `TICKET-123` — read from the archive, not guessed. It answers "what did this work touch," which `search` can't.
 - **Follows your curated links.** Notes link to each other with `[[name]]`; `subrosa fact link <slug>` shows what a note links to and what links back, and flags dead links.
@@ -110,6 +110,7 @@ subrosa search -n 30 --raw 'cache OR redis'
 subrosa search --fuzzy ratelimiter       # substring/typo matching (builds a trigram index on first use)
 subrosa search deploy --after 2026-05-01 # only turns from May onward (--before too; YYYY-MM-DD, inclusive)
 subrosa search api --tag tool:kubectl    # only sessions that used a given tool (repeat --tag to AND)
+subrosa search pgbouncer -C 2            # print 2 turns on each side of every hit (read around the match)
 subrosa related cache-prod               # terms + sessions that co-occur with an identifier
 subrosa related TICKET-123 --project api # what clustered around it, scoped to one project
 
