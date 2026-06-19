@@ -100,6 +100,9 @@ enum Cmd {
         /// Substring/typo matching via a trigram index (built on first use)
         #[arg(long)]
         fuzzy: bool,
+        /// Match any term instead of all (OR instead of the default AND)
+        #[arg(long)]
+        any: bool,
         /// Only turns on or after this UTC date (YYYY-MM-DD, inclusive)
         #[arg(long)]
         after: Option<String>,
@@ -296,6 +299,7 @@ fn main() -> ExitCode {
             project,
             session,
             fuzzy,
+            any,
             after,
             before,
             tag,
@@ -308,6 +312,7 @@ fn main() -> ExitCode {
             project.as_deref(),
             session.as_deref(),
             fuzzy,
+            any,
             after.as_deref(),
             before.as_deref(),
             &tag,

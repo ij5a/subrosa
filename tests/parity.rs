@@ -579,6 +579,56 @@ fn search_exclude_drops_hits_carrying_the_term() {
 }
 
 #[test]
+fn search_any_ors_terms_and_composes_with_exclude() {
+    let env = setup("searchany");
+    let sid = "any0-1111-2222-3333";
+    let tp = env.projects.join(format!("-tmp-demo/{sid}.jsonl"));
+    // turn 3 carries the first OR-term (alpha) AND the excluded token, so it tests
+    // that `(alpha OR beta) NOT quuxroll` groups right — a mis-grouping would keep it.
+    fs::write(
+        &tp,
+        "{\"type\":\"user\",\"timestamp\":\"2026-06-12T01:00:00Z\",\"uuid\":\"n1\",\
+         \"cwd\":\"/tmp/demo\",\"message\":{\"role\":\"user\",\"content\":\"alpha apple\"}}\n\
+         {\"type\":\"assistant\",\"timestamp\":\"2026-06-12T01:01:00Z\",\"uuid\":\"n2\",\
+         \"cwd\":\"/tmp/demo\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\
+         \"text\":\"beta banana\"}]}}\n\
+         {\"type\":\"user\",\"timestamp\":\"2026-06-12T01:02:00Z\",\"uuid\":\"n3\",\
+         \"cwd\":\"/tmp/demo\",\"message\":{\"role\":\"user\",\"content\":\"alpha cherry quuxroll\"}}\n",
+    )
+    .unwrap();
+    run(&env, &["ingest", tp.to_str().unwrap()], None);
+
+    // Default AND: no single turn carries both alpha and beta.
+    let and = run(&env, &["search", "alpha", "beta"], None);
+    assert!(
+        and.contains("no matches"),
+        "default AND finds nothing, got:\n{and}"
+    );
+
+    // --any ORs them: the alpha turns and the beta turn all match.
+    let any = run(&env, &["search", "alpha", "beta", "--any"], None);
+    assert!(
+        any.contains("apple") && any.contains("banana") && any.contains("cherry"),
+        "--any matches any term, got:\n{any}"
+    );
+
+    // --any composed with --exclude drops the alpha turn that also carries the token.
+    let composed = run(
+        &env,
+        &["search", "alpha", "beta", "--any", "--exclude", "quuxroll"],
+        None,
+    );
+    assert!(
+        composed.contains("apple") && composed.contains("banana"),
+        "the clean turns stay, got:\n{composed}"
+    );
+    assert!(
+        !composed.contains("cherry"),
+        "the alpha turn carrying the excluded token is dropped, got:\n{composed}"
+    );
+}
+
+#[test]
 fn hook_stop_ingests_in_progress_session_incrementally() {
     let env = setup("hookstop");
     // An in-progress transcript: on disk but never run through `ingest`. Only the

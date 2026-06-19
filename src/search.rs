@@ -60,6 +60,7 @@ pub fn run(
     project: Option<&str>,
     session: Option<&str>,
     fuzzy: bool,
+    any: bool,
     after: Option<&str>,
     before: Option<&str>,
     tags: &[String],
@@ -117,7 +118,12 @@ pub fn run(
             }
         }
     }
-    let m = build_match(terms, raw, fuzzy);
+    // --any ORs the terms instead of the default AND; raw owns its own query.
+    let m = if any && !raw {
+        quote_terms(terms, fuzzy).join(" OR ")
+    } else {
+        build_match(terms, raw, fuzzy)
+    };
     if fuzzy && m.trim().is_empty() {
         eprintln!("[subrosa] --fuzzy needs at least one term of 3+ characters");
         return ExitCode::from(2);
