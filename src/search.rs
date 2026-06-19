@@ -20,19 +20,26 @@ fn ctx_preview(text: &str) -> String {
     out
 }
 
-/// Quote each whitespace term as a phrase so identifiers like `my-app-prod` /
+/// Phrase-quote each whitespace token so identifiers like `my-app-prod` /
 /// `TICKET-123` match instead of tripping FTS5's column/NOT operators on the hyphen.
-pub fn build_match(terms: &[String], raw: bool, fuzzy: bool) -> String {
-    let q = terms.join(" ").trim().to_string();
-    if raw {
-        return q;
-    }
-    q.split_whitespace()
+/// Shared by the positive match and the `--exclude` NOT clauses.
+fn quote_terms(terms: &[String], fuzzy: bool) -> Vec<String> {
+    terms
+        .iter()
+        .flat_map(|t| t.split_whitespace())
         // The trigram tokenizer (--fuzzy) can't index a token shorter than 3 chars; drop those.
         .filter(|tok| !fuzzy || tok.chars().count() >= 3)
         .map(|tok| format!("\"{}\"", tok.replace('"', "\"\"")))
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect()
+}
+
+/// Build the FTS5 MATCH string for the positive search terms (each phrase-quoted),
+/// or the user's verbatim query when `raw`.
+pub fn build_match(terms: &[String], raw: bool, fuzzy: bool) -> String {
+    if raw {
+        return terms.join(" ").trim().to_string();
+    }
+    quote_terms(terms, fuzzy).join(" ")
 }
 
 /// Display the stored ISO timestamp as `YYYY-MM-DD HH:MM` (stored zone, ~UTC).
@@ -56,6 +63,7 @@ pub fn run(
     after: Option<&str>,
     before: Option<&str>,
     tags: &[String],
+    exclude: &[String],
     context: i64,
 ) -> ExitCode {
     // Negative is meaningless (clap accepts it); treat it as "no context".
@@ -114,6 +122,22 @@ pub fn run(
         eprintln!("[subrosa] --fuzzy needs at least one term of 3+ characters");
         return ExitCode::from(2);
     }
+    // --exclude drops hits containing the given term(s). Non-raw only (raw owns the
+    // whole query); wrap the includes so `(includes) NOT "x" NOT "y"` groups correctly.
+    let m = if !raw && !exclude.is_empty() && !m.trim().is_empty() {
+        let nots = quote_terms(exclude, fuzzy)
+            .iter()
+            .map(|e| format!("NOT {e}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if nots.is_empty() {
+            m
+        } else {
+            format!("({m}) {nots}")
+        }
+    } else {
+        m
+    };
 
     // The table name is a fixed literal chosen by --fuzzy, never user input.
     let mut sql = format!(

@@ -109,6 +109,9 @@ enum Cmd {
         /// Only sessions carrying this tag (e.g. tool:bash); repeatable, ANDed
         #[arg(long)]
         tag: Vec<String>,
+        /// Drop hits that contain this term (repeatable; ignored with --raw)
+        #[arg(long)]
+        exclude: Vec<String>,
         /// Also print N turns on each side of every hit (same session), for context
         #[arg(short = 'C', long, default_value_t = 0)]
         context: i64,
@@ -296,6 +299,7 @@ fn main() -> ExitCode {
             after,
             before,
             tag,
+            exclude,
             context,
         } => search::run(
             &terms,
@@ -307,6 +311,7 @@ fn main() -> ExitCode {
             after.as_deref(),
             before.as_deref(),
             &tag,
+            &exclude,
             context,
         ),
         Cmd::Related {

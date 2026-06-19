@@ -541,6 +541,44 @@ fn search_context_window_shows_surrounding_turns() {
 }
 
 #[test]
+fn search_exclude_drops_hits_carrying_the_term() {
+    let env = setup("searchexcl");
+    let sid = "excl-1111-2222-3333";
+    let tp = env.projects.join(format!("-tmp-demo/{sid}.jsonl"));
+    // Turn 1 carries the search term only; turn 2 carries the term AND the excluded
+    // word. --exclude works per turn (each hit is a turn), so only turn 2 should drop.
+    fs::write(
+        &tp,
+        "{\"type\":\"user\",\"timestamp\":\"2026-06-12T01:00:00Z\",\"uuid\":\"e1\",\
+         \"cwd\":\"/tmp/demo\",\"message\":{\"role\":\"user\",\"content\":\
+         \"deploy the wibble service\"}}\n\
+         {\"type\":\"assistant\",\"timestamp\":\"2026-06-12T01:01:00Z\",\"uuid\":\"e2\",\
+         \"cwd\":\"/tmp/demo\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\
+         \"text\":\"the deploy triggered a rollback of snarf\"}]}}\n",
+    )
+    .unwrap();
+    run(&env, &["ingest", tp.to_str().unwrap()], None);
+
+    // Without --exclude both deploy turns match (the second carries the snarf token).
+    let plain = run(&env, &["search", "deploy"], None);
+    assert!(
+        plain.contains("snarf"),
+        "the rollback turn is present without --exclude, got:\n{plain}"
+    );
+
+    // --exclude rollback drops the turn that contains rollback, keeps the other.
+    let excl = run(&env, &["search", "deploy", "--exclude", "rollback"], None);
+    assert!(
+        excl.contains("wibble"),
+        "the non-excluded turn stays, got:\n{excl}"
+    );
+    assert!(
+        !excl.contains("snarf") && !excl.contains("rollback"),
+        "the turn carrying the excluded term is dropped, got:\n{excl}"
+    );
+}
+
+#[test]
 fn hook_stop_ingests_in_progress_session_incrementally() {
     let env = setup("hookstop");
     // An in-progress transcript: on disk but never run through `ingest`. Only the
