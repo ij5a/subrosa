@@ -5,6 +5,13 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1] - 2026-06-19
+
+### Fixed
+
+- Recall now finds a past session even when an identifier was written with a different separator. The FTS5 index splits `-`, `_`, and `.` the same way, but the relevance post-filter didn't — so a stored `cache_prod` wouldn't match a prompt's `cache-prod` even though the search had already found the row. The post-filter now folds the three separators the way FTS does, and it only re-admits rows the search already returned, so recall stays exactly as quiet on weak matches as before.
+- The match-term gate no longer over-filters long pasted prompts. It scales the number of required matching terms with prompt length, but that's now capped, so a pasted error log plus a question can't demand so many matches that the genuinely relevant session is dropped. The anchor requirement is unchanged.
+
 ## [0.14.0] - 2026-06-19
 
 ### Added
@@ -139,6 +146,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.14.1]: https://github.com/ij5a/subrosa/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/ij5a/subrosa/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/ij5a/subrosa/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/ij5a/subrosa/compare/v0.12.0...v0.12.1
