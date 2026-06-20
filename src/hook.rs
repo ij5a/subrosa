@@ -241,11 +241,12 @@ fn backlog_directive() -> Option<String> {
         "quiet" => Some(format!(
             "[subrosa] {n} session(s) still queued for checkpoint — run /subrosa:checkpoint-backlog when convenient."
         )),
-        // loud (default): an imperative reminder placed right at the prompt.
+        // loud (default): an imperative reminder placed right at the prompt. It
+        // points at a background run so handling the backlog never blocks the turn.
         _ => Some(format!(
             "[subrosa] ACTION REQUIRED before this turn: {n} session(s) queued for checkpoint. \
-             If you haven't already, run the /subrosa:checkpoint-backlog skill to save them, then \
-             continue with the request."
+             If you haven't already, run /subrosa:checkpoint-backlog in the background (don't block \
+             this turn) to save them, then carry on with the request."
         )),
     }
 }

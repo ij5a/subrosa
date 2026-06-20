@@ -316,8 +316,9 @@ fn backlog_directive_rides_each_user_prompt() {
     assert!(
         out.contains("ACTION REQUIRED")
             && out.contains("/subrosa:checkpoint-backlog")
-            && out.contains("2 session(s)"),
-        "directive should ride the prompt while the queue is non-empty, got:\n{out}"
+            && out.contains("2 session(s)")
+            && out.contains("background"),
+        "directive should ride the prompt and point at a background run, got:\n{out}"
     );
     // Stays [subrosa]-prefixed so NOISE_PREFIXES keeps it out of the archive.
     for line in out.lines().filter(|l| !l.trim().is_empty()) {
