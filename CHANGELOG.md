@@ -5,6 +5,12 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-06-21
+
+### Changed
+
+- The `Stop` hook's per-turn live ingest now resumes from a saved byte offset instead of re-reading the whole transcript each turn. The cost stays flat no matter how long the session runs — a long multi-hour session ingests each turn as fast as a fresh one (~7 ms), where before the per-turn cost grew with the transcript length. The archive it produces is byte-for-byte identical to a full re-read; this is a speed change only. Schema v4 adds two `sessions` columns (`scan_offset`, `scan_seq`) for the cursor — an additive migration; existing archives re-read once on the next ingest to set it.
+
 ## [0.15.0] - 2026-06-21
 
 ### Changed
@@ -156,6 +162,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.16.0]: https://github.com/ij5a/subrosa/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/ij5a/subrosa/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/ij5a/subrosa/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/ij5a/subrosa/compare/v0.13.0...v0.14.0
