@@ -77,7 +77,7 @@ The automatic recall is a small, cheap nudge, not the full answer — the top 3 
 
 ## Is my current session searchable while it's still running?
 
-Yes. After each assistant turn subrosa archives the in-progress transcript (the `Stop` hook), so the live session shows up in `subrosa search` before you ever end it — handy when a second terminal or agent needs to see what this one is doing, or when you switch sessions fast and want the one you just left already archived. It costs ~7 ms per turn and runs after the reply is on screen, so you never feel it. The automatic prompt recall still skips the current session on purpose — it's already in Claude's context, so re-injecting it would only burn tokens — so this helps *across* sessions, not echo the one you're in.
+Yes. After each assistant turn subrosa archives the in-progress transcript (the `Stop` hook), so the live session shows up in `subrosa search` before you ever end it — handy when a second terminal or agent needs to see what this one is doing, or when you switch sessions fast and want the one you just left already archived. It costs ~7 ms per turn — flat no matter how long the session runs, since it resumes from a saved offset and reads only the new lines — and runs after the reply is on screen, so you never feel it. The automatic prompt recall still skips the current session on purpose — it's already in Claude's context, so re-injecting it would only burn tokens — so this helps *across* sessions, not echo the one you're in.
 
 ## Why keyword search instead of embeddings?
 

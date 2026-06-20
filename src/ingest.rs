@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -248,20 +248,60 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    let reader = BufReader::new(fs::File::open(path)?);
+    // Transcripts are append-only, so resume from where the last ingest stopped:
+    // seek to scan_offset and number lines from scan_seq, reading only the new bytes.
+    // If the file is now shorter than that offset it was truncated or replaced (not an
+    // append), so reset to (0, 0) and re-read from the top.
+    let (resume_offset, resume_seq): (u64, i64) = conn
+        .query_row(
+            "SELECT scan_offset, scan_seq FROM sessions WHERE session_id=?",
+            [&sid],
+            |r| Ok((r.get::<_, i64>(0)?.max(0) as u64, r.get(1)?)),
+        )
+        .optional()?
+        .unwrap_or((0, 0));
+
+    let mut file = fs::File::open(path)?;
+    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let (mut offset, mut seq) = if resume_offset <= file_len {
+        (resume_offset, resume_seq)
+    } else {
+        (0, 0)
+    };
+    if offset > 0 {
+        file.seek(SeekFrom::Start(offset))?;
+    }
+    let mut reader = BufReader::new(file);
+
     let mut rows: Vec<Row> = Vec::new();
     let (mut first_ts, mut last_ts, mut cwd): (Option<String>, Option<String>, Option<String>) =
         (None, None, None);
     let mut scanned: i64 = 0;
 
-    for (i, chunk) in reader.split(b'\n').enumerate() {
-        let Ok(bytes) = chunk else { continue };
-        let line = String::from_utf8_lossy(&bytes);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        let n = reader.read_until(b'\n', &mut buf)?;
+        if n == 0 {
+            break; // EOF
+        }
+        // No trailing newline means the final line is still being written: leave it
+        // (and the cursor) for the next pass, when it's complete. This is the old
+        // "half-written last line, picked up next pass" behavior without re-reading.
+        if buf.last() != Some(&b'\n') {
+            break;
+        }
+        offset += n as u64;
+        // seq is the absolute line index (blank/unparseable lines consume an index
+        // too), so a record always maps to the same seq across passes — the basis
+        // for INSERT OR IGNORE dedup.
+        let i = seq;
+        seq += 1;
+        let line = String::from_utf8_lossy(&buf);
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        // A half-written last line of a live transcript fails to parse; picked up next pass.
         let Ok(o) = serde_json::from_str::<Value>(line) else {
             continue;
         };
@@ -286,7 +326,7 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
             cwd = row_cwd.clone();
         }
         rows.push(Row {
-            seq: i as i64,
+            seq: i,
             uuid: o.get("uuid").and_then(Value::as_str).map(str::to_string),
             ts,
             role,
@@ -336,19 +376,32 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     let fsize = fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
+    // first_ts/last_ts are MIN/MAX, not COALESCE-overwrite: an incremental pass only
+    // sees the newly appended records, so its local min would otherwise clobber the
+    // true session start. NULL-safe so a pass with no timestamps keeps the stored one.
     conn.execute(
         "INSERT INTO sessions \
-           (session_id,file_path,project,cwd,first_ts,last_ts,num_turns,last_seq,file_size,ingested_at) \
-         VALUES (?,?,?,?,?,?,?,?,?,?) \
+           (session_id,file_path,project,cwd,first_ts,last_ts,num_turns,last_seq,file_size,scan_offset,scan_seq,ingested_at) \
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?) \
          ON CONFLICT(session_id) DO UPDATE SET \
            file_path=excluded.file_path, \
            project=excluded.project, \
            cwd=COALESCE(excluded.cwd, sessions.cwd), \
-           first_ts=COALESCE(excluded.first_ts, sessions.first_ts), \
-           last_ts=COALESCE(excluded.last_ts, sessions.last_ts), \
+           first_ts=CASE \
+             WHEN sessions.first_ts IS NULL THEN excluded.first_ts \
+             WHEN excluded.first_ts IS NULL THEN sessions.first_ts \
+             WHEN excluded.first_ts < sessions.first_ts THEN excluded.first_ts \
+             ELSE sessions.first_ts END, \
+           last_ts=CASE \
+             WHEN sessions.last_ts IS NULL THEN excluded.last_ts \
+             WHEN excluded.last_ts IS NULL THEN sessions.last_ts \
+             WHEN excluded.last_ts > sessions.last_ts THEN excluded.last_ts \
+             ELSE sessions.last_ts END, \
            num_turns=excluded.num_turns, \
            last_seq=excluded.last_seq, \
            file_size=excluded.file_size, \
+           scan_offset=excluded.scan_offset, \
+           scan_seq=excluded.scan_seq, \
            ingested_at=excluded.ingested_at",
         params![
             sid,
@@ -360,15 +413,20 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
             num_turns,
             last_seq,
             fsize,
+            offset as i64,
+            seq,
             now_iso()
         ],
     )?;
-    // Auto-derive read-only tags from the just-stored (already-redacted) turns.
-    // Swallow-and-log: a tagging failure must never fail an ingest that already
-    // stored its turns. ingest_file is the single funnel for every write path,
-    // so this one call covers sweep / SessionEnd / PreCompact / catch-up / CLI.
-    if let Err(e) = crate::tags::derive_tags(conn, &sid) {
-        eprintln!("[subrosa] tag derivation {sid}: {e}");
+    // Auto-derive read-only tags from the stored (already-redacted) turns — but only
+    // when this pass added turns. Tags are a pure function of the stored set, so an
+    // incremental no-op pass can skip the full re-derive. Swallow-and-log: a tagging
+    // failure must never fail an ingest that already stored its turns. ingest_file is
+    // the single funnel for every write path (sweep / SessionEnd / PreCompact / Stop / CLI).
+    if inserted > 0 {
+        if let Err(e) = crate::tags::derive_tags(conn, &sid) {
+            eprintln!("[subrosa] tag derivation {sid}: {e}");
+        }
     }
     Ok((inserted, scanned))
 }

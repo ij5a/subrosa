@@ -224,7 +224,7 @@ A hook that runs on every prompt has to be invisible. Measured with `scripts/ben
 | Prompt recall check, match found and injected | ~14 ms |
 | A full hook fire as Claude Code runs it (shell wrapper + binary) | under 10 ms |
 | Session-start catch-up sweep, nothing changed | ~5 ms |
-| Live-session ingest after a turn (one active transcript) | ~7 ms |
+| Live-session ingest after a turn (one transcript, flat at any session length) | ~7 ms |
 | `subrosa search` over 50,000 turns | 5–11 ms |
 | `subrosa related <identifier>` over 50,000 turns | 0.3–0.4 s |
 | Archiving 50,000 turns from scratch (first install) | ~1.1 s |

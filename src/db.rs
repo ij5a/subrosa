@@ -13,7 +13,8 @@ use crate::paths;
 // must keep working byte-for-byte, so schema changes go through migrate() only.
 // v2: porter-stemmed FTS (word forms match; identifiers pass through unchanged).
 // v3: session_tags (auto-derived, read-only tags) + a one-time backfill.
-const SCHEMA_VERSION: i64 = 3;
+// v4: scan_offset/scan_seq resume cursor on sessions — incremental transcript ingest.
+const SCHEMA_VERSION: i64 = 4;
 const SCHEMA: &str = r#"
 PRAGMA journal_mode=WAL;
 
@@ -28,6 +29,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_seq    INTEGER DEFAULT -1,
   file_size   INTEGER DEFAULT 0,
   checkpointed_seq INTEGER DEFAULT -1,
+  scan_offset INTEGER NOT NULL DEFAULT 0,
+  scan_seq    INTEGER NOT NULL DEFAULT 0,
   ingested_at TEXT
 );
 
@@ -281,6 +284,21 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [],
         )?;
     }
+    // v4: byte/line resume cursor for incremental ingest. Existing rows default to
+    // (0, 0), so the first ingest after the upgrade re-reads from the top and resets
+    // the cursor — no special backfill needed.
+    if !cols.iter().any(|c| c == "scan_offset") {
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN scan_offset INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    if !cols.iter().any(|c| c == "scan_seq") {
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN scan_seq INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
     // v2: swap both FTS indexes to the stemmed tokenizer. The CREATE statements
     // must match SCHEMA above (minus IF NOT EXISTS).
     upgrade_fts(
@@ -488,7 +506,7 @@ END;
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, SCHEMA_VERSION, "version bumped to 3");
+        assert_eq!(v, SCHEMA_VERSION, "version bumped to current");
         let total: i64 = conn
             .query_row(
                 "SELECT count(*) FROM session_tags WHERE session_id='s1'",

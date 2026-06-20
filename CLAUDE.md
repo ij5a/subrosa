@@ -4,7 +4,7 @@ Rust CLI + Claude Code plugin: persistent local memory for Claude Code. Read thi
 
 ## How it fits together
 
-One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires Claude Code's SessionStart/SessionEnd/UserPromptSubmit/PreCompact/Stop events to `hooks/run.sh`, which finds (or bootstraps) the binary and runs `subrosa hook <event>`. SessionStart catch-up-ingests changed transcripts and prints the checkpoint nudge; SessionEnd archives the ended session, queues it for checkpointing, and takes a throttled backup; UserPromptSubmit injects relevant past-session hits into context; PreCompact archives the conversation before compaction summarizes it away and resets recall dedup so post-compact prompts can re-inject; Stop incrementally ingests just the in-progress transcript after each assistant turn so the live session is searchable before it ends (no checkpoint enqueue or backup — those stay on SessionEnd). On top of the archive sit curated facts: `subrosa fact` mutates them, `subrosa generate` renders a byte-budgeted MEMORY.md, and the bundled `/subrosa:checkpoint` + `/subrosa:checkpoint-backlog` skills (in `skills/`) drive the distillation workflow. `subrosa search` queries the archive; bare `subrosa` is the dashboard.
+One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires Claude Code's SessionStart/SessionEnd/UserPromptSubmit/PreCompact/Stop events to `hooks/run.sh`, which finds (or bootstraps) the binary and runs `subrosa hook <event>`. SessionStart catch-up-ingests changed transcripts and prints the checkpoint nudge; SessionEnd archives the ended session, queues it for checkpointing, and takes a throttled backup; UserPromptSubmit injects relevant past-session hits into context; PreCompact archives the conversation before compaction summarizes it away and resets recall dedup so post-compact prompts can re-inject; Stop incrementally ingests just the in-progress transcript after each assistant turn — resuming from a saved byte offset so per-turn cost stays flat as the session grows — so the live session is searchable before it ends (no checkpoint enqueue or backup — those stay on SessionEnd). On top of the archive sit curated facts: `subrosa fact` mutates them, `subrosa generate` renders a byte-budgeted MEMORY.md, and the bundled `/subrosa:checkpoint` + `/subrosa:checkpoint-backlog` skills (in `skills/`) drive the distillation workflow. `subrosa search` queries the archive; bare `subrosa` is the dashboard.
 
 ## Module map (src/)
 
@@ -14,7 +14,7 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 | paths.rs | data locations, env overrides, KEY=VALUE config file |
 | db.rs | schema (compatibility-critical, incl. `session_tags`), connect/connect_readonly, migrate, now_iso, encode_cwd, current_memdir |
 | redact.rs | secret masking before storage |
-| ingest.rs | JSONL flatten → turns rows, sweep, checkpoint queue, tag derivation hook |
+| ingest.rs | JSONL flatten → turns rows, incremental seek-resume ingest (`scan_offset`/`scan_seq` cursor), sweep, checkpoint queue, tag derivation hook |
 | search.rs | FTS5 query building + result output (incl. `--after`/`--before`/`--tag` filters) |
 | sessions.rs | `sessions` verb: list past sessions newest-first, filter by project/date/tag |
 | related.rs | `related` verb: co-occurrence over the archive (anchor → terms + sessions; FTS-count idf down-weight) |
@@ -33,7 +33,7 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 
 ## Invariants (the load-bearing decisions)
 
-- **Schema and output formats are compatibility-critical.** Existing archives must keep working across versions. The stored-text, session-dump, MEMORY.md, recall, related, fact-link, and sessions-listing formats are pinned byte-for-byte by the golden tests in `tests/` — a failing golden test means a format change that needs a deliberate decision, never a quick golden-file update. Schema changes are additive only, through `migrate()` (the v3 `session_tags` add + backfill is the latest).
+- **Schema and output formats are compatibility-critical.** Existing archives must keep working across versions. The stored-text, session-dump, MEMORY.md, recall, related, fact-link, and sessions-listing formats are pinned byte-for-byte by the golden tests in `tests/` — a failing golden test means a format change that needs a deliberate decision, never a quick golden-file update. Schema changes are additive only, through `migrate()` (v3 added `session_tags` + backfill; v4 added the `scan_offset`/`scan_seq` ingest resume cursor).
 - **Hooks never fail, never block.** They log to `$SUBROSA_DIR/hook.log` and exit 0 no matter what. Stdout is reserved for intentional context injection (the session-start nudge, recall hits) — never error noise. They never spawn `claude` (recursion).
 - **The live DB never goes in a synced folder.** iCloud/Dropbox-style sync corrupts live SQLite WAL/SHM sidecars mid-write. Only static snapshot files mirror out (backup.rs). Don't add anything that moves the live DB.
 - **Redact before write.** Any new path that stores transcript text must go through `redact::redact`.

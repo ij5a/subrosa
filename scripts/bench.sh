@@ -113,9 +113,10 @@ hyperfine --warmup 3 --runs 25 \
   -n "session-start (nothing changed)" \
   "printf '{\"cwd\":\"/tmp/bench/proj3\",\"session_id\":\"bench-live\"}' | '$BIN' hook session-start"
 
-# Per-turn live-ingest: re-reads the one active transcript (single file, not the
-# full sweep). Re-ingesting an already-archived 250-record file is the steady-state
-# per-turn cost — full read + parse + tag re-derive, minus one trivial row insert.
+# Per-turn live-ingest: resumes from the stored byte cursor and reads only the new
+# bytes of the one active transcript (single file, not the full sweep). Re-ingesting
+# an already-archived 250-record file is the steady-state per-turn cost — now flat
+# regardless of how long the session has grown.
 echo "== hook stop (per-turn incremental ingest of the in-progress transcript) =="
 STOP_SID="bench-0003-0000-4000-8000-000000000003"
 STOP_TP="$SUBROSA_PROJECTS_DIR/-tmp-bench-proj3/$STOP_SID.jsonl"

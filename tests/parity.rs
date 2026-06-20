@@ -694,3 +694,142 @@ fn hook_stop_ingests_in_progress_session_incrementally() {
         "a missing transcript_path no-ops at exit 0"
     );
 }
+
+#[test]
+fn incremental_ingest_matches_full_ingest() {
+    // The whole point of the resume cursor: many Stop passes over a growing
+    // transcript must land the exact same archive as one full ingest of the final
+    // file — same turns, same first_ts/last_ts span, same derived tags.
+    let env = setup("incr-equiv");
+    let lines = [
+        r#"{"type":"user","timestamp":"2026-06-17T05:00:00Z","uuid":"u1","cwd":"/tmp/demo","message":{"role":"user","content":"chase the wombatprobe regression in widgetcache"}}"#,
+        r#"{"type":"assistant","timestamp":"2026-06-17T05:01:00Z","uuid":"a1","cwd":"/tmp/demo","message":{"role":"assistant","content":[{"type":"text","text":"the carrotlatch held after the patch on auth.ts"}]}}"#,
+        r#"{"type":"user","timestamp":"2026-06-17T05:02:00Z","uuid":"u2","cwd":"/tmp/demo","message":{"role":"user","content":"now wire the fluxcapacitor into the gizmo"}}"#,
+        r#"{"type":"assistant","timestamp":"2026-06-17T05:03:00Z","uuid":"a2","cwd":"/tmp/demo","message":{"role":"assistant","content":[{"type":"text","text":"inverted the register and the resonance is stable"}]}}"#,
+    ];
+
+    // full: write the whole file, ingest in one pass.
+    let full_sid = "full0000-0000-0000-0000-000000000000";
+    let full_tp = env.projects.join(format!("-tmp-demo/{full_sid}.jsonl"));
+    fs::write(&full_tp, format!("{}\n", lines.join("\n"))).unwrap();
+    run(&env, &["ingest", full_tp.to_str().unwrap()], None);
+
+    // incr: grow the file across Stop passes, with a half-written line mid-stream.
+    let incr_sid = "incr0000-0000-0000-0000-000000000000";
+    let incr_tp = env.projects.join(format!("-tmp-demo/{incr_sid}.jsonl"));
+    let payload = format!(
+        "{{\"transcript_path\":\"{}\",\"session_id\":\"{incr_sid}\"}}",
+        incr_tp.to_str().unwrap()
+    );
+    let append = |bytes: &[u8]| {
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&incr_tp)
+            .unwrap();
+        f.write_all(bytes).unwrap();
+    };
+    append(format!("{}\n", lines[0]).as_bytes());
+    run(&env, &["hook", "stop"], Some(&payload));
+    append(format!("{}\n", lines[1]).as_bytes());
+    run(&env, &["hook", "stop"], Some(&payload));
+    // A half-written turn 3 (no trailing newline): a clean no-op that must not
+    // advance the cursor past the incomplete line.
+    let l3 = lines[2].as_bytes();
+    append(&l3[..30]);
+    run(&env, &["hook", "stop"], Some(&payload));
+    append(&l3[30..]);
+    append(b"\n");
+    run(&env, &["hook", "stop"], Some(&payload));
+    append(format!("{}\n", lines[3]).as_bytes());
+    run(&env, &["hook", "stop"], Some(&payload));
+
+    // Turn bodies (everything but the per-session "# ..." header lines) must match.
+    let body = |dump: &str| {
+        dump.lines()
+            .filter(|l| !l.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let full_dump = run(&env, &["session", full_sid], None);
+    let incr_dump = run(&env, &["session", incr_sid], None);
+    assert_eq!(
+        body(&incr_dump),
+        body(&full_dump),
+        "incremental turns must equal a single full ingest\nINCR:\n{incr_dump}\nFULL:\n{full_dump}"
+    );
+
+    // The first_ts..last_ts span must match — proving an incremental pass's local
+    // min didn't clobber the true session start (the MIN/MAX guard).
+    let span = |dump: &str| {
+        dump.lines()
+            .next()
+            .unwrap_or("")
+            .rsplit("  ")
+            .next()
+            .unwrap_or("")
+            .to_string()
+    };
+    assert_eq!(
+        span(&incr_dump),
+        span(&full_dump),
+        "first_ts..last_ts must match the full ingest"
+    );
+    assert!(
+        span(&incr_dump).starts_with("2026-06-17T05:00:00"),
+        "first_ts stays the earliest record, got span: {}",
+        span(&incr_dump)
+    );
+
+    // Tags were derived during the incremental build (the inserted>0 passes ran it).
+    let tags = run(&env, &["session", incr_sid, "--tags"], None);
+    assert!(
+        tags.contains("topic:"),
+        "incremental session has derived tags, got:\n{tags}"
+    );
+}
+
+#[test]
+fn incremental_ingest_survives_a_shorter_file() {
+    // A transcript that shrinks (truncation / replacement) must not break the Stop
+    // hook: the cursor guard re-reads from the top instead of seeking past EOF, and
+    // the already-stored turns are never lost.
+    let env = setup("incr-trunc");
+    let sid = "trunc000-0000-0000-0000-000000000000";
+    let tp = env.projects.join(format!("-tmp-demo/{sid}.jsonl"));
+    let payload = format!(
+        "{{\"transcript_path\":\"{}\",\"session_id\":\"{sid}\"}}",
+        tp.to_str().unwrap()
+    );
+    let long: String = (0..6)
+        .map(|i| {
+            format!(
+                "{{\"type\":\"user\",\"timestamp\":\"2026-06-17T05:0{i}:00Z\",\"uuid\":\"u{i}\",\
+                 \"cwd\":\"/tmp/demo\",\"message\":{{\"role\":\"user\",\"content\":\
+                 \"baseline crocodilethump line {i}\"}}}}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&tp, format!("{long}\n")).unwrap();
+    run(&env, &["hook", "stop"], Some(&payload));
+    assert!(run(&env, &["search", "crocodilethump"], None).contains("crocodilethump"));
+
+    // Replace with a single, shorter line — the stored cursor now points past EOF.
+    fs::write(
+        &tp,
+        "{\"type\":\"user\",\"timestamp\":\"2026-06-17T06:00:00Z\",\"uuid\":\"n1\",\
+         \"cwd\":\"/tmp/demo\",\"message\":{\"role\":\"user\",\"content\":\"snapfizzle reset\"}}\n",
+    )
+    .unwrap();
+    let res = run_full(&env, &["hook", "stop"], Some(&payload));
+    assert_eq!(
+        res.status.code(),
+        Some(0),
+        "a shrinking transcript still exits 0"
+    );
+    assert!(
+        run(&env, &["search", "crocodilethump"], None).contains("crocodilethump"),
+        "existing turns survive a shorter file"
+    );
+}
