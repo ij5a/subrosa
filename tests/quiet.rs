@@ -301,6 +301,62 @@ fn empty_env_nudge_mode_falls_back_to_config() {
 }
 
 #[test]
+fn backlog_directive_rides_each_user_prompt() {
+    // The one-shot SessionStart nudge gets scrolled past once the first prompt
+    // lands, so the directive must also ride UserPromptSubmit while sessions are
+    // queued. Empty archive here, so stdout is purely the directive (no recall).
+    let env = setup("backlogride");
+    fs::write(
+        env.data.join("pending-checkpoint.log"),
+        "2026-06-12T01:00:00Z\taaaaaaaa-1111\n2026-06-12T02:00:00Z\tbbbbbbbb-2222\n",
+    )
+    .unwrap();
+    let payload = r#"{"prompt":"a normal question with no archive match","cwd":"/tmp/demo","session_id":"live-bd"}"#;
+    let (out, _) = run(&env, &["hook", "user-prompt-submit"], Some(payload));
+    assert!(
+        out.contains("ACTION REQUIRED")
+            && out.contains("/subrosa:checkpoint-backlog")
+            && out.contains("2 session(s)"),
+        "directive should ride the prompt while the queue is non-empty, got:\n{out}"
+    );
+    // Stays [subrosa]-prefixed so NOISE_PREFIXES keeps it out of the archive.
+    for line in out.lines().filter(|l| !l.trim().is_empty()) {
+        assert!(
+            line.starts_with("[subrosa]"),
+            "unprefixed directive line would re-enter the archive: {line}"
+        );
+    }
+}
+
+#[test]
+fn backlog_directive_silent_when_queue_empty() {
+    let env = setup("backlogempty");
+    let payload = r#"{"prompt":"anything at all here","cwd":"/tmp/demo","session_id":"live-be"}"#;
+    let (out, _) = run(&env, &["hook", "user-prompt-submit"], Some(payload));
+    assert_eq!(
+        out, "",
+        "empty queue and no recall must stay silent, got:\n{out}"
+    );
+}
+
+#[test]
+fn backlog_directive_respects_off_mode() {
+    let env = setup("backlogoff");
+    fs::write(env.data.join("config"), "checkpoint_nudge=off\n").unwrap();
+    fs::write(
+        env.data.join("pending-checkpoint.log"),
+        "2026-06-12T01:00:00Z\taaaaaaaa-1111\n",
+    )
+    .unwrap();
+    let payload = r#"{"prompt":"anything","cwd":"/tmp/demo","session_id":"live-bo"}"#;
+    let (out, _) = run(&env, &["hook", "user-prompt-submit"], Some(payload));
+    assert!(
+        !out.contains("ACTION REQUIRED") && !out.contains("queued for checkpoint"),
+        "off mode must silence the per-prompt directive, got:\n{out}"
+    );
+}
+
+#[test]
 fn long_hooks_capped_in_index() {
     let env = setup("hookcap");
     let memdir = env.data.join("memdir");

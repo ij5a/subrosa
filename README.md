@@ -151,7 +151,7 @@ flowchart TD
 ```
 
 1. A session ends → it's archived and queued.
-2. At the next start, an `ACTION REQUIRED` note lands in Claude's context (`[subrosa] ACTION REQUIRED — N session(s) queued for checkpoint…`) — hook output goes to Claude, not your chat window, so Claude acts on it (or you run the next step yourself). Prefer the calmer one-liner? Set `checkpoint_nudge=quiet` (or `off`) — see [Where your data lives](#where-your-data-lives).
+2. At the next start, an `ACTION REQUIRED` note lands in Claude's context (`[subrosa] ACTION REQUIRED — N session(s) queued for checkpoint…`) — hook output goes to Claude, not your chat window, so Claude acts on it (or you run the next step yourself). The same reminder then rides each prompt until the queue clears, so a busy first task can't bury it. Prefer the calmer one-liner? Set `checkpoint_nudge=quiet` (or `off`) — see [Where your data lives](#where-your-data-lives).
 3. Run `/subrosa:checkpoint-backlog` — Claude saves the important facts from each queued session into that project's memory, then rebuilds `MEMORY.md`.
 4. Before `/clear` or `/compact`, run `/subrosa:checkpoint` to do the same for the live session.
 

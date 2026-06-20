@@ -1,8 +1,9 @@
 //! Claude Code hook entrypoints. Mechanical only — read the hook JSON on
 //! stdin, do the work, log to the data dir, and always exit 0 so a memory
 //! problem can never block a session. Stdout is reserved for intentional
-//! context injection (session-start nudge, recall hits); errors go to the
-//! log, never the session. Never spawns `claude` (recursion).
+//! context injection (session-start nudge, the per-prompt checkpoint-backlog
+//! directive, recall hits); errors go to the log, never the session. Never
+//! spawns `claude` (recursion).
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -63,56 +64,62 @@ fn session_start(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
     sweep_result
 }
 
-/// Short, actionable nudge (stdout is injected into context). Stays silent
-/// unless there's something to act on: sessions awaiting checkpoint, or a
-/// project MEMORY.md approaching the always-loaded byte cap.
-fn nudge_lines(input: &Value) -> Vec<String> {
-    let mut out = Vec::new();
+/// Unique session ids waiting in the checkpoint queue, ordered oldest→newest
+/// enqueue (a session can fire SessionEnd more than once; the latest enqueue
+/// wins its slot). Empty when the queue file is absent or empty.
+fn queued_sessions() -> Vec<String> {
+    let mut order: Vec<String> = Vec::new();
     if let Ok(text) = std::fs::read_to_string(paths::pending_log()) {
-        // Unique queued sessions, ordered oldest→newest enqueue (a session can
-        // fire SessionEnd more than once; the latest enqueue wins its slot).
-        let mut order: Vec<&str> = Vec::new();
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
             let id = line.rsplit('\t').next().unwrap_or(line);
-            if let Some(pos) = order.iter().position(|x| *x == id) {
+            if let Some(pos) = order.iter().position(|x| x == id) {
                 order.remove(pos);
             }
-            order.push(id);
+            order.push(id.to_string());
         }
-        let n = order.len();
-        if n > 0 {
-            // Every line below starts with "[subrosa]" so the whole block is
-            // dropped on ingest (NOISE_PREFIXES) and never feeds back into the
-            // archive, even if the injected context is later split per line.
-            match paths::checkpoint_nudge_mode().as_str() {
-                "off" => {}
-                "quiet" => out.push(format!(
-                    "[subrosa] {n} session(s) queued for checkpoint — run /subrosa:checkpoint-backlog \
-                     to save them to memory now (in-session; handles up to 5, clears them as it finishes)."
-                )),
-                // loud (default): an imperative directive that's hard to skip.
-                _ => {
-                    out.push(format!(
-                        "[subrosa] ACTION REQUIRED — {n} session(s) queued for checkpoint. Save them \
-                         to memory now so the backlog doesn't grow and durable facts get lost."
-                    ));
-                    out.push(
-                        "[subrosa] Run the /subrosa:checkpoint-backlog skill to do it (in-session; \
-                         nothing auto-runs, no daemon). It distills each queued session into that \
-                         project's memory, up to 5 at a time, and clears them as it finishes."
-                            .to_string(),
-                    );
-                    let newest: Vec<&str> = order.iter().rev().take(5).copied().collect();
-                    out.push(format!(
-                        "[subrosa] Queued, newest first: {}{}",
-                        newest.join(", "),
-                        if n > newest.len() { ", …" } else { "" }
-                    ));
-                }
+    }
+    order
+}
+
+/// Short, actionable nudge (stdout is injected into context). Stays silent
+/// unless there's something to act on: sessions awaiting checkpoint, or a
+/// project MEMORY.md approaching the always-loaded byte cap.
+fn nudge_lines(input: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let order = queued_sessions();
+    let n = order.len();
+    if n > 0 {
+        // Every line below starts with "[subrosa]" so the whole block is
+        // dropped on ingest (NOISE_PREFIXES) and never feeds back into the
+        // archive, even if the injected context is later split per line.
+        match paths::checkpoint_nudge_mode().as_str() {
+            "off" => {}
+            "quiet" => out.push(format!(
+                "[subrosa] {n} session(s) queued for checkpoint — run /subrosa:checkpoint-backlog \
+                 to save them to memory now (in-session; handles up to 5, clears them as it finishes)."
+            )),
+            // loud (default): an imperative directive that's hard to skip.
+            _ => {
+                out.push(format!(
+                    "[subrosa] ACTION REQUIRED — {n} session(s) queued for checkpoint. Save them \
+                     to memory now so the backlog doesn't grow and durable facts get lost."
+                ));
+                out.push(
+                    "[subrosa] Run the /subrosa:checkpoint-backlog skill to do it (in-session; \
+                     nothing auto-runs, no daemon). It distills each queued session into that \
+                     project's memory, up to 5 at a time, and clears them as it finishes."
+                        .to_string(),
+                );
+                let newest: Vec<&str> = order.iter().rev().take(5).map(String::as_str).collect();
+                out.push(format!(
+                    "[subrosa] Queued, newest first: {}{}",
+                    newest.join(", "),
+                    if n > newest.len() { ", …" } else { "" }
+                ));
             }
         }
     }
@@ -219,9 +226,38 @@ fn stop(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Inject recall hits for the prompt (stdout is added to context). Read-only,
-/// quiet on any problem — a recall miss must never slow or block a prompt.
+/// A decision-time checkpoint-backlog reminder. The SessionStart nudge is
+/// one-shot — easy to scroll past once the first prompt lands — so this rides
+/// with every prompt while sessions are still queued, until the backlog drains.
+/// Prefixed "[subrosa]" so ingest's NOISE_PREFIXES drops it and it never feeds
+/// back into the archive. Honors checkpoint_nudge_mode ("off" silences it).
+fn backlog_directive() -> Option<String> {
+    let n = queued_sessions().len();
+    if n == 0 {
+        return None;
+    }
+    match paths::checkpoint_nudge_mode().as_str() {
+        "off" => None,
+        "quiet" => Some(format!(
+            "[subrosa] {n} session(s) still queued for checkpoint — run /subrosa:checkpoint-backlog when convenient."
+        )),
+        // loud (default): an imperative reminder placed right at the prompt.
+        _ => Some(format!(
+            "[subrosa] ACTION REQUIRED before this turn: {n} session(s) queued for checkpoint. \
+             If you haven't already, run the /subrosa:checkpoint-backlog skill to save them, then \
+             continue with the request."
+        )),
+    }
+}
+
+/// Inject the backlog directive (while sessions are queued) and recall hits for
+/// the prompt; both go to stdout, which Claude Code adds to context. Read-only,
+/// quiet on any problem — neither must ever slow or block a prompt.
 fn user_prompt_submit(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(directive) = backlog_directive() {
+        println!("{directive}");
+        log("user-prompt-submit backlog directive");
+    }
     if let Some(text) = recall::run(input) {
         println!("{text}");
         log(&format!(
