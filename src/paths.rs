@@ -112,3 +112,17 @@ pub fn mirror() -> Option<PathBuf> {
     }
     Some(PathBuf::from(v))
 }
+
+/// How loud the SessionStart checkpoint-backlog nudge is: "loud" (default — an
+/// imperative ACTION REQUIRED block so the backlog can't be missed), "quiet"
+/// (the calm one-liner), or "off" (no checkpoint nudge at all). Env beats
+/// config; an unset or unknown value falls back to loud.
+pub fn checkpoint_nudge_mode() -> String {
+    std::env::var("SUBROSA_CHECKPOINT_NUDGE")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| config_get("checkpoint_nudge"))
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "loud".to_string())
+}

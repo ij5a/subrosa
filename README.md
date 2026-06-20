@@ -141,7 +141,7 @@ subrosa setup                            # one-time backup-mirror question
 ```mermaid
 flowchart TD
     ended["session ends<br/>quit, /clear, or log out"] --> archived["archived into the local database<br/>+ queued for checkpoint"]
-    archived --> nudge["next session start<br/>a note lands in Claude's context:<br/>N sessions queued for checkpoint"]
+    archived --> nudge["next session start<br/>an action-required note lands in Claude's context:<br/>N sessions queued for checkpoint"]
     nudge --> backlog["/subrosa:checkpoint-backlog<br/>saves durable facts from each queued session"]
     livesession["live session<br/>before /clear or /compact"] --> checkpoint["/subrosa:checkpoint<br/>saves durable facts from the current session"]
     backlog --> facts["curated facts<br/>one file per fact + the facts database"]
@@ -151,7 +151,7 @@ flowchart TD
 ```
 
 1. A session ends → it's archived and queued.
-2. At the next start, a note lands in Claude's context (`[subrosa] N session(s) queued for checkpoint…`) — hook output goes to Claude, not your chat window, so Claude acts on it (or you run the next step yourself).
+2. At the next start, an `ACTION REQUIRED` note lands in Claude's context (`[subrosa] ACTION REQUIRED — N session(s) queued for checkpoint…`) — hook output goes to Claude, not your chat window, so Claude acts on it (or you run the next step yourself). Prefer the calmer one-liner? Set `checkpoint_nudge=quiet` (or `off`) — see [Where your data lives](#where-your-data-lives).
 3. Run `/subrosa:checkpoint-backlog` — Claude saves the important facts from each queued session into that project's memory, then rebuilds `MEMORY.md`.
 4. Before `/clear` or `/compact`, run `/subrosa:checkpoint` to do the same for the live session.
 
@@ -189,7 +189,9 @@ It adds about 160 tokens of always-loaded context — your call — and in retur
 | Mirror | the folder you picked in `subrosa setup` | A single static snapshot file is safe to sync |
 | Checkpoint queue | `~/.claude/subrosa/pending-checkpoint.log` | Plain text, one session per line |
 
-Everything is overridable with env vars: `SUBROSA_DIR`, `SUBROSA_DB`, `SUBROSA_PROJECTS_DIR`, `SUBROSA_PENDING_LOG`, `SUBROSA_MIRROR`.
+Everything is overridable with env vars: `SUBROSA_DIR`, `SUBROSA_DB`, `SUBROSA_PROJECTS_DIR`, `SUBROSA_PENDING_LOG`, `SUBROSA_MIRROR`, `SUBROSA_CHECKPOINT_NUDGE`.
+
+Two settings also live in `~/.claude/subrosa/config` (plain `KEY=VALUE`): `mirror` (the snapshot folder, or `none`) and `checkpoint_nudge` — `loud` (default, the `ACTION REQUIRED` block), `quiet` (a one-line reminder), or `off`. The matching env var wins when set.
 
 ## Privacy model
 
