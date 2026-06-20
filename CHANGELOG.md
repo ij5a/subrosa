@@ -5,6 +5,16 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-06-21
+
+### Changed
+
+- The session-start checkpoint-backlog nudge is loud by default. When sessions are waiting to be checkpointed, subrosa prints an `[subrosa] ACTION REQUIRED — N session(s) queued…` block — a short directive plus the up-to-5 newest queued session ids — instead of the old one-line note, so the backlog is harder to skip. Every line stays `[subrosa]`-prefixed, so it's still dropped on ingest and never feeds back into recall.
+
+### Added
+
+- `checkpoint_nudge` config key (and the `SUBROSA_CHECKPOINT_NUDGE` env var, which wins over the config file) to pick the nudge style: `loud` (default), `quiet` (the previous one-liner), or `off`. An unset or unknown value falls back to loud.
+
 ## [0.14.1] - 2026-06-19
 
 ### Fixed
@@ -146,6 +156,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.15.0]: https://github.com/ij5a/subrosa/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/ij5a/subrosa/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/ij5a/subrosa/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/ij5a/subrosa/compare/v0.12.1...v0.13.0
