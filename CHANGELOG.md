@@ -5,6 +5,12 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-06-21
+
+### Changed
+
+- The per-prompt checkpoint-backlog directive now tells Claude to run `/subrosa:checkpoint-backlog` in the background without blocking the current turn, instead of just naming the skill. The reminder that rides each prompt while sessions are queued now cues the action — kick the backlog off as a non-blocking background task and carry on — so a queued backlog gets handled without making you wait.
+
 ## [0.17.0] - 2026-06-21
 
 ### Added
@@ -168,6 +174,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.18.0]: https://github.com/ij5a/subrosa/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/ij5a/subrosa/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/ij5a/subrosa/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/ij5a/subrosa/compare/v0.14.1...v0.15.0
