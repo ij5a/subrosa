@@ -1,4 +1,4 @@
-e0010252d67e64f1dbcf3ce7e02ed7779326fa4f9c5f99f301abbb1bb7aaaea3  subrosa-v0.14.1-aarch64-apple-darwin.tar.gz
-4fd29689f584e9baea16c443f1b7f76a954ce0a649a8bbe73ece663e99faa9cf  subrosa-v0.14.1-aarch64-unknown-linux-musl.tar.gz
-bb9ca8f6ca610d53916cfef87e9fe5c176497fb879a5b5b19f3aefaecf6cee5b  subrosa-v0.14.1-x86_64-apple-darwin.tar.gz
-70663312d1336fc784e7ac433dde34d5389cfaee34453c0b9a530b9f50644832  subrosa-v0.14.1-x86_64-unknown-linux-musl.tar.gz
+eed2cf5caa2a32cfd00551ce97327e252991bcac522d1eb8b6197a60720e3a8a  subrosa-v0.15.0-aarch64-apple-darwin.tar.gz
+927a92abded5c7a90186cf93c6e8986a094f145db9775216effe58339504fb70  subrosa-v0.15.0-aarch64-unknown-linux-musl.tar.gz
+022ba4cc1eda1bdbc1e2633133777606c447937c9b03bb730160b4165efa96aa  subrosa-v0.15.0-x86_64-apple-darwin.tar.gz
+afbffa4beb9979055ef3b0cc0f12d75f0f89abeef49c3258383f7fc79b7c9a91  subrosa-v0.15.0-x86_64-unknown-linux-musl.tar.gz
