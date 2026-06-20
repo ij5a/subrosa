@@ -5,6 +5,12 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-06-21
+
+### Added
+
+- The checkpoint-backlog reminder now also rides every prompt (`UserPromptSubmit`), not just the once-per-session-start nudge. While sessions are waiting to be checkpointed, subrosa injects a short `[subrosa] ACTION REQUIRED before this turn: N session(s) queued…` line ahead of recall, so the backlog stays in view even when a busy first task scrolls the session-start nudge out of sight. It repeats until the queue drains, honors `checkpoint_nudge` (`off` silences it, `quiet` is a one-liner), and stays `[subrosa]`-prefixed so it never feeds back into the archive.
+
 ## [0.16.0] - 2026-06-21
 
 ### Changed
@@ -162,6 +168,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.17.0]: https://github.com/ij5a/subrosa/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/ij5a/subrosa/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/ij5a/subrosa/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/ij5a/subrosa/compare/v0.14.0...v0.14.1
