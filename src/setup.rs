@@ -151,11 +151,23 @@ fn ask_interactively() -> Option<PathBuf> {
 }
 
 //---------------------------------------------------------------------------
-// `init --claude-md`: append the standing "search the archive" instruction.
+// `init --claude-md`: append subrosa's standing CLAUDE.md instructions.
 
-/// Byte-identical to the fenced block in README.md ("Make Claude search the
-/// archive itself") — readme_pins_snippet keeps the two from drifting.
-const CLAUDE_MD_SNIPPET: &str = r#"## Memory recall (subrosa)
+/// One standing instruction `init --claude-md` installs into CLAUDE.md, keyed by
+/// its heading. Each section is upserted independently (append-only), so re-running
+/// adds whichever section is missing without rewriting existing bytes. Every `body`
+/// is byte-identical to a fenced block in README.md ("Make Claude use the archive
+/// itself") — readme_pins_snippets keeps the two from drifting.
+struct Section {
+    /// Heading; its presence anywhere in the file means the section is installed.
+    marker: &'static str,
+    body: &'static str,
+}
+
+const SECTIONS: &[Section] = &[
+    Section {
+        marker: "## Memory recall (subrosa)",
+        body: r#"## Memory recall (subrosa)
 
 Every past Claude Code session is archived locally and searchable with
 `subrosa search "<keywords>"` — scope with `--project <name>`, narrow by date or
@@ -169,33 +181,43 @@ starting cold. Announce the search ("Searching past sessions for [topic]...") an
 cite hits with their date. Skip only for trivial one-liners. `MEMORY.md` is
 generated — never hand-edit it; update facts with `subrosa fact` + `subrosa generate`,
 or run `/subrosa:checkpoint`.
-"#;
+"#,
+    },
+    Section {
+        marker: "## Memory auto-checkpoint (subrosa)",
+        body: r#"## Memory auto-checkpoint (subrosa)
 
-/// Present anywhere in the file (even pasted from the README) means the
-/// instruction is already installed — appending a second copy is the worse bug.
-const CLAUDE_MD_MARKER: &str = "## Memory recall (subrosa)";
+When a `[subrosa] ACTION REQUIRED` note says sessions are queued for checkpoint
+(or `subrosa pending` is non-empty), run the `/subrosa:checkpoint-backlog` skill
+in the background — never before or blocking the task you're working on. It saves
+the durable facts from each queued session into that project's memory, then clears
+the queue as it finishes. Skip it silently when nothing is queued.
+"#,
+    },
+];
 
 enum ClaudeMd {
-    Written,
+    /// Markers of the sections newly appended this run.
+    Written(Vec<&'static str>),
+    /// Every section was already present.
     AlreadyPresent,
 }
 
 pub fn append_claude_md() -> ExitCode {
     let path = paths::claude_md();
     match upsert_claude_md(&path) {
-        Ok(ClaudeMd::Written) => {
+        Ok(ClaudeMd::Written(markers)) => {
+            for m in &markers {
+                println!("[subrosa] appended \"{m}\" to {}", path.display());
+            }
             println!(
-                "[subrosa] appended \"{CLAUDE_MD_MARKER}\" to {} — Claude will now search the archive at task start",
-                path.display()
-            );
-            println!(
-                "[subrosa] it costs ~150 tokens of always-loaded context; delete the section to undo"
+                "[subrosa] subrosa's CLAUDE.md sections cost ~250 tokens of always-loaded context in total; delete a section to undo"
             );
             ExitCode::SUCCESS
         }
         Ok(ClaudeMd::AlreadyPresent) => {
             println!(
-                "[subrosa] {} already has a \"{CLAUDE_MD_MARKER}\" section — nothing to do",
+                "[subrosa] {} already has subrosa's CLAUDE.md sections — nothing to do",
                 path.display()
             );
             ExitCode::SUCCESS
@@ -208,32 +230,46 @@ pub fn append_claude_md() -> ExitCode {
 }
 
 /// Append-only: existing bytes are never rewritten; a missing file (and parent
-/// dir) is created. NotFound reads count as empty; other read errors abort.
+/// dir) is created. Appends each section whose marker is absent, separated by a
+/// blank line. NotFound reads count as empty; other read errors abort.
 fn upsert_claude_md(path: &std::path::Path) -> std::io::Result<ClaudeMd> {
     let existing = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
-    if existing.contains(CLAUDE_MD_MARKER) {
+    let mut additions = String::new();
+    let mut tail = existing.clone();
+    let mut appended = Vec::new();
+    for s in SECTIONS {
+        if existing.contains(s.marker) {
+            continue;
+        }
+        let sep = if tail.is_empty() || tail.ends_with("\n\n") {
+            ""
+        } else if tail.ends_with('\n') {
+            "\n"
+        } else {
+            "\n\n"
+        };
+        additions.push_str(sep);
+        additions.push_str(s.body);
+        tail.push_str(sep);
+        tail.push_str(s.body);
+        appended.push(s.marker);
+    }
+    if appended.is_empty() {
         return Ok(ClaudeMd::AlreadyPresent);
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let sep = if existing.is_empty() || existing.ends_with("\n\n") {
-        ""
-    } else if existing.ends_with('\n') {
-        "\n"
-    } else {
-        "\n\n"
-    };
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)?;
-    write!(f, "{sep}{CLAUDE_MD_SNIPPET}")?;
-    Ok(ClaudeMd::Written)
+    f.write_all(additions.as_bytes())?;
+    Ok(ClaudeMd::Written(appended))
 }
 
 #[cfg(test)]
@@ -247,12 +283,25 @@ mod claude_md_tests {
             .join("CLAUDE.md")
     }
 
+    /// All sections in order, joined the way upsert writes them into an empty file
+    /// (each body ends in "\n", so one blank line falls between them).
+    fn all_sections_joined() -> String {
+        let mut out = String::new();
+        for (i, s) in SECTIONS.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            out.push_str(s.body);
+        }
+        out
+    }
+
     #[test]
     fn creates_file_and_parent_dir() {
         let p = tmp("create");
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
-        assert!(matches!(upsert_claude_md(&p), Ok(ClaudeMd::Written)));
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), CLAUDE_MD_SNIPPET);
+        assert!(matches!(upsert_claude_md(&p), Ok(ClaudeMd::Written(_))));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), all_sections_joined());
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
@@ -262,9 +311,9 @@ mod claude_md_tests {
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, "# my rules").unwrap(); // no trailing newline
-        assert!(matches!(upsert_claude_md(&p), Ok(ClaudeMd::Written)));
+        assert!(matches!(upsert_claude_md(&p), Ok(ClaudeMd::Written(_))));
         let got = std::fs::read_to_string(&p).unwrap();
-        assert_eq!(got, format!("# my rules\n\n{CLAUDE_MD_SNIPPET}"));
+        assert_eq!(got, format!("# my rules\n\n{}", all_sections_joined()));
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
@@ -272,15 +321,42 @@ mod claude_md_tests {
     fn second_run_is_a_no_op() {
         let p = tmp("noop");
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
-        assert!(matches!(upsert_claude_md(&p), Ok(ClaudeMd::Written)));
+        assert!(matches!(upsert_claude_md(&p), Ok(ClaudeMd::Written(_))));
         let before = std::fs::read_to_string(&p).unwrap();
         assert!(matches!(upsert_claude_md(&p), Ok(ClaudeMd::AlreadyPresent)));
         assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
+    /// A file that already has one section (e.g. an old install) gets only the
+    /// missing section appended — the existing one is never duplicated.
     #[test]
-    fn readme_pins_snippet() {
-        assert!(include_str!("../README.md").contains(CLAUDE_MD_SNIPPET));
+    fn appends_only_missing_section() {
+        let p = tmp("partial");
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, SECTIONS[0].body).unwrap();
+        let appended = match upsert_claude_md(&p).unwrap() {
+            ClaudeMd::Written(m) => m,
+            ClaudeMd::AlreadyPresent => panic!("expected Written, got AlreadyPresent"),
+        };
+        let want: Vec<_> = SECTIONS[1..].iter().map(|s| s.marker).collect();
+        assert_eq!(appended, want);
+        let got = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(got, all_sections_joined());
+        assert_eq!(got.matches(SECTIONS[0].marker).count(), 1);
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
+    fn readme_pins_snippets() {
+        let readme = include_str!("../README.md");
+        for s in SECTIONS {
+            assert!(
+                readme.contains(s.body),
+                "README.md missing section: {}",
+                s.marker
+            );
+        }
     }
 }

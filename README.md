@@ -16,7 +16,7 @@ Every session is archived into a local SQLite database and made searchable: last
 
 - **No LLM calls to save memory.** Saving a session is plain-text parsing — zero tokens. Most memory plugins run your sessions through an LLM to save them ([the comparison](docs/comparison.md) has the numbers, from their own docs).
 - **Hard token limits, set in the code.** Recall adds ~180 tokens on a strong match, usually nothing — it stays silent otherwise. The always-loaded index is capped at 23 KB. [Check it yourself](#proof-verify-it-yourself), or see [where your tokens go](docs/faq.md#how-many-tokens-does-it-cost-me).
-- **One 3.7 MB static binary.** No daemon, no worker port, no background process — a hook fires, finishes in under 10 ms, and exits.
+- **One ~4 MB static binary.** No daemon, no worker port, no background process — a hook fires, finishes in under 10 ms, and exits.
 - **Your transcripts stay on your machine.** The binary makes zero network calls — no cloud, no telemetry — and obvious secret shapes are masked before storage. [Verify every claim yourself](#proof-verify-it-yourself).
 
 <p align="center">
@@ -29,7 +29,7 @@ Every session is archived into a local SQLite database and made searchable: last
   <a href="#what-it-does">What it does</a> ·
   <a href="#commands">Commands</a> ·
   <a href="#the-memory-workflow">The memory workflow</a> ·
-  <a href="#make-claude-search-the-archive-itself">Make Claude search the archive itself</a><br/>
+  <a href="#make-claude-use-the-archive-itself">Make Claude use the archive itself</a><br/>
   <a href="#where-your-data-lives">Where your data lives</a> ·
   <a href="#privacy-model">Privacy model</a> ·
   <a href="#proof-verify-it-yourself">Proof</a> ·
@@ -59,7 +59,7 @@ Then start a new Claude Code session (quit and reopen, or run `claude` again). T
 
 The one-time download fetches the program only — your data never moves.
 
-One more command, for the best experience — it teaches Claude to search the archive at the start of any task instead of waiting for you to ask ([what it adds](#make-claude-search-the-archive-itself); safe to re-run, ~150 tokens):
+One more command, for the best experience — it teaches Claude to work the archive on its own: search it at the start of any task, and clear the checkpoint backlog when sessions queue up ([what it adds](#make-claude-use-the-archive-itself); safe to re-run, ~250 tokens):
 
 ```sh
 ~/.claude/subrosa/bin/subrosa init --claude-md   # or just: subrosa init --claude-md, with the CLI below
@@ -157,9 +157,11 @@ flowchart TD
 
 `MEMORY.md` is built under a byte budget — important facts (pinned, feedback) win when space runs out, and everything that doesn't fit stays searchable in the archive.
 
-## Make Claude search the archive itself
+## Make Claude use the archive itself
 
-Recall only fires when you type a prompt. To have Claude check the archive at the start of any task on its own, add one paragraph to your `CLAUDE.md` (`~/.claude/CLAUDE.md` covers every project, a repo's own covers just that one) — or run `subrosa init --claude-md` to append it for you (idempotent):
+Recall only fires when you type a prompt. To have Claude work the archive on its own, add these standing instructions to your `CLAUDE.md` (`~/.claude/CLAUDE.md` covers every project, a repo's own covers just that one) — or run `subrosa init --claude-md` to append them for you (idempotent, and it adds only the sections you're missing).
+
+The first has Claude search the archive at the start of any task:
 
 ```markdown
 ## Memory recall (subrosa)
@@ -178,7 +180,19 @@ generated — never hand-edit it; update facts with `subrosa fact` + `subrosa ge
 or run `/subrosa:checkpoint`.
 ```
 
-It adds about 160 tokens of always-loaded context — your call — and in return Claude writes its own searches mid-task, following leads prompt-triggered recall can't see.
+The second has Claude clear the checkpoint backlog in the background when sessions queue up:
+
+```markdown
+## Memory auto-checkpoint (subrosa)
+
+When a `[subrosa] ACTION REQUIRED` note says sessions are queued for checkpoint
+(or `subrosa pending` is non-empty), run the `/subrosa:checkpoint-backlog` skill
+in the background — never before or blocking the task you're working on. It saves
+the durable facts from each queued session into that project's memory, then clears
+the queue as it finishes. Skip it silently when nothing is queued.
+```
+
+Together they add about 250 tokens of always-loaded context — your call. The first makes Claude write its own searches mid-task; the second keeps ended sessions from piling up unsaved.
 
 ## Where your data lives
 
@@ -203,7 +217,7 @@ Full limits — what redaction misses, why the archive isn't encrypted, what rec
 
 ## Proof: verify it yourself
 
-Claims are only worth the commands that check them. The whole thing is ~5,200 lines of Rust, MIT licensed — small enough to read in an afternoon.
+Claims are only worth the commands that check them. The whole thing is ~7,800 lines of Rust, MIT licensed.
 
 | Claim | Check it | What you'll see |
 |---|---|---|
@@ -229,7 +243,7 @@ A hook that runs on every prompt has to be invisible. Measured with `scripts/ben
 | `subrosa related <identifier>` over 50,000 turns | 0.3–0.4 s |
 | Archiving 50,000 turns from scratch (first install) | ~1.1 s |
 
-One static 3.7 MB binary, no background process, no runtime dependencies.
+One static ~4 MB binary, no background process, no runtime dependencies.
 
 ## Development
 
