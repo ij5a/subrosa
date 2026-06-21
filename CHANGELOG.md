@@ -5,6 +5,12 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] - 2026-06-21
+
+### Added
+
+- `subrosa init --claude-md` now installs a second standing instruction, `## Memory auto-checkpoint (subrosa)`, next to the existing recall section. It tells Claude to run the `/subrosa:checkpoint-backlog` skill in the background — without blocking the task you're working on — whenever sessions are queued for checkpoint, so the backlog gets cleared on its own. The two sections are upserted independently: re-running `init --claude-md` adds whichever section is missing without duplicating or rewriting what's already there, so an existing install picks up the new section on the next run.
+
 ## [0.18.0] - 2026-06-21
 
 ### Changed
@@ -174,6 +180,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.19.0]: https://github.com/ij5a/subrosa/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/ij5a/subrosa/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/ij5a/subrosa/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/ij5a/subrosa/compare/v0.15.0...v0.16.0
