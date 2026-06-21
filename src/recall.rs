@@ -308,17 +308,11 @@ pub fn run(input: &Value) -> Option<String> {
          relying on them; run `subrosa search` for the full text:",
     )];
     for c in &picked {
-        let snip: String = c
-            .snippet
-            .as_deref()
-            .unwrap_or_default()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
+        let snip: String = text::collapse_ws(c.snippet.as_deref().unwrap_or_default())
             .chars()
             .take(SNIPPET_CHARS)
             .collect();
-        let sid8: String = c.session_id.chars().take(8).collect();
+        let sid8 = text::sid8(&c.session_id);
         // Age hint after the date, shared with `search`; empty (no parens) when the
         // timestamp is missing or unparseable.
         let age = match c.ts.as_deref().and_then(timeutil::parse_ts) {

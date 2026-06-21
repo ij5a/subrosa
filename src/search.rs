@@ -12,7 +12,7 @@ const CONTEXT_PREVIEW_CHARS: usize = 160;
 
 /// One-line preview of a context turn: whitespace collapsed, then truncated.
 fn ctx_preview(text: &str) -> String {
-    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let collapsed = crate::text::collapse_ws(text);
     let mut out: String = collapsed.chars().take(CONTEXT_PREVIEW_CHARS).collect();
     if collapsed.chars().count() > CONTEXT_PREVIEW_CHARS {
         out.push('…');
@@ -40,16 +40,6 @@ pub fn build_match(terms: &[String], raw: bool, fuzzy: bool) -> String {
         return terms.join(" ").trim().to_string();
     }
     quote_terms(terms, fuzzy).join(" ")
-}
-
-/// Display the stored ISO timestamp as `YYYY-MM-DD HH:MM` (stored zone, ~UTC).
-fn fmt_ts(ts: &str) -> String {
-    if ts.is_empty() {
-        return "?".to_string();
-    }
-    ts.get(..16)
-        .map(|s| s.replace('T', " "))
-        .unwrap_or_else(|| ts.to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -252,7 +242,7 @@ pub fn run(
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
-        let sid8: String = sid.chars().take(8).collect();
+        let sid8 = crate::text::sid8(sid);
         // Relative age after the timestamp, shared with recall (`(7mo old)` etc.);
         // empty when the timestamp is missing or unparseable.
         let age = match ts.as_deref().and_then(timeutil::parse_ts) {
@@ -262,7 +252,7 @@ pub fn run(
         println!(
             "{:>2}. [{}]{} {} · {} · {}",
             i + 1,
-            fmt_ts(ts.as_deref().unwrap_or("")),
+            timeutil::fmt_ts(ts.as_deref().unwrap_or("")),
             age,
             role,
             project.as_deref().unwrap_or("?"),

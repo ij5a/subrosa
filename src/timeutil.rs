@@ -20,13 +20,11 @@ pub(crate) fn parse_ts(ts: &str) -> Option<i64> {
     } else {
         (dt_part, "")
     };
-    let dp: Vec<&str> = date_str.splitn(3, '-').collect();
-    if dp.len() < 3 {
-        return None;
-    }
-    let y: i64 = dp[0].parse().ok()?;
-    let mo: u32 = dp[1].parse().ok()?;
-    let d: u32 = dp[2].parse().ok()?;
+    let (y_s, rest) = date_str.split_once('-')?;
+    let (mo_s, d_s) = rest.split_once('-')?;
+    let y: i64 = y_s.parse().ok()?;
+    let mo: u32 = mo_s.parse().ok()?;
+    let d: u32 = d_s.parse().ok()?;
     let (h, mi, s) = if !time_str.is_empty() {
         let tp: Vec<&str> = time_str.splitn(3, ':').collect();
         let h: i64 = tp.first().and_then(|p| p.parse().ok()).unwrap_or(0);
@@ -100,13 +98,11 @@ pub(crate) fn civil_to_days(y: i64, mo: u32, d: u32) -> Option<i64> {
 /// Parse a strict `YYYY-MM-DD` UTC date into civil parts, range-checking the
 /// month and day. The input form for the `--after`/`--before` archive filters.
 pub(crate) fn parse_ymd(s: &str) -> Option<(i64, u32, u32)> {
-    let p: Vec<&str> = s.splitn(3, '-').collect();
-    if p.len() != 3 {
-        return None;
-    }
-    let y: i64 = p[0].parse().ok()?;
-    let mo: u32 = p[1].parse().ok()?;
-    let d: u32 = p[2].parse().ok()?;
+    let (y_s, rest) = s.split_once('-')?;
+    let (mo_s, d_s) = rest.split_once('-')?;
+    let y: i64 = y_s.parse().ok()?;
+    let mo: u32 = mo_s.parse().ok()?;
+    let d: u32 = d_s.parse().ok()?;
     civil_to_days(y, mo, d)?; // rejects out-of-range month/day
     Some((y, mo, d))
 }
@@ -179,6 +175,18 @@ pub(crate) fn age_suffix(secs: i64) -> String {
     } else {
         format!(" ({a} old)")
     }
+}
+
+/// Display a stored ISO timestamp as `YYYY-MM-DD HH:MM` (stored zone, ~UTC) — the
+/// shared convention for `search`, `related`, `sessions`, and the dashboard.
+/// Empty in, `?` out; a string shorter than 16 chars passes through unchanged.
+pub(crate) fn fmt_ts(ts: &str) -> String {
+    if ts.is_empty() {
+        return "?".to_string();
+    }
+    ts.get(..16)
+        .map(|s| s.replace('T', " "))
+        .unwrap_or_else(|| ts.to_string())
 }
 
 #[cfg(test)]

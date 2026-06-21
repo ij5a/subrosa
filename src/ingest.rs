@@ -488,6 +488,13 @@ pub fn sweep(conn: &Connection, root: &Path) -> Result<(i64, i64, i64), Box<dyn 
 /// Append a session to the checkpoint queue — but only when it's worth distilling
 /// and isn't already queued or already checkpointed. Idempotent: the SessionEnd
 /// hook fires repeatedly on resume. Returns: queued | pruned | unchanged | duplicate.
+/// The session-id field of a pending-queue line (`<ts>\t<sid>`), trimmed. Lines
+/// are written `<iso>\t<sid>`; a line with no tab is treated as a bare id.
+pub(crate) fn queue_sid(line: &str) -> &str {
+    let line = line.trim();
+    line.rsplit('\t').next().unwrap_or(line)
+}
+
 pub fn enqueue_checkpoint(
     conn: &Connection,
     sid: &str,
@@ -519,7 +526,7 @@ pub fn enqueue_checkpoint(
         .unwrap_or_default()
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| l.rsplit('\t').next().unwrap_or(l).trim().to_string())
+        .map(|l| queue_sid(l).to_string())
         .collect();
     if pending.contains(sid) {
         return Ok("duplicate");

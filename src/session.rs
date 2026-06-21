@@ -152,6 +152,25 @@ pub fn dump(arg: &str, show_tags: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The queue text with every entry for `sid` removed, or `None` when `sid` isn't
+/// queued (so the caller can skip the rewrite). Preserves the trailing newline.
+fn without_sid(text: &str, sid: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let keep: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|ln| ingest::queue_sid(ln) != sid)
+        .collect();
+    if keep.len() == lines.len() {
+        return None;
+    }
+    Some(if keep.is_empty() {
+        String::new()
+    } else {
+        keep.join("\n") + "\n"
+    })
+}
+
 /// Remove one session from the queue and record the checkpoint high-water mark
 /// so a re-fired SessionEnd won't re-queue it unless the transcript grows.
 pub fn drop_sid(sid: &str) -> ExitCode {
@@ -167,25 +186,15 @@ pub fn drop_sid(sid: &str) -> ExitCode {
         println!("[subrosa] queue empty");
         return ExitCode::SUCCESS;
     };
-    let lines: Vec<&str> = text.lines().collect();
-    let keep: Vec<&str> = lines
-        .iter()
-        .copied()
-        .filter(|ln| ln.trim().rsplit('\t').next().unwrap_or(ln.trim()) != sid)
-        .collect();
-    if keep.len() != lines.len() {
-        let body = if keep.is_empty() {
-            String::new()
-        } else {
-            keep.join("\n") + "\n"
-        };
-        if let Err(e) = std::fs::write(&pending, body) {
-            eprintln!("[subrosa] cannot write queue: {e}");
-            return ExitCode::FAILURE;
+    match without_sid(&text, sid) {
+        Some(body) => {
+            if let Err(e) = std::fs::write(&pending, body) {
+                eprintln!("[subrosa] cannot write queue: {e}");
+                return ExitCode::FAILURE;
+            }
+            println!("[subrosa] dropped {sid} from queue");
         }
-        println!("[subrosa] dropped {sid} from queue");
-    } else {
-        println!("[subrosa] {sid} not in queue");
+        None => println!("[subrosa] {sid} not in queue"),
     }
     ExitCode::SUCCESS
 }
@@ -246,18 +255,7 @@ pub fn mark_current() -> ExitCode {
         .unwrap_or(None);
     let pending = paths::pending_log();
     if let Ok(text) = std::fs::read_to_string(&pending) {
-        let lines: Vec<&str> = text.lines().collect();
-        let keep: Vec<&str> = lines
-            .iter()
-            .copied()
-            .filter(|ln| ln.trim().rsplit('\t').next().unwrap_or(ln.trim()) != sid)
-            .collect();
-        if keep.len() != lines.len() {
-            let body = if keep.is_empty() {
-                String::new()
-            } else {
-                keep.join("\n") + "\n"
-            };
+        if let Some(body) = without_sid(&text, &sid) {
             let _ = std::fs::write(&pending, body);
         }
     }

@@ -253,12 +253,6 @@ pub fn run(memdir: Option<PathBuf>, no_backup: bool, project: Option<String>) ->
         }
     }
 
-    if let Err(e) = conn.execute_batch("COMMIT") {
-        // rusqlite auto-commits each execute in the default mode; explicit COMMIT
-        // only matters if a transaction was opened, but emit the error to be safe.
-        let _ = e; // benign when no transaction is active
-    }
-
     // Dangling pointers: index entries whose leaf file is absent.
     let leaf_names: std::collections::HashSet<String> = leaves
         .iter()

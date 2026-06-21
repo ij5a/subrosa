@@ -218,6 +218,17 @@ pub(crate) fn token_matches_loose(tok: &str, term: &str) -> bool {
     token_matches(a.as_ref(), b.as_ref())
 }
 
+/// Collapse every run of whitespace to a single space — the snippet/preview
+/// normaliser shared by `search`, `recall`, and `related` before truncation.
+pub(crate) fn collapse_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The 8-char session-id prefix that `search`, `recall`, and `related` print.
+pub(crate) fn sid8(s: &str) -> String {
+    s.chars().take(8).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,8 +7,8 @@ use std::process::{Command, ExitCode};
 
 use rusqlite::Connection;
 
-use crate::paths;
-use crate::timeutil::{civil_from_days, civil_to_days, now_unix, parse_ts};
+use crate::timeutil::{civil_from_days, civil_to_days, fmt_ts, now_unix, parse_ts, parse_ymd};
+use crate::{db, ingest, paths};
 
 // MEMORY.md byte cap that keeps it under the ~24.4 KB load limit (matches generate::DEFAULT_BUDGET).
 const INDEX_BUDGET: u64 = 23_000;
@@ -167,16 +167,6 @@ fn strip_trailing_zeros(s: &str) -> String {
 // parse_ts / now_unix / civil_to_days / civil_from_days live in crate::timeutil
 // (shared with recall, search, and sessions).
 
-// Display a stored ISO timestamp as "YYYY-MM-DD HH:MM" — same slice approach as search.rs.
-fn fmt_ts(ts: &str) -> String {
-    if ts.is_empty() {
-        return "?".to_string();
-    }
-    ts.get(..16)
-        .map(|s| s.replace('T', " "))
-        .unwrap_or_else(|| ts.to_string())
-}
-
 fn ago_secs(secs: i64) -> String {
     let secs = secs.max(0);
     if secs < 60 {
@@ -274,26 +264,15 @@ fn date_axis(dates: &[String], width: usize) -> String {
         if newest && dstr == today {
             return "today".to_string();
         }
-        let p: Vec<&str> = dstr.splitn(3, '-').collect();
-        if p.len() == 3 {
-            let mo: u32 = p[1].parse().unwrap_or(0);
-            let d: u32 = p[2].parse().unwrap_or(0);
-            let mon = match mo {
-                1 => "Jan",
-                2 => "Feb",
-                3 => "Mar",
-                4 => "Apr",
-                5 => "May",
-                6 => "Jun",
-                7 => "Jul",
-                8 => "Aug",
-                9 => "Sep",
-                10 => "Oct",
-                11 => "Nov",
-                12 => "Dec",
-                _ => "???",
-            };
-            format!("{} {:02}", mon, d)
+        let parts = dstr.split_once('-').and_then(|(_, md)| md.split_once('-'));
+        if let Some((mo_s, d_s)) = parts {
+            let mo: usize = mo_s.parse().unwrap_or(0);
+            let d: u32 = d_s.parse().unwrap_or(0);
+            const MON: [&str; 13] = [
+                "???", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov",
+                "Dec",
+            ];
+            format!("{} {:02}", MON.get(mo).copied().unwrap_or("???"), d)
         } else {
             dstr.to_string()
         }
@@ -328,17 +307,8 @@ fn date_axis(dates: &[String], width: usize) -> String {
 fn daily_series(daily: &[(String, i64)]) -> (Vec<i64>, Vec<String>) {
     let mut parsed: Vec<(i64, i64)> = Vec::new();
     for (dstr, n) in daily {
-        let p: Vec<&str> = dstr.splitn(3, '-').collect();
-        if p.len() == 3 {
-            if let (Ok(y), Ok(mo), Ok(d)) = (
-                p[0].parse::<i64>(),
-                p[1].parse::<u32>(),
-                p[2].parse::<u32>(),
-            ) {
-                if let Some(days) = civil_to_days(y, mo, d) {
-                    parsed.push((days, *n));
-                }
-            }
+        if let Some(days) = parse_ymd(dstr).and_then(|(y, mo, d)| civil_to_days(y, mo, d)) {
+            parsed.push((days, *n));
         }
     }
     if parsed.is_empty() {
@@ -430,13 +400,6 @@ fn shorten_project(key: &str, cwd: Option<&str>) -> String {
     } else {
         toks[toks.len() - 1].to_string()
     }
-}
-
-fn encode_cwd(path: &str) -> String {
-    // Mirror Claude Code's projects-dir naming: every non-alphanumeric char → dash.
-    path.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
 }
 
 fn tilde(path: &str) -> String {
@@ -531,15 +494,12 @@ fn last_backup_age_secs() -> Option<u64> {
 
 fn pending_count() -> usize {
     let text = std::fs::read_to_string(paths::pending_log()).unwrap_or_default();
-    let mut seen = HashSet::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if !line.is_empty() {
-            let sid = line.rsplit('\t').next().unwrap_or(line);
-            seen.insert(sid.to_string());
-        }
-    }
-    seen.len()
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(ingest::queue_sid)
+        .collect::<HashSet<_>>()
+        .len()
 }
 
 // ---- current-context resolution ---------------------------------------------
@@ -607,7 +567,7 @@ fn current_context(conn: &Connection) -> CurrentContext {
         }
     }
     for cw in &cwds {
-        let enc = encode_cwd(cw);
+        let enc = db::encode_cwd(cw);
         if !candidates.contains(&enc) {
             candidates.push(enc);
         }
@@ -630,7 +590,7 @@ fn current_context(conn: &Connection) -> CurrentContext {
     let chosen = candidates
         .first()
         .cloned()
-        .unwrap_or_else(|| encode_cwd(&display));
+        .unwrap_or_else(|| db::encode_cwd(&display));
     let md = proj_dir.join(&chosen).join("memory").join("MEMORY.md");
     CurrentContext {
         cwd: display,

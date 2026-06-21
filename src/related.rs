@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use rusqlite::params_from_iter;
 
-use crate::{db, paths, search, text};
+use crate::{db, paths, search, text, timeutil};
 
 // Bound the co-occurrence so a very common anchor stays millisecond-scale: only
 // the most recent CAP anchor-sessions are tokenized. The header says when it bit.
@@ -344,18 +344,12 @@ fn render(
 
     println!("\nsessions:");
     for (i, (_, h)) in shown.iter().enumerate() {
-        let sid8: String = h.sid.chars().take(8).collect();
-        let snip = h
-            .snippet
-            .as_deref()
-            .unwrap_or("")
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let sid8 = text::sid8(&h.sid);
+        let snip = text::collapse_ws(h.snippet.as_deref().unwrap_or(""));
         println!(
             "{:>2}. [{}] {} · {} · {}  ({})",
             i + 1,
-            fmt_ts(h.ts.as_deref().unwrap_or("")),
+            timeutil::fmt_ts(h.ts.as_deref().unwrap_or("")),
             h.role,
             h.project.as_deref().unwrap_or("?"),
             sid8,
@@ -396,17 +390,6 @@ fn shared_terms(
     } else {
         hit.join(", ")
     }
-}
-
-/// Display the stored ISO timestamp as `YYYY-MM-DD HH:MM` (stored zone, ~UTC) —
-/// same convention as `subrosa search`.
-fn fmt_ts(ts: &str) -> String {
-    if ts.is_empty() {
-        return "?".to_string();
-    }
-    ts.get(..16)
-        .map(|s| s.replace('T', " "))
-        .unwrap_or_else(|| ts.to_string())
 }
 
 #[cfg(test)]

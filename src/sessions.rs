@@ -194,25 +194,15 @@ fn fetch_tags(
 /// Render a session's span as `YYYY-MM-DD HH:MM .. HH:MM`, compacting the end to
 /// `HH:MM` when it falls on the same calendar day as the start (else full stamp).
 fn fmt_span(first: &str, last: &str) -> String {
-    let start = fmt_ts(first);
+    let start = timeutil::fmt_ts(first);
     let end = if !first.is_empty() && first.get(..10) == last.get(..10) {
         last.get(11..16)
             .map(str::to_string)
-            .unwrap_or_else(|| fmt_ts(last))
+            .unwrap_or_else(|| timeutil::fmt_ts(last))
     } else {
-        fmt_ts(last)
+        timeutil::fmt_ts(last)
     };
     format!("{start} .. {end}")
-}
-
-/// Display the stored ISO timestamp as `YYYY-MM-DD HH:MM` — same as search/related.
-fn fmt_ts(ts: &str) -> String {
-    if ts.is_empty() {
-        return "?".to_string();
-    }
-    ts.get(..16)
-        .map(|s| s.replace('T', " "))
-        .unwrap_or_else(|| ts.to_string())
 }
 
 fn query_error(e: rusqlite::Error) -> ExitCode {

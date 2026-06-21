@@ -75,7 +75,7 @@ fn queued_sessions() -> Vec<String> {
             if line.is_empty() {
                 continue;
             }
-            let id = line.rsplit('\t').next().unwrap_or(line);
+            let id = ingest::queue_sid(line);
             if let Some(pos) = order.iter().position(|x| x == id) {
                 order.remove(pos);
             }

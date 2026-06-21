@@ -76,9 +76,8 @@ pub fn config_path() -> PathBuf {
 
 pub fn config_get(key: &str) -> Option<String> {
     let text = std::fs::read_to_string(config_path()).ok()?;
-    let prefix = format!("{key}=");
     text.lines()
-        .find_map(|l| l.strip_prefix(&prefix))
+        .find_map(|l| l.split_once('=').filter(|(k, _)| *k == key).map(|(_, v)| v))
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
 }

@@ -141,7 +141,7 @@ fn ask_interactively() -> Option<PathBuf> {
         return None;
     }
     if let Ok(idx) = ans.parse::<usize>() {
-        if idx >= 1 && idx <= candidates.len() {
+        if (1..=candidates.len()).contains(&idx) {
             return Some(candidates[idx - 1].1.clone());
         }
         return None;

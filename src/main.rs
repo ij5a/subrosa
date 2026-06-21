@@ -502,7 +502,7 @@ fn run_pending() -> ExitCode {
         if line.is_empty() {
             continue;
         }
-        let sid = line.rsplit('\t').next().unwrap_or(line);
+        let sid = ingest::queue_sid(line);
         if seen.insert(sid.to_string()) {
             println!("{line}");
         }
@@ -534,7 +534,7 @@ fn run_checkpoint_clear() -> ExitCode {
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
-        .map(|l| l.rsplit('\t').next().unwrap_or(l))
+        .map(ingest::queue_sid)
         .collect::<std::collections::HashSet<_>>()
         .len();
     if let Err(e) = std::fs::write(&pending, "") {
