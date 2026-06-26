@@ -34,7 +34,7 @@ jobs:
         run: |
           tar -czf "subrosa-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" \
             -C "target/${{ matrix.target }}/release" subrosa
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: subrosa-${{ matrix.target }}
           path: subrosa-*.tar.gz
