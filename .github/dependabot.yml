@@ -1,0 +1,22 @@
+# Monthly grouped dep bumps. Rust toolchain pin is NOT here — Dependabot has no
+# mise ecosystem, so bump-rust-toolchain.yml handles it. Majors land as their own
+# PRs (only minor/patch are grouped) so a breaking bump gets reviewed alone.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
