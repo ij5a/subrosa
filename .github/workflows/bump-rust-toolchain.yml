@@ -1,0 +1,45 @@
+name: bump-rust-toolchain
+
+# Dependabot can't bump the mise rust pin, so this does: monthly, latest stable.
+# No-op when already current (create-pull-request skips when the tree is clean).
+on:
+  schedule:
+    - cron: "0 6 1 * *" # 1st of month, 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - name: Bump mise rust pin to latest stable
+        run: |
+          V=$(mise latest rust)
+          mise use rust@"$V"
+          mise install
+      # ponytail: gate inline via `mise exec` so the NEW pin is on PATH, and
+      # because GITHUB_TOKEN-opened PRs don't retrigger ci.yml. Swap to a PAT and
+      # drop this if you'd rather the PR run the full matrix.
+      - run: mise exec -- cargo build --locked && mise exec -- cargo test --locked
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          branch: chore/bump-rust-toolchain
+          title: "chore: bump rust toolchain pin to latest stable"
+          commit-message: "chore: bump rust toolchain pin to latest stable"
+          body: |
+            ## Why
+
+            Monthly automated bump of the mise `rust` pin to the latest stable. Dependabot has no `mise` ecosystem, so this runs on its own.
+
+            ## What changed?
+
+            1. `mise.toml` + `mise.lock` repinned to the latest stable Rust.
+
+            ## How to test?
+
+            1. `cargo build --locked && cargo test --locked` ran in-job (PRs opened with `GITHUB_TOKEN` don't retrigger `ci.yml`, so the gate runs here).
