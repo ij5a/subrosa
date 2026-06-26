@@ -26,7 +26,7 @@ jobs:
       # because GITHUB_TOKEN-opened PRs don't retrigger ci.yml. Swap to a PAT and
       # drop this if you'd rather the PR run the full matrix.
       - run: mise exec -- cargo build --locked && mise exec -- cargo test --locked
-      - uses: peter-evans/create-pull-request@v7
+      - uses: peter-evans/create-pull-request@v8
         with:
           branch: chore/bump-rust-toolchain
           title: "chore: bump rust toolchain pin to latest stable"
