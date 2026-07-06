@@ -1,6 +1,6 @@
 ---
 name: checkpoint
-description: Flush durable facts from the current conversation into subrosa's memory before /clear or /compact. Scans the session for user, feedback, project, and reference items; writes or updates leaf memory files and the facts database, then regenerates the byte-budgeted MEMORY.md; soft-archives stale entries; reports saved, updated, skipped, archived, and entries flagged for review.
+description: Flush durable facts from the current conversation into subrosa's memory before /clear or /compact. Scans the session for user, feedback, project, and reference items; writes or updates leaf memory files and the facts database, then regenerates the byte-budgeted MEMORY.md; soft-archives stale entries; reports a short session recap and confirms it's safe to wipe.
 ---
 
 # checkpoint — flush memory before a context wipe
@@ -59,7 +59,7 @@ The user is about to run `/clear` or `/compact`. Without saving first, `/clear` 
 
    Keep the scan cheap: read the hook text first. Only open the leaf when a high-confidence archive is on the table; don't open every memory file just to flag.
 
-8. **Regenerate `MEMORY.md`.** Always run, even when nothing was saved this session: `subrosa generate`. The generator rebuilds the index from the active facts, byte-budgeted to 23000 (headroom under the 24.4KB load cap), so it can never overflow and no hook ever needs hand-trimming. It ranks by pinned > type weight > recency > hits, keeps the curated order for display, and logs any facts that fell below the budget — those stay in the DB and are still `subrosa search`-able, just not always-loaded. Report its `kept` / `dropped` / `bytes` line. If a dropped fact should always load, `subrosa fact pin --leaf <file.md>` and regenerate.
+8. **Regenerate `MEMORY.md`.** Always run, even when nothing was saved this session: `subrosa generate`. The generator rebuilds the index from the active facts, byte-budgeted to 23000 (headroom under the 24.4KB load cap), so it can never overflow and no hook ever needs hand-trimming. It ranks by pinned > type weight > recency > hits, keeps the curated order for display, and logs any facts that fell below the budget — those stay in the DB and are still `subrosa search`-able, just not always-loaded. If a dropped fact should always load, `subrosa fact pin --leaf <file.md>` and regenerate.
 
    Never hand-edit `MEMORY.md`; it is overwritten on every regenerate. The generator owns the byte budget — there is no manual hook-trimming step.
 
@@ -67,38 +67,31 @@ The user is about to run `/clear` or `/compact`. Without saving first, `/clear` 
 
 ## Report format
 
-Keep it tight. End with the safe-to-wipe line so the user knows the skill finished.
+A headline count, a short recap of what the session did (like `/recap` — the work,
+not which leaf files changed), then the safe-to-wipe line. Nothing else — no
+per-category Saved/Updated/Skipped lists, no byte dumps, no named archive/review sections.
 
 ```
-Saved (N):
-- [name] — one-line hook
+✅ Saved 2, Updated 1.
 
-Updated (N):
-- [name] — what changed and why
+📋 Recap:
+- Bumped Rust deps and shipped Dependabot + a monthly toolchain-bump workflow (PR #1, merged)
+- Reviewed and merged 5 Dependabot action bumps; confirmed the toolchain cron no-ops cleanly
+- Verified CI green across the board
 
-Skipped (N):
-- [topic] — reason (excluded type / already covered / not durable)
-
-MEMORY.md:
-- regenerated: 149 facts kept, 22.9KB (12 below budget → archive-only)
-- pending queue cleared (7 sessions since last checkpoint)
-
-Archived (N):
-- [name] — reason (leaf says Status: Closed + hook marker "Done" / leaf marked Resolved + hook date 2026-03-12)
-
-Potentially stale (review):
-- [name] — reason (date-passed / marked complete / superseded by NEW_NAME)
-
-Safe to /clear or /compact.
+🟢 Safe to /clear or /compact.
 ```
 
-Omit `Archived` and `Potentially stale` entirely when zero candidates surface — flagging empty lists every run is noise. Show `Saved`, `Updated`, `Skipped`, and `MEMORY.md` even at zero count so the user can confirm no category was missed. Archives are soft (the row and leaf stay) — recoverable with `subrosa fact upsert --leaf <file.md>`.
-
-If nothing is worth saving:
-
-```
-Nothing durable from this session. Regenerated MEMORY.md (N facts, X.YKB), cleared the pending queue. [Archived M stale entries.] Safe to /clear.
-```
+- **Headline** — `✅ Saved <X>, Updated <Y>.` (both counts always shown; leading ✅,
+  trailing period). Append `, Archived <Z>` and/or `, Flagged <W>` before the period,
+  same comma style, only when non-zero. When nothing was saved or updated (all zero),
+  use `✅ Nothing new to save.` instead.
+- **Recap** — `📋 Recap:` then 2–5 short bullets on what the session actually
+  accomplished (reads like `/recap`), NOT a list of which facts were saved. Always
+  show it, even in the zero case.
+- **Safe line** — `🟢 Safe to /clear or /compact.`
+- Still run the full procedure above (save, update, staleness pass, regenerate, mark,
+  clear) — this changes only what you print, not what you do.
 
 ## Notes
 
