@@ -79,7 +79,7 @@ per-category Saved/Updated/Skipped lists, no byte dumps, no named archive/review
 - Reviewed and merged 5 Dependabot action bumps; confirmed the toolchain cron no-ops cleanly
 - Verified CI green across the board
 
-🟢 Safe to /clear or /compact.
+👍 Safe to /clear or /compact.
 ```
 
 - **Headline** — `✅ Saved <X>, Updated <Y>.` (both counts always shown; leading ✅,
@@ -89,7 +89,7 @@ per-category Saved/Updated/Skipped lists, no byte dumps, no named archive/review
 - **Recap** — `📋 Recap:` then 2–5 short bullets on what the session actually
   accomplished (reads like `/recap`), NOT a list of which facts were saved. Always
   show it, even in the zero case.
-- **Safe line** — `🟢 Safe to /clear or /compact.`
+- **Safe line** — `👍 Safe to /clear or /compact.`
 - Still run the full procedure above (save, update, staleness pass, regenerate, mark,
   clear) — this changes only what you print, not what you do.
 
