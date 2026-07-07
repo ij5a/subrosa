@@ -5,6 +5,12 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.2] - 2026-07-07
+
+### Changed
+
+- The `/subrosa:checkpoint` report's safe-to-wipe line now leads with 👍 instead of 🟢.
+
 ## [0.19.1] - 2026-07-07
 
 ### Changed
@@ -186,6 +192,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.19.2]: https://github.com/ij5a/subrosa/compare/v0.19.1...v0.19.2
 [0.19.1]: https://github.com/ij5a/subrosa/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/ij5a/subrosa/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/ij5a/subrosa/compare/v0.17.0...v0.18.0
