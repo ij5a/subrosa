@@ -129,6 +129,15 @@ hyperfine --warmup 3 --runs 25 \
   -n "search identifier" "'$BIN' search cache-gateway-prod -n 5" \
   -n "search two terms" "'$BIN' search deploy rollout -n 5"
 
+# Fuzzy: a substring hit, then the nearest-match fallback (zero substring rows →
+# trigram-OR candidates + one-edit filter) — the fallback rescue is the worst case.
+echo "== search --fuzzy (substring hit, typo fallback, true miss) =="
+"$BIN" search --fuzzy latency -n 1 >/dev/null 2>&1 || true  # one-time trigram index build, outside timing
+hyperfine --warmup 3 --runs 25 \
+  -n "fuzzy substring hit" "'$BIN' search --fuzzy atency -n 5" \
+  -n "fuzzy typo fallback (hit)" "'$BIN' search --fuzzy latecny -n 5" \
+  -n "fuzzy true miss (fallback empty)" "'$BIN' search --fuzzy qqqqzzzz -n 5"
+
 # Co-occurrence verb: a focused identifier (few sessions) vs a ubiquitous word
 # (every session — the worst case that the session-scan cap bounds).
 echo "== related (co-occurrence over the archive) =="

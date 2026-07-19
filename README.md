@@ -92,7 +92,7 @@ subrosa          # the dashboard
 - **Archives every session.** When one ends — quitting Claude Code, `/clear`, or logging out — its transcript is saved to a local SQLite (full-text search) database, with a catch-up sweep at the next start.
 - **Recalls on its own.** A prompt with enough distinctive terms pulls the top matching past sessions from the same project into context — silent unless the match is strong.
 - **Builds long-term memory.** Ended sessions queue up; `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog` distill them into curated facts (one per small markdown file). `subrosa generate` then renders `MEMORY.md` — a short, size-capped index Claude Code loads every session, and `subrosa fact search` finds a specific fact once a project has dozens.
-- **Makes everything searchable.** `subrosa search <terms>` runs ranked full-text search — identifiers like `my-app-prod` or `TICKET-123` stay exact. Narrow with `--project`/`--after`/`--before`/`--tag`, read around a hit with `-C/--context`, filter with `--exclude` (drop a term) and `--any` (match any term, not all), or fall back to `--fuzzy` for partial names and typos.
+- **Makes everything searchable.** `subrosa search <terms>` runs ranked full-text search — identifiers like `my-app-prod` or `TICKET-123` stay exact. Narrow with `--project`/`--after`/`--before`/`--tag`, read around a hit with `-C/--context`, filter with `--exclude` (drop a term) and `--any` (match any term, not all), or fall back to `--fuzzy` for partial names and small typos.
 - **Lists and filters sessions.** `subrosa sessions` shows past sessions newest-first, filterable by `--project`, date (`--after`/`--before`), and `--tag`. Each session carries auto-derived tags (`tool:bash`, `ext:rs`, `topic:cache-prod`) — computed locally at archive time, so they cost zero tokens and nothing to maintain.
 - **Shows what clusters together.** `subrosa related <identifier>` ranks the terms and sessions that recur alongside something like `auth.ts` or `TICKET-123` — read from the archive, not guessed. It answers "what did this work touch," which `search` can't.
 - **Follows your curated links.** Notes link to each other with `[[name]]`; `subrosa fact link <slug>` shows what a note links to and what links back, and flags dead links.
@@ -107,7 +107,7 @@ subrosa                                  # dashboard (same as: subrosa stats)
 subrosa search aurora failover           # find that thing from three weeks ago
 subrosa search --project api deploy      # scope to one project
 subrosa search -n 30 --raw 'cache OR redis'
-subrosa search --fuzzy ratelimiter       # substring/typo matching (builds a trigram index on first use)
+subrosa search --fuzzy ratelimiter       # substring + small-typo matching (builds a trigram index on first use)
 subrosa search deploy --after 2026-05-01 # only turns from May onward (--before too; YYYY-MM-DD, inclusive)
 subrosa search api --tag tool:kubectl    # only sessions that used a given tool (repeat --tag to AND)
 subrosa search pgbouncer -C 2            # print 2 turns on each side of every hit (read around the match)
@@ -169,7 +169,7 @@ The first has Claude search the archive at the start of any task:
 Every past Claude Code session is archived locally and searchable with
 `subrosa search "<keywords>"` — scope with `--project <name>`, narrow by date or
 tag with `--after`/`--before`/`--tag`, more results with `-n 20`, and retry with
-`--fuzzy` if an exact search finds nothing (partial names, typos).
+`--fuzzy` if an exact search finds nothing (partial names, small typos).
 (If `subrosa` isn't on PATH, it's at `~/.claude/subrosa/bin/subrosa`.)
 At the start of any task — investigating, debugging, designing, reviewing, or when
 a ticket, environment, resource, person, or past decision comes up — search the

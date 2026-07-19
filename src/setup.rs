@@ -172,7 +172,7 @@ const SECTIONS: &[Section] = &[
 Every past Claude Code session is archived locally and searchable with
 `subrosa search "<keywords>"` — scope with `--project <name>`, narrow by date or
 tag with `--after`/`--before`/`--tag`, more results with `-n 20`, and retry with
-`--fuzzy` if an exact search finds nothing (partial names, typos).
+`--fuzzy` if an exact search finds nothing (partial names, small typos).
 (If `subrosa` isn't on PATH, it's at `~/.claude/subrosa/bin/subrosa`.)
 At the start of any task — investigating, debugging, designing, reviewing, or when
 a ticket, environment, resource, person, or past decision comes up — search the

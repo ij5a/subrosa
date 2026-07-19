@@ -81,7 +81,7 @@ Yes. After each assistant turn subrosa archives the in-progress transcript (the 
 
 ## Why keyword search instead of embeddings?
 
-A deliberate trade. Embeddings (meaning-based search) need model weights or API calls — that breaks the single static binary, the 5-crate supply chain, and zero-cost capture. Instead subrosa matches word roots, so `deploy` finds `deployed` and `deploying`, while identifiers like `TICKET-123` and `my-app-prod` stay exact. For partial names and typos, `subrosa search --fuzzy` adds a local trigram index (built on first use) — still no model. Meaning-based search stays the deliberate omission.
+A deliberate trade. Embeddings (meaning-based search) need model weights or API calls — that breaks the single static binary, the 5-crate supply chain, and zero-cost capture. Instead subrosa matches word roots, so `deploy` finds `deployed` and `deploying`, while identifiers like `TICKET-123` and `my-app-prod` stay exact. For partial names and typos, `subrosa search --fuzzy` adds a local trigram index (built on first use); when no substring matches, it falls back to the nearest matches within one edit (a wrong, missing, extra, or swapped letter) — still no model. Meaning-based search stays the deliberate omission.
 
 ## What are session tags?
 

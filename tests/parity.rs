@@ -87,6 +87,56 @@ fn ingest_golden_transcript(env: &TestEnv) -> PathBuf {
 }
 
 #[test]
+fn search_fuzzy_typo_finds_nearest_match() {
+    let env = setup("fuzzy-typo");
+    ingest_golden_transcript(&env);
+    // "latecny" is "latency" (present in the transcript) with two adjacent chars
+    // swapped: the substring pass finds nothing, the trigram fallback must.
+    let out = run(&env, &["search", "--fuzzy", "latecny"], None);
+    assert!(
+        out.contains("nearest matches (within one edit)"),
+        "missing fallback header:\n{out}"
+    );
+    // The snippet keeps its «» highlight markers, so match on the session id
+    // and the footer instead of the literal word.
+    assert!(
+        out.contains("aaaa-bbb"),
+        "expected the golden session:\n{out}"
+    );
+    assert!(out.contains("1 result(s)"), "expected one hit:\n{out}");
+}
+
+#[test]
+fn search_fuzzy_multi_term_and_rescues_one_typo() {
+    let env = setup("fuzzy-multi");
+    ingest_golden_transcript(&env);
+    // One typo'd term + one exact term (same turn): the per-term relaxation must
+    // keep "rollout" as a hard phrase and still rescue "latecny" → latency.
+    let out = run(&env, &["search", "--fuzzy", "latecny", "rollout"], None);
+    assert!(
+        out.contains("nearest matches (within one edit)"),
+        "missing fallback header:\n{out}"
+    );
+    assert!(out.contains("1 result(s)"), "expected one hit:\n{out}");
+}
+
+#[test]
+fn search_fuzzy_true_miss_output_unchanged() {
+    let env = setup("fuzzy-miss");
+    ingest_golden_transcript(&env);
+    // Nothing within one edit of this exists; the pre-fallback output is pinned.
+    let out = run(&env, &["search", "--fuzzy", "qqqqqqq"], None);
+    assert!(
+        out.contains("[subrosa] no matches for: \"qqqqqqq\""),
+        "true miss must keep the no-match line:\n{out}"
+    );
+    assert!(
+        !out.contains("nearest matches"),
+        "no fallback header on a true miss:\n{out}"
+    );
+}
+
+#[test]
 fn session_dump_matches_golden() {
     let env = setup("dump");
     ingest_golden_transcript(&env);

@@ -97,7 +97,7 @@ enum Cmd {
         /// Restrict to a session id (prefix match)
         #[arg(long)]
         session: Option<String>,
-        /// Substring/typo matching via a trigram index (built on first use)
+        /// Substring + small-typo matching via a trigram index (built on first use)
         #[arg(long)]
         fuzzy: bool,
         /// Match any term instead of all (OR instead of the default AND)

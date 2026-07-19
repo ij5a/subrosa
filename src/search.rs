@@ -118,79 +118,51 @@ pub fn run(
         eprintln!("[subrosa] --fuzzy needs at least one term of 3+ characters");
         return ExitCode::from(2);
     }
-    // --exclude drops hits containing the given term(s). Non-raw only (raw owns the
-    // whole query); wrap the includes so `(includes) NOT "x" NOT "y"` groups correctly.
-    let m = if !raw && !exclude.is_empty() && !m.trim().is_empty() {
-        let nots = quote_terms(exclude, fuzzy)
-            .iter()
-            .map(|e| format!("NOT {e}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        if nots.is_empty() {
-            m
-        } else {
-            format!("({m}) {nots}")
-        }
-    } else {
-        m
-    };
+    let m = wrap_excludes(m, exclude, raw, fuzzy);
 
-    // The table name is a fixed literal chosen by --fuzzy, never user input.
-    let mut sql = format!(
-        "SELECT t.session_id, t.ts, t.role, t.project, \
-                snippet({table}, 0, '«', '»', '…', 12) AS snip, t.seq \
-         FROM {table} JOIN turns t ON t.id = {table}.rowid \
-         WHERE {table} MATCH ?"
-    );
-    let mut binds: Vec<String> = vec![m.clone()];
+    // WHERE extras shared by the ranked query and the fuzzy nearest-match fallback.
+    let mut where_extra = String::new();
+    let mut extra_binds: Vec<String> = Vec::new();
     if let Some(p) = project {
-        sql.push_str(" AND t.project LIKE ?");
-        binds.push(format!("%{p}%"));
+        where_extra.push_str(" AND t.project LIKE ?");
+        extra_binds.push(format!("%{p}%"));
     }
     if let Some(s) = session {
-        sql.push_str(" AND t.session_id LIKE ?");
-        binds.push(format!("{s}%"));
+        where_extra.push_str(" AND t.session_id LIKE ?");
+        extra_binds.push(format!("{s}%"));
     }
     // Date bounds: ISO timestamps sort lexically, so a string compare is correct.
     if let Some(a) = &after_bound {
-        sql.push_str(" AND t.ts >= ?");
-        binds.push(a.clone());
+        where_extra.push_str(" AND t.ts >= ?");
+        extra_binds.push(a.clone());
     }
     if let Some(b) = &before_bound {
-        sql.push_str(" AND t.ts < ?");
-        binds.push(b.clone());
+        where_extra.push_str(" AND t.ts < ?");
+        extra_binds.push(b.clone());
     }
     // EXISTS, not JOIN: a JOIN would multiply result rows per matching tag, which
     // corrupts bm25() ranking and LIMIT. Repeated --tag is ANDed.
     for tg in tags {
-        sql.push_str(
+        where_extra.push_str(
             " AND EXISTS (SELECT 1 FROM session_tags st \
              WHERE st.session_id = t.session_id AND st.tag = ?)",
         );
-        binds.push(tg.clone());
+        extra_binds.push(tg.clone());
     }
-    // limit is a typed integer from clap — safe to inline; strings stay parameterized.
-    sql.push_str(&format!(" ORDER BY bm25({table}) LIMIT {limit}"));
 
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[subrosa] query error: {e}");
-            eprintln!("[subrosa] tip: drop --raw, or wrap special characters in quotes");
-            return ExitCode::FAILURE;
-        }
-    };
-    // (session_id, ts, role, project, snippet, seq)
-    type Hit = (
-        String,
-        Option<String>,
-        String,
-        Option<String>,
-        Option<String>,
-        i64,
-    );
-    let rows: Result<Vec<Hit>, _> = stmt
-        .query_map(params_from_iter(binds.iter()), |r| {
+    // The table name is a fixed literal chosen by --fuzzy, never user input; the
+    // tail is a fixed ORDER/LIMIT clause built from typed integers. Strings stay bound.
+    let fetch = |match_str: &str, tail: &str| -> rusqlite::Result<Vec<Hit>> {
+        let sql = format!(
+            "SELECT t.session_id, t.ts, t.role, t.project, \
+                    snippet({table}, 0, '«', '»', '…', 12) AS snip, t.seq \
+             FROM {table} JOIN turns t ON t.id = {table}.rowid \
+             WHERE {table} MATCH ?{where_extra} {tail}"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut binds = vec![match_str.to_string()];
+        binds.extend(extra_binds.iter().cloned());
+        let it = stmt.query_map(params_from_iter(binds.iter()), |r| {
             Ok((
                 r.get(0)?,
                 r.get(1)?,
@@ -199,9 +171,11 @@ pub fn run(
                 r.get(4)?,
                 r.get(5)?,
             ))
-        })
-        .and_then(|it| it.collect());
-    let rows = match rows {
+        })?;
+        it.collect()
+    };
+
+    let rows = match fetch(&m, &format!("ORDER BY bm25({table}) LIMIT {limit}")) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[subrosa] query error: {e}");
@@ -211,6 +185,102 @@ pub fn run(
     };
 
     if rows.is_empty() {
+        // Nearest-match fallback: a mid-word typo shares most of its trigrams with
+        // the stored word even when no 3+-char substring survives. OR each term's
+        // trigrams, then keep only rows holding a token within one edit of the term.
+        if fuzzy && !raw {
+            let toks: Vec<String> = terms
+                .iter()
+                .flat_map(|t| t.split_whitespace())
+                .filter(|t| t.chars().count() >= 3)
+                .map(str::to_lowercase)
+                .collect();
+            // Terms under 5 chars decompose into 1-2 trigrams the substring pass
+            // already required, so they stay exact phrases; only ≥5 terms relax.
+            let close_idxs: Vec<usize> = toks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.chars().count() >= 5)
+                .map(|(i, _)| i)
+                .collect();
+            if !close_idxs.is_empty() {
+                let quote = |t: &str| format!("\"{}\"", t.replace('"', "\"\""));
+                let tri_group = |t: &str| {
+                    let tris: Vec<String> = term_trigrams(t).iter().map(|x| quote(x)).collect();
+                    format!("({})", tris.join(" OR "))
+                };
+                // Does the row's snippet hold a token within one edit of `term`?
+                // Strip the «» highlight markers first — they land mid-word
+                // («late»ncy) and would split the token being distance-checked.
+                let snip_close = |r: &Hit, term: &str| {
+                    let s =
+                        r.4.as_deref()
+                            .unwrap_or("")
+                            .replace(['«', '»'], "")
+                            .to_lowercase();
+                    crate::text::turn_tokens(&s).iter().any(|tok| {
+                        crate::text::within_one_edit(tok, term)
+                            || tok
+                                .split(['-', '_'])
+                                .any(|p| crate::text::within_one_edit(p, term))
+                    })
+                };
+                let tail = format!("ORDER BY bm25({table}) LIMIT {FUZZY_CAND_LIMIT}");
+                let mut near: Vec<Hit> = Vec::new();
+                if any {
+                    // --any: one close term suffices, so relax everything in one OR.
+                    let groups: Vec<String> = toks
+                        .iter()
+                        .map(|t| {
+                            if t.chars().count() >= 5 {
+                                tri_group(t)
+                            } else {
+                                quote(t)
+                            }
+                        })
+                        .collect();
+                    let m2 = wrap_excludes(groups.join(" OR "), exclude, raw, fuzzy);
+                    // Best-effort: a fallback query error means no nearest matches,
+                    // but say so on stderr — a silent swallow hid a syntax bug once.
+                    near = fetch(&m2, &tail)
+                        .map_err(|e| eprintln!("[subrosa] fuzzy fallback query error: {e}"))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|r| close_idxs.iter().any(|&i| snip_close(r, &toks[i])))
+                        .collect();
+                } else {
+                    // AND: assume one typo'd term per query — relax one term at a
+                    // time so the others stay hard phrases and keep the candidate
+                    // pool tight. Explicit AND: FTS5 rejects implicit AND right
+                    // after a parenthesized group.
+                    // ponytail: two typo'd terms in one query stay unrescued.
+                    for &ri in &close_idxs {
+                        let groups: Vec<String> = toks
+                            .iter()
+                            .enumerate()
+                            .map(|(i, t)| if i == ri { tri_group(t) } else { quote(t) })
+                            .collect();
+                        let m2 = wrap_excludes(groups.join(" AND "), exclude, raw, fuzzy);
+                        for r in fetch(&m2, &tail)
+                            .map_err(|e| eprintln!("[subrosa] fuzzy fallback query error: {e}"))
+                            .unwrap_or_default()
+                        {
+                            if snip_close(&r, &toks[ri])
+                                && !near.iter().any(|n| n.0 == r.0 && n.5 == r.5)
+                            {
+                                near.push(r);
+                            }
+                        }
+                    }
+                }
+                near.truncate(limit.max(0) as usize);
+                if !near.is_empty() {
+                    println!("[subrosa] no substring match — nearest matches (within one edit):");
+                    print_results(&conn, &near, context);
+                    return ExitCode::SUCCESS;
+                }
+            }
+        }
         println!("[subrosa] no matches for: {m}");
         // Nudge toward the fuzzy fallback when an exact search finds nothing.
         if !fuzzy && !raw {
@@ -221,6 +291,62 @@ pub fn run(
         }
         return ExitCode::SUCCESS;
     }
+    print_results(&conn, &rows, context);
+    ExitCode::SUCCESS
+}
+
+/// Candidate pool for the fuzzy nearest-match fallback: bm25-top rows fetched
+/// before the Rust-side one-edit filter cuts them down to real near-misses.
+const FUZZY_CAND_LIMIT: usize = 50;
+
+/// One search hit: (session_id, ts, role, project, snippet, seq).
+type Hit = (
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    i64,
+);
+
+/// Wrap `NOT` clauses for --exclude around a positive match. Non-raw only (raw
+/// owns the whole query); `(includes) NOT "x" NOT "y"` keeps grouping correct.
+fn wrap_excludes(m: String, exclude: &[String], raw: bool, fuzzy: bool) -> String {
+    if raw || exclude.is_empty() || m.trim().is_empty() {
+        return m;
+    }
+    let nots = quote_terms(exclude, fuzzy)
+        .iter()
+        .map(|e| format!("NOT {e}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if nots.is_empty() {
+        m
+    } else {
+        format!("({m}) {nots}")
+    }
+}
+
+/// Distinct char-level trigrams of an already-lowercased term, capped so a very
+/// long identifier can't balloon the fallback OR-query.
+fn term_trigrams(term_low: &str) -> Vec<String> {
+    const CAP: usize = 24;
+    let cs: Vec<char> = term_low.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    for w in cs.windows(3) {
+        let t: String = w.iter().collect();
+        if !out.contains(&t) {
+            out.push(t);
+            if out.len() == CAP {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Print ranked hits with optional --context neighbours, then the footer line.
+fn print_results(conn: &rusqlite::Connection, rows: &[Hit], context: i64) {
     // --context looks up the turns on each side of a hit by (session_id, seq);
     // idx_turns_session makes this a cheap indexed range read per hit. Prepared
     // once and reused; None (and so no extra work) on the default context=0 path.
@@ -287,12 +413,33 @@ pub fn run(
         rows.len(),
         paths::projects_dir().display()
     );
-    ExitCode::SUCCESS
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn term_trigrams_dedups_and_caps() {
+        assert_eq!(
+            term_trigrams("latecny"),
+            vec!["lat", "ate", "tec", "ecn", "cny"]
+        );
+        // Repeated windows dedup; the cap bounds very long identifiers.
+        assert_eq!(term_trigrams("aaaa"), vec!["aaa"]);
+        let long: String = ('a'..='z').cycle().take(60).collect();
+        assert!(term_trigrams(&long).len() <= 24);
+    }
+
+    #[test]
+    fn wrap_excludes_wraps_only_non_raw_non_empty() {
+        assert_eq!(wrap_excludes("\"a\"".into(), &[], false, false), "\"a\"");
+        assert_eq!(wrap_excludes("q".into(), &["x".into()], true, false), "q");
+        assert_eq!(
+            wrap_excludes("\"a\"".into(), &["x".into()], false, false),
+            "(\"a\") NOT \"x\""
+        );
+    }
 
     #[test]
     fn ctx_preview_collapses_whitespace_and_leaves_short_text_whole() {

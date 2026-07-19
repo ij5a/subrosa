@@ -218,6 +218,49 @@ pub(crate) fn token_matches_loose(tok: &str, term: &str) -> bool {
     token_matches(a.as_ref(), b.as_ref())
 }
 
+/// True when `a` and `b` (both already lowercased) differ by at most one edit:
+/// a substitution, an insertion/deletion, or one swap of adjacent characters.
+pub(crate) fn within_one_edit(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let av: Vec<char> = a.chars().collect();
+    let bv: Vec<char> = b.chars().collect();
+    match av.len().abs_diff(bv.len()) {
+        0 => {
+            // Same length: one substitution, or exactly two diffs forming an adjacent swap.
+            let diffs: Vec<usize> = (0..av.len()).filter(|&i| av[i] != bv[i]).collect();
+            match diffs[..] {
+                [_] => true,
+                [i, j] => j == i + 1 && av[i] == bv[j] && av[j] == bv[i],
+                _ => false,
+            }
+        }
+        1 => {
+            // One insertion/deletion: the longer string minus one char equals the shorter.
+            let (long, short) = if av.len() > bv.len() {
+                (&av, &bv)
+            } else {
+                (&bv, &av)
+            };
+            let (mut i, mut j, mut skipped) = (0, 0, false);
+            while i < long.len() && j < short.len() {
+                if long[i] == short[j] {
+                    i += 1;
+                    j += 1;
+                } else if skipped {
+                    return false;
+                } else {
+                    skipped = true;
+                    i += 1;
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Collapse every run of whitespace to a single space — the snippet/preview
 /// normaliser shared by `search`, `recall`, and `related` before truncation.
 pub(crate) fn collapse_ws(s: &str) -> String {
@@ -268,6 +311,19 @@ mod tests {
         assert!(!is_distinctive("use")); // stopword (would pass the 4+ rule otherwise — it's 3)
         assert!(!is_distinctive("go")); // short + stopword
         assert!(!is_distinctive("did")); // stopword
+    }
+
+    #[test]
+    fn within_one_edit_covers_each_single_edit_shape() {
+        assert!(within_one_edit("memscribe", "memscribe")); // equal
+        assert!(within_one_edit("memscibe", "memscribe")); // one deletion
+        assert!(within_one_edit("memscribe", "memscibe")); // one insertion (symmetric)
+        assert!(within_one_edit("memscrive", "memscribe")); // one substitution
+        assert!(within_one_edit("memscrbie", "memscribe")); // adjacent swap
+        assert!(within_one_edit("látency", "latency")); // multibyte: chars, not bytes
+        assert!(!within_one_edit("mescibe", "memscribe")); // two deletions
+        assert!(!within_one_edit("mmescribe", "memscirbe")); // swap + insertion
+        assert!(!within_one_edit("cache", "prods")); // unrelated, same length
     }
 
     #[test]
