@@ -5,6 +5,12 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.1] - 2026-07-19
+
+### Fixed
+
+- `subrosa checkpoint-mark` could stamp the wrong session when another project's transcript was modified more recently — a concurrent session or a spawned agent — so the just-checkpointed session re-queued and got drained a second time. The mark now targets the newest transcript in the current directory's own project, and accepts an optional session id or unique prefix (`subrosa checkpoint-mark <id>`) to pin it exactly.
+
 ## [0.20.0] - 2026-07-19
 
 ### Added
@@ -202,6 +208,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.20.1]: https://github.com/ij5a/subrosa/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/ij5a/subrosa/compare/v0.19.2...v0.20.0
 [0.19.2]: https://github.com/ij5a/subrosa/compare/v0.19.1...v0.19.2
 [0.19.1]: https://github.com/ij5a/subrosa/compare/v0.19.0...v0.19.1
