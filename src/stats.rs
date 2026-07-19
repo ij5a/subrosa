@@ -449,11 +449,9 @@ fn slug_from_url(url: &str) -> Option<String> {
         // scheme://[user@]host[:port]/owner/repo
         let after = &url[pos + 3..];
         after.find('/').map(|p| &after[p + 1..]).unwrap_or("")
-    } else if let Some(pos) = url.find(':') {
-        // scp-like: git@host:owner/repo
-        &url[pos + 1..]
     } else {
-        return None;
+        // scp-like: git@host:owner/repo
+        &url[url.find(':')? + 1..]
     };
     let segs: Vec<&str> = path_part.split('/').filter(|s| !s.is_empty()).collect();
     if segs.len() >= 2 {
