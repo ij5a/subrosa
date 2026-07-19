@@ -240,7 +240,10 @@ enum Cmd {
         id: String,
     },
     /// Mark the currently-running session checkpointed
-    CheckpointMark,
+    CheckpointMark {
+        /// Session id or unique prefix (default: the cwd project's live session)
+        id: Option<String>,
+    },
     /// Empty the whole checkpoint queue (prefer checkpoint-drop per session)
     CheckpointClear,
     /// Claude Code hook entrypoints (read the hook JSON on stdin; never fail the session)
@@ -381,7 +384,7 @@ fn main() -> ExitCode {
         Cmd::Pending => run_pending(),
         Cmd::CheckpointDrop { id } => session::drop_sid(&id),
         Cmd::CheckpointEnqueue { id } => session::enqueue(&id),
-        Cmd::CheckpointMark => session::mark_current(),
+        Cmd::CheckpointMark { id } => session::mark_current(id.as_deref()),
         Cmd::CheckpointClear => run_checkpoint_clear(),
     }
 }

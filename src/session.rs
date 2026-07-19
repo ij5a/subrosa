@@ -1,6 +1,6 @@
 //! Read or de-queue one archived session — helpers for the /checkpoint-backlog skill.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use rusqlite::OptionalExtension;
@@ -21,6 +21,20 @@ enum Resolved {
     One(String),
     None,
     Ambiguous(Vec<String>),
+}
+
+/// The shared "ambiguous prefix" listing (`dump` and `mark_current` print it alike).
+fn print_ambiguous(arg: &str, ids: &[String]) {
+    eprintln!(
+        "[subrosa] \"{arg}\" matches {} sessions — use a longer prefix or the full id:",
+        ids.len()
+    );
+    for id in ids.iter().take(AMBIGUOUS_LIST_CAP) {
+        eprintln!("  {id}");
+    }
+    if ids.len() > AMBIGUOUS_LIST_CAP {
+        eprintln!("  … and {} more", ids.len() - AMBIGUOUS_LIST_CAP);
+    }
 }
 
 /// Resolve a session argument to one archived session id. An exact id wins
@@ -81,16 +95,7 @@ pub fn dump(arg: &str, show_tags: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
         Resolved::Ambiguous(ids) => {
-            eprintln!(
-                "[subrosa] \"{arg}\" matches {} sessions — use a longer prefix or the full id:",
-                ids.len()
-            );
-            for id in ids.iter().take(AMBIGUOUS_LIST_CAP) {
-                eprintln!("  {id}");
-            }
-            if ids.len() > AMBIGUOUS_LIST_CAP {
-                eprintln!("  … and {} more", ids.len() - AMBIGUOUS_LIST_CAP);
-            }
+            print_ambiguous(arg, &ids);
             return ExitCode::from(2);
         }
     };
@@ -220,18 +225,12 @@ pub fn enqueue(sid: &str) -> ExitCode {
     }
 }
 
-/// Mark the currently-running session as checkpointed: ingest its latest turns,
-/// set the high-water mark, and drop it from the queue. Run as the last step of
-/// /checkpoint so the session doesn't re-queue on the next SessionEnd.
-pub fn mark_current() -> ExitCode {
-    let Some(f) = live_session_file() else {
-        println!("[subrosa] mark-current: no transcript found");
-        return ExitCode::SUCCESS;
-    };
-    let sid = f
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
+/// Mark a session as checkpointed: ingest its latest turns, set the high-water
+/// mark, and drop it from the queue. Run as the last step of /checkpoint so the
+/// session doesn't re-queue on the next SessionEnd. No argument targets the cwd
+/// project's live session; an explicit id/prefix pins it exactly — a busier
+/// transcript elsewhere (another project, a spawned agent) can't steal the mark.
+pub fn mark_current(arg: Option<&str>) -> ExitCode {
     let conn = match db::connect() {
         Ok(c) => c,
         Err(e) => {
@@ -239,8 +238,48 @@ pub fn mark_current() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let (sid, file) = match arg {
+        Some(a) => match resolve_session(&conn, a) {
+            Resolved::One(id) => {
+                // Rebuild the transcript path from the stored project encoding;
+                // an already-rotated file is fine — the mark still lands.
+                let file = conn
+                    .query_row(
+                        "SELECT project FROM sessions WHERE session_id=?",
+                        [id.as_str()],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional()
+                    .unwrap_or(None)
+                    .map(|proj| paths::projects_dir().join(proj).join(format!("{id}.jsonl")))
+                    .filter(|f| f.exists());
+                (id, file)
+            }
+            Resolved::None => {
+                eprintln!("[subrosa] no archived turns for session {a} (not ingested?)");
+                return ExitCode::FAILURE;
+            }
+            Resolved::Ambiguous(ids) => {
+                print_ambiguous(a, &ids);
+                return ExitCode::from(2);
+            }
+        },
+        None => {
+            let Some(f) = live_session_file() else {
+                println!("[subrosa] mark-current: no transcript found");
+                return ExitCode::SUCCESS;
+            };
+            let sid = f
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            (sid, Some(f))
+        }
+    };
     // Bring last_seq up to the checkpoint moment before recording the mark.
-    let _ = ingest::ingest_file(&conn, &f);
+    if let Some(f) = &file {
+        let _ = ingest::ingest_file(&conn, f);
+    }
     let _ = conn.execute(
         "UPDATE sessions SET checkpointed_seq=last_seq WHERE session_id=?",
         [sid.as_str()],
@@ -267,29 +306,61 @@ pub fn mark_current() -> ExitCode {
 }
 
 /// Best guess at the session running right now: the most recently modified
-/// transcript under the projects dir (/checkpoint keeps appending to it).
+/// transcript in the cwd's OWN project dir (/checkpoint keeps appending to it),
+/// falling back to the newest across all projects. The cwd scope keeps a busier
+/// concurrent session in another project from stealing the mark; raw + resolved
+/// cwd are both tried because Claude Code encodes the symlink-resolved path.
 fn live_session_file() -> Option<PathBuf> {
     let root = paths::projects_dir();
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut cands: Vec<String> = vec![db::encode_cwd(&cwd.to_string_lossy())];
+        if let Ok(real) = cwd.canonicalize() {
+            let e = db::encode_cwd(&real.to_string_lossy());
+            if !cands.contains(&e) {
+                cands.push(e);
+            }
+        }
+        let best = cands
+            .iter()
+            .filter_map(|p| newest_jsonl_in(&root.join(p)))
+            .max_by_key(|f| std::fs::metadata(f).and_then(|m| m.modified()).ok());
+        if best.is_some() {
+            return best;
+        }
+    }
+    // Fallback: newest transcript anywhere (the pre-cwd-scope behavior).
     let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
     for project in std::fs::read_dir(root).ok()?.flatten() {
         let p = project.path();
         if !p.is_dir() {
             continue;
         }
-        let Ok(entries) = std::fs::read_dir(&p) else {
+        let Some(f) = newest_jsonl_in(&p) else {
             continue;
         };
-        for f in entries.flatten() {
-            let fp = f.path();
-            if fp.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let Ok(mtime) = f.metadata().and_then(|m| m.modified()) else {
-                continue;
-            };
-            if newest.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
-                newest = Some((mtime, fp));
-            }
+        let Ok(mtime) = std::fs::metadata(&f).and_then(|m| m.modified()) else {
+            continue;
+        };
+        if newest.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+            newest = Some((mtime, f));
+        }
+    }
+    newest.map(|(_, p)| p)
+}
+
+/// Newest `.jsonl` in one directory (None when the dir is missing or empty).
+fn newest_jsonl_in(dir: &Path) -> Option<PathBuf> {
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for f in std::fs::read_dir(dir).ok()?.flatten() {
+        let fp = f.path();
+        if fp.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Ok(mtime) = f.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        if newest.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+            newest = Some((mtime, fp));
         }
     }
     newest.map(|(_, p)| p)

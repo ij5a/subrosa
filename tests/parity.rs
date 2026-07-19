@@ -49,6 +49,25 @@ fn run(env: &TestEnv, args: &[&str], stdin: Option<&str>) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+// Like run(), but with an explicit working directory (checkpoint-mark scopes
+// its live-session lookup to the cwd's project).
+fn run_in(env: &TestEnv, cwd: &Path, args: &[&str]) -> String {
+    let mut child = Command::new(bin())
+        .args(args)
+        .current_dir(cwd)
+        .env("SUBROSA_DIR", &env.data)
+        .env("SUBROSA_PROJECTS_DIR", &env.projects)
+        .env("SUBROSA_NOW", "1799712000")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(b"").unwrap();
+    let out = child.wait_with_output().unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
 // Like run(), but keeps the full Output so a test can assert the exit code.
 fn run_full(env: &TestEnv, args: &[&str], stdin: Option<&str>) -> std::process::Output {
     let mut child = Command::new(bin())
@@ -84,6 +103,63 @@ fn ingest_golden_transcript(env: &TestEnv) -> PathBuf {
     fs::write(&t, golden("transcript.jsonl")).unwrap();
     run(env, &["ingest", t.to_str().unwrap()], None);
     t
+}
+
+// checkpoint-mark must stamp the cwd project's own session even when another
+// project holds a more recently modified transcript (the pre-fix failure).
+#[test]
+fn checkpoint_mark_scopes_to_cwd_project() {
+    let env = setup("mark-cwd");
+    // A working dir whose encoded name is a project dir with "our" session.
+    let cwd = env.data.parent().unwrap().join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    // getcwd() hands the binary the physical path (macOS tempdir rides the
+    // /var -> /private/var symlink), and Claude Code names project dirs after
+    // the resolved path too — so encode the canonicalized form.
+    let cwd = cwd.canonicalize().unwrap();
+    let encoded: String = cwd
+        .to_str()
+        .unwrap()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let ours_dir = env.projects.join(&encoded);
+    fs::create_dir_all(&ours_dir).unwrap();
+    let ours = ours_dir.join("aaaa-cwd-1111.jsonl");
+    fs::write(&ours, golden("transcript.jsonl")).unwrap();
+    run(&env, &["ingest", ours.to_str().unwrap()], None);
+    // A second project whose transcript is strictly newer on disk.
+    let other_dir = env.projects.join("-tmp-other");
+    fs::create_dir_all(&other_dir).unwrap();
+    let other = other_dir.join("bbbb-other-2222.jsonl");
+    std::thread::sleep(std::time::Duration::from_millis(25));
+    fs::write(&other, golden("transcript.jsonl")).unwrap();
+    run(&env, &["ingest", other.to_str().unwrap()], None);
+
+    let out = run_in(&env, &cwd, &["checkpoint-mark"]);
+    assert!(
+        out.contains("marked current session aaaa-cwd-1111"),
+        "mark must stay in the cwd project:\n{out}"
+    );
+}
+
+// An explicit id/prefix pins the mark regardless of cwd or mtimes.
+#[test]
+fn checkpoint_mark_explicit_id_wins() {
+    let env = setup("mark-explicit");
+    let cwd = env.data.parent().unwrap().join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    let other_dir = env.projects.join("-tmp-other");
+    fs::create_dir_all(&other_dir).unwrap();
+    let other = other_dir.join("bbbb-other-2222.jsonl");
+    fs::write(&other, golden("transcript.jsonl")).unwrap();
+    run(&env, &["ingest", other.to_str().unwrap()], None);
+
+    let out = run_in(&env, &cwd, &["checkpoint-mark", "bbbb-oth"]);
+    assert!(
+        out.contains("marked current session bbbb-other-2222"),
+        "explicit prefix must win:\n{out}"
+    );
 }
 
 #[test]
