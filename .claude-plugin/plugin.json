@@ -1,6 +1,6 @@
 {
   "name": "subrosa",
-  "version": "0.19.2",
+  "version": "0.20.0",
   "description": "Persistent, private memory for Claude Code — every session archived into a local, searchable SQLite database. What's said under the rose stays under the rose.",
   "author": {
     "name": "ij5a"

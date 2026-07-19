@@ -5,6 +5,16 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] - 2026-07-19
+
+### Added
+
+- `subrosa search --fuzzy` now rescues small typos. When the substring pass finds nothing, it falls back to the nearest matches within one edit — a wrong, missing, extra, or swapped letter (`latecny` finds `latency`). Hits print under a new `no substring match — nearest matches (within one edit):` header. With several terms, one typo'd term is rescued while the others stay exact. Existing searches are unchanged: the fallback only runs where you previously got "no matches", and recall stays on exact keyword matching.
+
+### Changed
+
+- README, FAQ, and `--help` now describe `--fuzzy` as matching "partial names and small typos", with the one-edit mechanism spelled out in the FAQ.
+
 ## [0.19.2] - 2026-07-07
 
 ### Changed
@@ -192,6 +202,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.20.0]: https://github.com/ij5a/subrosa/compare/v0.19.2...v0.20.0
 [0.19.2]: https://github.com/ij5a/subrosa/compare/v0.19.1...v0.19.2
 [0.19.1]: https://github.com/ij5a/subrosa/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/ij5a/subrosa/compare/v0.18.0...v0.19.0
