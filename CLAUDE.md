@@ -22,13 +22,14 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 | text.rs | shared tokenizer/term-quality helpers (STOPWORDS, extract_terms, is_anchor, turn_tokens, token_matches); used by recall + related + tags |
 | tags.rs | auto-derived read-only session tags (`tool:`/`ext:`/`topic:`): `derive_tags` at ingest, `backfill` at schema v3; fully deterministic |
 | facts.rs | curated facts CRUD, frontmatter parsing, type weights, `fact link` ([[name]] graph reader) |
-| generate.rs | byte-budgeted MEMORY.md from the facts table |
+| generate.rs | byte-budgeted MEMORY.md from the facts table; per-project `<memdir>/.budget` override, and selection also stops at Claude Code's 200-line load limit |
 | import_existing.rs | one-time import of a MEMORY.md + leaves into the facts table |
 | session.rs | session dump (full id or unique prefix, opt-in `--tags`) + checkpoint queue ops (drop/enqueue/mark-current) |
 | stats.rs | dashboard (also the bare `subrosa` default) |
 | timeutil.rs | ISO-8601 ↔ Unix-epoch helpers (no chrono): parse/now/civil_to_days/civil_from_days/parse_ymd/next_day; shared by stats + recall + search/sessions |
-| backup.rs | throttled snapshots via SQLite backup API + mirror copy |
-| setup.rs | interactive first-run config (mirror folder question) |
+| backup.rs | throttled snapshots via SQLite backup API + mirror copy (plain or encrypted) |
+| crypt.rs | encrypted mirror snapshots: XChaCha20-Poly1305 + argon2id, 60-byte header as AAD, `subrosa restore` |
+| setup.rs | interactive first-run config (mirror folder + optional mirror passphrase) |
 | hook.rs | hook entrypoints: stdin JSON in, log to file, always exit 0 |
 
 ## Invariants (the load-bearing decisions)
@@ -36,11 +37,12 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 - **Schema and output formats are compatibility-critical.** Existing archives must keep working across versions. The stored-text, session-dump, MEMORY.md, recall, related, fact-link, and sessions-listing formats are pinned byte-for-byte by the golden tests in `tests/` — a failing golden test means a format change that needs a deliberate decision, never a quick golden-file update. Schema changes are additive only, through `migrate()` (v3 added `session_tags` + backfill; v4 added the `scan_offset`/`scan_seq` ingest resume cursor).
 - **Hooks never fail, never block.** They log to `$SUBROSA_DIR/hook.log` and exit 0 no matter what. Stdout is reserved for intentional context injection (the session-start nudge, the per-prompt checkpoint-backlog directive, recall hits) — never error noise. They never spawn `claude` (recursion).
 - **The live DB never goes in a synced folder.** iCloud/Dropbox-style sync corrupts live SQLite WAL/SHM sidecars mid-write. Only static snapshot files mirror out (backup.rs). Don't add anything that moves the live DB.
+- **Once encryption is intended, the mirror never goes out plaintext.** Intent means a passphrase resolves (even to an error) or a `subrosa-latest.db.enc` is already there. Any failure after that skips the mirror and leaves it stale — it never falls back to a readable copy — and the plaintext twin is cleared before any bailout. Turning encryption off is a manual delete of the `.enc`, never something a missing config does on its own.
 - **Redact before write.** Any new path that stores transcript text must go through `redact::redact`.
 - **Recall must stay quiet and read-only.** It opens the DB read-only, gates on distinctive terms, and injects nothing on a weak match. Its `[subrosa recall]` header is filtered on ingest (NOISE_PREFIXES) so injections never feed back into the archive.
 - **Phrase-quote FTS queries.** Hyphenated identifiers (`my-app-prod`, `TICKET-123`) trip FTS5's column/NOT syntax unless each term is quoted — `build_match` handles it; `--raw` is the opt-out.
 - **The `project` column stores Claude Code's own directory encoding as-is** (the transcript's parent dir name). Don't normalize or decode it — it has to match what Claude Code writes.
-- **Stay at 5 crates** (clap, regex, rusqlite, serde, serde_json). Single static binary with a small supply chain is part of the product; a new dependency needs a strong reason.
+- **Stay at 7 crates** (clap, regex, rusqlite, serde, serde_json, plus chacha20poly1305 and argon2 — jp approved those two for mirror encryption; rolling our own AEAD or KDF was the only alternative). Single static binary with a small supply chain is part of the product; a new dependency needs a strong reason. Pure Rust only, no C deps — the release builds 4 targets including musl.
 
 ## Working on it
 

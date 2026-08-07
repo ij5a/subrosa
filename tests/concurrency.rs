@@ -42,11 +42,25 @@ fn write_transcript(env: &TestEnv, sid: &str, turns: usize) -> PathBuf {
     p
 }
 
+/// A child pointed at the throwaway dirs, with EVERY inherited SUBROSA_*
+/// dropped first. An exported SUBROSA_DB would aim these toy sessions at the
+/// real archive, and an exported SUBROSA_MIRROR plus a passphrase would let
+/// the mirror purge delete a real file.
+fn base_cmd(env: &TestEnv) -> Command {
+    let mut cmd = Command::new(bin());
+    for (k, _) in std::env::vars_os() {
+        if k.to_string_lossy().starts_with("SUBROSA_") {
+            cmd.env_remove(&k);
+        }
+    }
+    cmd.env("SUBROSA_DIR", &env.data)
+        .env("SUBROSA_PROJECTS_DIR", &env.projects);
+    cmd
+}
+
 fn spawn_session_end(env: &TestEnv, sid: &str, transcript: &Path) -> Child {
-    let mut child = Command::new(bin())
+    let mut child = base_cmd(env)
         .args(["hook", "session-end"])
-        .env("SUBROSA_DIR", &env.data)
-        .env("SUBROSA_PROJECTS_DIR", &env.projects)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -123,10 +137,8 @@ fn connect_needs_no_write_lock_when_schema_current() {
         .execute("INSERT INTO sessions(session_id) VALUES('lock-holder')", [])
         .unwrap();
 
-    let mut child = Command::new(bin())
+    let mut child = base_cmd(&env)
         .args(["hook", "session-start"])
-        .env("SUBROSA_DIR", &env.data)
-        .env("SUBROSA_PROJECTS_DIR", &env.projects)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -11,10 +11,7 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 
-use crate::{db, ingest, paths, recall, HookEvent};
-
-/// Warn when a project's always-loaded MEMORY.md grows past this size.
-const MEMORY_MD_WARN_BYTES: u64 = 23000;
+use crate::{db, generate, ingest, paths, recall, HookEvent};
 
 pub fn run(event: HookEvent) -> ExitCode {
     let mut raw = String::new();
@@ -133,17 +130,38 @@ fn nudge_lines(input: &Value) -> Vec<String> {
                 .map(|p| p.to_string_lossy().into_owned())
         });
     if let Some(cwd) = cwd {
-        let mm = paths::projects_dir()
+        let memdir = paths::projects_dir()
             .join(db::encode_cwd(&cwd))
-            .join("memory")
-            .join("MEMORY.md");
+            .join("memory");
+        let mm = memdir.join("MEMORY.md");
         if let Ok(md) = std::fs::metadata(&mm) {
-            if md.len() > MEMORY_MD_WARN_BYTES {
+            // A bad or unreadable .budget goes to the log, never stderr: hook
+            // stderr is discarded, and stdout belongs to the injected context.
+            let budget = match generate::resolve_budget(&memdir) {
+                Ok((b, warn)) => {
+                    if let Some(w) = warn {
+                        log(&w);
+                    }
+                    b
+                }
+                Err(e) => {
+                    log(&e);
+                    generate::DEFAULT_BUDGET
+                }
+            };
+            // Cap the nudge at the load limit: a .budget set above it would
+            // otherwise go silent exactly when the index stops fitting.
+            let budget = budget.min(generate::CC_LOAD_CAP);
+            let lines = std::fs::read_to_string(&mm)
+                .map(|t| t.lines().count())
+                .unwrap_or(0);
+            if md.len() as i64 > budget || lines > generate::CC_LOAD_LINES {
                 out.push(format!(
-                    "[subrosa] MEMORY.md is {:.1}KB (>{}KB) — near the always-loaded cap; \
-                     trim index hooks or archive stale facts.",
-                    md.len() as f64 / 1024.0,
-                    MEMORY_MD_WARN_BYTES / 1000
+                    "[subrosa] MEMORY.md is {} / {lines} lines (cap: {} / {} lines) — \
+                     near the always-loaded cap; trim index hooks or archive stale facts.",
+                    kb(md.len() as i64),
+                    kb(budget),
+                    generate::CC_LOAD_LINES
                 ));
             }
         }
@@ -151,9 +169,22 @@ fn nudge_lines(input: &Value) -> Vec<String> {
     out
 }
 
+/// Sizes for the nudge. Anything under 1 KB prints as bytes, so a small
+/// budget reads "600B" instead of rounding down to "0KB".
+fn kb(n: i64) -> String {
+    if n < 1000 {
+        format!("{n}B")
+    } else {
+        format!("{:.1}KB", n as f64 / 1000.0)
+    }
+}
+
 /// Archive the just-ended transcript and queue its session id for checkpointing.
 /// Steps are isolated: a lock failure in one must not skip the others.
 fn session_end(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    // Ahead of db::connect(): an archive that won't open skips everything
+    // below, and that must not be what leaves a readable copy in the cloud.
+    crate::backup::purge_mirror_plaintext();
     let conn = db::connect()?;
     if let Some(tp) = input.get("transcript_path").and_then(Value::as_str) {
         let p = Path::new(tp);
@@ -270,7 +301,7 @@ fn user_prompt_submit(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Append one line to the hook log in the data dir. Best-effort: never fails.
-fn log(msg: &str) {
+pub(crate) fn log(msg: &str) {
     let path = paths::hook_log();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);

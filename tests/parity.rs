@@ -27,18 +27,28 @@ fn setup(tag: &str) -> TestEnv {
     TestEnv { data, projects }
 }
 
-fn run(env: &TestEnv, args: &[&str], stdin: Option<&str>) -> String {
-    let mut child = Command::new(bin())
-        .args(args)
-        .env("SUBROSA_DIR", &env.data)
+/// A child pointed at the throwaway dirs with a pinned clock, and EVERY
+/// inherited SUBROSA_* dropped first — SUBROSA_DB in a developer's shell
+/// outranks SUBROSA_DIR and would aim the suite at a real database.
+fn base_cmd(env: &TestEnv) -> Command {
+    let mut cmd = Command::new(bin());
+    for (k, _) in std::env::vars_os() {
+        if k.to_string_lossy().starts_with("SUBROSA_") {
+            cmd.env_remove(&k);
+        }
+    }
+    cmd.env("SUBROSA_DIR", &env.data)
         .env("SUBROSA_PROJECTS_DIR", &env.projects)
         // Pin the clock (2027-01-12Z) so recall's age hints render deterministically.
         .env("SUBROSA_NOW", "1799712000")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+        .stderr(Stdio::piped());
+    cmd
+}
+
+fn run(env: &TestEnv, args: &[&str], stdin: Option<&str>) -> String {
+    let mut child = base_cmd(env).args(args).spawn().unwrap();
     child
         .stdin
         .as_mut()
@@ -52,17 +62,7 @@ fn run(env: &TestEnv, args: &[&str], stdin: Option<&str>) -> String {
 // Like run(), but with an explicit working directory (checkpoint-mark scopes
 // its live-session lookup to the cwd's project).
 fn run_in(env: &TestEnv, cwd: &Path, args: &[&str]) -> String {
-    let mut child = Command::new(bin())
-        .args(args)
-        .current_dir(cwd)
-        .env("SUBROSA_DIR", &env.data)
-        .env("SUBROSA_PROJECTS_DIR", &env.projects)
-        .env("SUBROSA_NOW", "1799712000")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = base_cmd(env).args(args).current_dir(cwd).spawn().unwrap();
     child.stdin.as_mut().unwrap().write_all(b"").unwrap();
     let out = child.wait_with_output().unwrap();
     String::from_utf8_lossy(&out.stdout).into_owned()
@@ -70,16 +70,7 @@ fn run_in(env: &TestEnv, cwd: &Path, args: &[&str]) -> String {
 
 // Like run(), but keeps the full Output so a test can assert the exit code.
 fn run_full(env: &TestEnv, args: &[&str], stdin: Option<&str>) -> std::process::Output {
-    let mut child = Command::new(bin())
-        .args(args)
-        .env("SUBROSA_DIR", &env.data)
-        .env("SUBROSA_PROJECTS_DIR", &env.projects)
-        .env("SUBROSA_NOW", "1799712000")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = base_cmd(env).args(args).spawn().unwrap();
     child
         .stdin
         .as_mut()

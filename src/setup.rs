@@ -8,7 +8,7 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use crate::{backup, db, paths};
+use crate::{backup, crypt, db, paths};
 
 /// Cloud-synced folders worth suggesting, in the order they're found.
 fn detect_candidates() -> Vec<(String, PathBuf)> {
@@ -95,19 +95,40 @@ pub fn run(mirror_flag: Option<PathBuf>, no_mirror: bool) -> ExitCode {
                 "[subrosa] backup snapshots will mirror to: {}",
                 dir.display()
             );
-            match backup::snapshot(&conn, true, backup::DEFAULT_KEEP, true) {
+            // Ask before the first snapshot, so it lands already encrypted.
+            let mirror_ok = match paths::mirror_passphrase() {
+                Ok(Some(_)) => {
+                    println!("[subrosa] mirror encryption: on");
+                    true
+                }
+                Err(e) => {
+                    eprintln!("[subrosa] {e}");
+                    true
+                }
+                Ok(None) if std::io::stdin().is_terminal() => ask_mirror_passphrase(),
+                Ok(None) => true,
+            };
+            match backup::snapshot(&conn, true, backup::DEFAULT_KEEP, mirror_ok) {
                 Ok(Some(label)) => println!("[subrosa] first backup: {label}"),
                 Ok(None) => {}
                 Err(e) => eprintln!("[subrosa] first backup failed: {e}"),
             }
+            if !mirror_ok {
+                return ExitCode::FAILURE;
+            }
         }
-        None => {
-            let _ = paths::config_set("mirror", "none");
-            println!(
+        None => match paths::config_set("mirror", "none") {
+            Ok(()) => println!(
                 "[subrosa] no mirror — snapshots stay in {}",
                 paths::backups_dir().display()
-            );
-        }
+            ),
+            // The setting the user asked for isn't saved, so this run didn't
+            // do what it was told — don't report it as done.
+            Err(e) => {
+                eprintln!("[subrosa] could not save config: {e} — mirroring is unchanged");
+                return ExitCode::FAILURE;
+            }
+        },
     }
     println!("[subrosa] setup done. Try: subrosa ingest --sweep && subrosa search <terms>");
     ExitCode::SUCCESS
@@ -148,6 +169,72 @@ fn ask_interactively() -> Option<PathBuf> {
     }
     let p = ans.strip_prefix("~/").map(|rest| paths::home().join(rest));
     Some(p.unwrap_or_else(|| PathBuf::from(ans)))
+}
+
+/// Offer to encrypt the mirror copy. Declining leaves it plaintext, which is
+/// what was asked for. Returns false once the user said yes and we couldn't
+/// finish — the caller then skips the first mirror copy and fails the run.
+fn ask_mirror_passphrase() -> bool {
+    print!("[subrosa] encrypt the mirror copy with a passphrase? [y/N]: ");
+    let _ = std::io::stdout().flush();
+    let mut ans = String::new();
+    if std::io::stdin().read_line(&mut ans).is_err() || !ans.trim().eq_ignore_ascii_case("y") {
+        return true;
+    }
+    // Past this point the user asked for encryption. The mirror folder is
+    // already saved, so leaving it on with no passphrase is the one state that
+    // publishes the archive in the clear — at the very next session end, not
+    // just here. Every way of failing has to switch the mirror back off.
+    let give_up = |why: &str| -> bool {
+        eprintln!("[subrosa] {why}");
+        match paths::config_set("mirror", "none") {
+            Ok(()) => eprintln!(
+                "[subrosa] turned the mirror off — nothing goes out, and that outranks \
+                 SUBROSA_MIRROR if you have it set. Re-run `subrosa setup`, or delete the \
+                 mirror=none line from {}, to mirror again.",
+                paths::config_path().display()
+            ),
+            Err(e) => eprintln!(
+                "[subrosa] could not turn the mirror off either ({e}) — mirroring may still \
+                 be enabled in {}; check it before the next session ends.",
+                paths::config_path().display()
+            ),
+        }
+        false
+    };
+    let Some(pass) = read_passphrase_twice() else {
+        return give_up("no passphrase set — the attempts didn't match, or input ended.");
+    };
+    if let Err(e) = paths::config_set("mirror_passphrase", &pass) {
+        return give_up(&format!("could not save the passphrase: {e}"));
+    }
+    println!("[subrosa] mirror encryption: on — snapshots mirror as subrosa-latest.db.enc");
+    println!("[subrosa] read one back with: subrosa restore <mirror folder>/subrosa-latest.db.enc");
+    println!(
+        "[subrosa] keep the passphrase in a password manager — lose it and the off-machine copy \
+         can't be opened by anyone, including you."
+    );
+    true
+}
+
+/// Ask twice, one retry on a mismatch. None means give up and stay plaintext.
+fn read_passphrase_twice() -> Option<String> {
+    for _ in 0..2 {
+        let first = crypt::prompt_hidden("passphrase: ")?;
+        let again = crypt::prompt_hidden("passphrase again: ")?;
+        if first != again {
+            println!("[subrosa] those don't match.");
+            continue;
+        }
+        // The config file is one KEY=VALUE per line, so a line break in the
+        // value would silently cut the passphrase in half on the next read.
+        if first.is_empty() || first.contains(['\n', '\r']) {
+            println!("[subrosa] the passphrase can't be empty or contain a line break.");
+            continue;
+        }
+        return Some(first);
+    }
+    None
 }
 
 //---------------------------------------------------------------------------

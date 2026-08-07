@@ -2,7 +2,7 @@
 
 ## Can my data leave my machine?
 
-Your data — no. The binary makes zero network calls: no cloud, no telemetry, no update checker. Two network things happen, neither sends your data out: the plugin's one-time bootstrap downloads the program from GitHub releases (sha256-verified against checksums in this repo), and the optional backup mirror copies a snapshot into a folder you pick. Aim that mirror at iCloud or Dropbox and your sync client uploads the snapshot — your choice, off by default, and only static snapshots ever land there, never the live database.
+Your data — no. The binary makes zero network calls: no cloud, no telemetry, no update checker. Two network things happen, neither sends your data out: the plugin's one-time bootstrap downloads the program from GitHub releases (sha256-verified against checksums in this repo), and the optional backup mirror copies a snapshot into a folder you pick. Aim that mirror at iCloud or Dropbox and your sync client uploads the snapshot — your choice, off by default, and only static snapshots ever land there, never the live database. Set a mirror passphrase and that snapshot is encrypted before it's written.
 
 ## Where is my data?
 
@@ -10,21 +10,32 @@ Your data — no. The binary makes zero network calls: no cloud, no telemetry, n
 
 ## What gets redacted?
 
-Private key blocks, AWS access keys, bearer tokens, and `password=` / `token:`-style values are masked before storage — only the secret part is hidden, the rest stays searchable. The original transcripts under `~/.claude/projects` stay as Claude Code wrote them; full-disk encryption is the at-rest control for those.
+Private key blocks, AWS access keys, bearer tokens, and `password=` / `token:`-style values are masked before storage — only the secret part is hidden, the rest stays searchable. A `passphrase=` line is the exception: a passphrase is allowed to contain spaces, so there's no way to tell where it ends, and everything to the end of that line is masked. That covers subrosa's own mirror passphrase however you typed it — quoted, unquoted, in an `export`, or in the config file. The original transcripts under `~/.claude/projects` stay as Claude Code wrote them; full-disk encryption is the at-rest control for those.
 
 ## Is the archive encrypted at rest?
 
-No — by design; full-disk encryption is the control. The database is `0600` in a `0700` directory, so FileVault (macOS) or LUKS (Linux) encrypts it at rest along with everything else. subrosa adds no encryption of its own: it runs unattended, so the key would have to sit next to the data, readable by the same user — full-disk encryption with extra steps and no real gain. The transcripts Claude Code writes under `~/.claude/projects` are [plaintext regardless](https://code.claude.com/docs/en/claude-directory#plaintext-storage).
+The live database, no — by design; full-disk encryption is the control. The database is `0600` in a `0700` directory, so FileVault (macOS) or LUKS (Linux) encrypts it at rest along with everything else. subrosa adds no encryption of its own there: it runs unattended, so the key would have to sit next to the data, readable by the same user — full-disk encryption with extra steps and no real gain. The transcripts Claude Code writes under `~/.claude/projects` are [plaintext regardless](https://code.claude.com/docs/en/claude-directory#plaintext-storage).
+
+The mirror copy is different, because that one leaves your machine. Set `mirror_passphrase` (in `subrosa setup`, the config file, or `SUBROSA_MIRROR_PASSPHRASE`) and the mirrored snapshot is encrypted with XChaCha20-Poly1305, key from argon2id — it lands as `subrosa-latest.db.enc` and `subrosa restore <file>` reads it back. Eight things to know:
+
+- It protects the cloud copy only. Everything on your own disk — live database, local snapshots, original transcripts — is untouched, so full-disk encryption is still the control there.
+- The passphrase sits in `~/.claude/subrosa/config`, mode `0600`, so it's readable by anyone who is already you on this machine. That's fine for its job: keeping the cloud provider (and anyone who gets at your synced folder) out.
+- Turning it on doesn't erase what you already synced. Your cloud folder's trash and version history can still hold the old plaintext `subrosa-latest.db` — purge it there yourself. subrosa only deletes the plaintext copy sitting in the folder.
+- Every encrypted snapshot is a full upload. Each one gets a fresh salt and nonce, so no two are alike and your sync client can't send only the changed blocks — the whole file goes up each time.
+- Turning it off has to be deliberate. Once a `subrosa-latest.db.enc` exists, dropping the passphrase does not go back to plaintext: the backup reports the missing passphrase and skips the mirror, so a lost config line can never quietly publish your archive in the clear. To go back, delete `subrosa-latest.db.enc` from the mirror folder yourself — and if iCloud has evicted it, the file to delete is the hidden `.subrosa-latest.db.enc.icloud` placeholder standing in for it.
+- Sync-conflict copies are yours to clean up. If your cloud client ever made a second file — names like `subrosa-latest 2.db` or `subrosa-latest (conflicted copy).db` — subrosa does not delete it. It only removes the exact `subrosa-latest.db` it wrote, because widening that to a name pattern would put your own files in range. Check the mirror folder once after turning encryption on.
+- Setting it outside `subrosa setup` takes effect at the next backup. Add the passphrase by hand (env var or config file) and nothing changes right away: the plaintext copy goes at the next session end, and the first `.enc` appears when the 24-hour throttle allows. Run `subrosa backup --force` to seal it immediately.
+- `none` switches mirroring off whichever side says it. `mirror=none` in the config overrides a `SUBROSA_MIRROR` variable — that line is only ever written by a deliberate opt-out, so a shell profile can't quietly undo it — and `SUBROSA_MIRROR=none` overrides a configured folder the same way. Delete the line, unset the variable, or re-run `subrosa setup`, to mirror again. Either way it only stops subrosa writing there: if the other side still names a real folder, `subrosa restore` goes on refusing to put a readable copy into it, because opting out of a backup doesn't make that folder any less cloud-synced.
 
 ## What does subrosa not protect?
 
 Honest limits, so you know what you're getting:
 
 - **Redaction matches known shapes, not everything.** Private-key blocks, AWS keys, `Bearer` tokens, and labeled secrets (`password=`, `token:`) are masked; a `ghp_…` token, an `sk-…` key, or a bare JWT is stored as written. It cuts obvious leaks, not all of them.
-- **The archive isn't encrypted** — `0600`/`0700` is access control, enforced on Unix only (Windows falls back to default ACLs). Full-disk encryption is the real at-rest control.
+- **The archive on disk isn't encrypted** — `0600`/`0700` is access control, enforced on Unix only (Windows falls back to default ACLs). Full-disk encryption is the real at-rest control. Only the mirror copy can be encrypted, and only if you set a passphrase.
 - **Recall re-injects your own stored text.** On a strong match it puts up to 3 snippets back into context, so anything that did leak into the archive can resurface — the injection block tells Claude to treat it as unverified.
 - **Original transcripts stay cleartext** under `~/.claude/projects`; subrosa never edits those.
-- **One snapshot can leave the machine, by your choice** — the opt-in backup mirror, if you point it at a synced folder. The live database is never synced.
+- **One snapshot can leave the machine, by your choice** — the opt-in backup mirror, if you point it at a synced folder. Set a mirror passphrase and it goes out encrypted; without one it's a readable copy of your archive in someone else's cloud. The live database is never synced.
 
 ## How many tokens does it cost me?
 
@@ -56,7 +67,7 @@ Every operation and what it costs:
 | Saving a session | session end + catch-up at start | **0** — mechanical parsing, no LLM |
 | Auto-recall, no match | every prompt (the usual case) | **0** — stays silent |
 | Auto-recall, strong match | every prompt | **~180** — top 3 snippets, hard-capped |
-| `MEMORY.md` index load | once per session start | **≤ 23 KB (≈ 6k tokens)**, usually far less |
+| `MEMORY.md` index load | once per session start | **≤ 23 KB (≈ 6k tokens)** by default, usually far less — raise per project with `echo <n> > <memdir>/.budget` |
 | `subrosa search` | only when you or Claude run it | **~a few hundred** (15 ranked lines), net-cheaper than rediscovery |
 | `subrosa sessions` | only when you or Claude run it | **~a few hundred** (a page of session lines), like search |
 | Deriving session tags | session end + catch-up at start | **0** — local text parsing, no LLM |

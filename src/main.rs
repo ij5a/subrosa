@@ -1,4 +1,5 @@
 mod backup;
+mod crypt;
 mod db;
 mod facts;
 mod generate;
@@ -74,6 +75,14 @@ enum Cmd {
         /// Suppress per-file output
         #[arg(long)]
         quiet: bool,
+    },
+    /// Decrypt an encrypted mirror snapshot back into a plain .db file
+    Restore {
+        /// Path to a subrosa-latest.db.enc
+        file: PathBuf,
+        /// Where to write the decrypted DB (default: ./<filename minus .enc>)
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Ingest every transcript that changed since its last archive
     Sweep {
@@ -195,9 +204,9 @@ enum Cmd {
         /// A project's memory/ dir (default: the current project, from cwd)
         #[arg(long)]
         memdir: Option<PathBuf>,
-        /// Max bytes
-        #[arg(long, default_value_t = generate::DEFAULT_BUDGET)]
-        budget: i64,
+        /// Max bytes (default: <memdir>/.budget, else 23000)
+        #[arg(long)]
+        budget: Option<i64>,
         /// Output path (default: <memdir>/MEMORY.md)
         #[arg(long)]
         out: Option<PathBuf>,
@@ -294,6 +303,7 @@ fn main() -> ExitCode {
             sweep,
             quiet,
         } => run_ingest(paths, sweep, quiet),
+        Cmd::Restore { file, out } => crypt::restore(file, out),
         Cmd::Sweep { quiet } => run_ingest(Vec::new(), true, quiet),
         Cmd::Search {
             terms,
@@ -390,6 +400,11 @@ fn main() -> ExitCode {
 }
 
 fn run_backup(force: bool, keep: usize, no_mirror: bool) -> ExitCode {
+    // Ahead of db::connect(): a DB that won't open must not be the reason a
+    // readable copy stays in the cloud.
+    if !no_mirror {
+        backup::purge_mirror_plaintext();
+    }
     let conn = match db::connect() {
         Ok(c) => c,
         Err(e) => {

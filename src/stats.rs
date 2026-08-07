@@ -8,10 +8,7 @@ use std::process::{Command, ExitCode};
 use rusqlite::Connection;
 
 use crate::timeutil::{civil_from_days, civil_to_days, fmt_ts, now_unix, parse_ts, parse_ymd};
-use crate::{db, ingest, paths};
-
-// MEMORY.md byte cap that keeps it under the ~24.4 KB load limit (matches generate::DEFAULT_BUDGET).
-const INDEX_BUDGET: u64 = 23_000;
+use crate::{db, generate, ingest, paths};
 
 // Path segments that name containers, not the project itself — dropped when shortening a label.
 const CONTAINER_TOKENS: &[&str] = &[
@@ -1104,7 +1101,24 @@ fn render(stats: &Stats, ctx: &CurrentContext, detail: bool) {
     let md = &ctx.memory_md;
     if md.exists() {
         let msize = std::fs::metadata(md).map(|m| m.len()).unwrap_or(0);
-        let frac = msize as f64 / INDEX_BUDGET as f64;
+        // The dashboard only reads, so a bad .budget draws the meter against
+        // the default rather than killing the whole view.
+        let budget = match generate::resolve_budget(md.parent().unwrap_or(Path::new("."))) {
+            Ok((b, warn)) => {
+                if let Some(w) = warn {
+                    eprintln!("{w}");
+                }
+                b
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                generate::DEFAULT_BUDGET
+            }
+        }
+        // Bytes past the load cap never reach context, so the meter shows the
+        // lower of the two — a budget set above it isn't real headroom.
+        .min(generate::CC_LOAD_CAP) as u64;
+        let frac = msize as f64 / budget as f64;
         let col = if frac < 0.70 {
             "green"
         } else if frac < 0.90 {
@@ -1112,17 +1126,29 @@ fn render(stats: &Stats, ctx: &CurrentContext, detail: bool) {
         } else {
             "bred"
         };
+        let lines = std::fs::read_to_string(md)
+            .map(|t| t.lines().count())
+            .unwrap_or(0);
+        let over = if lines > generate::CC_LOAD_LINES {
+            c1(
+                &format!("  {lines} lines >{}", generate::CC_LOAD_LINES),
+                "bred",
+            )
+        } else {
+            String::new()
+        };
         let mw = ((term_w as isize - 40).max(10) as usize).min(30);
         println!(
             "{}",
             sline(
                 "index",
                 &format!(
-                    "{} {} {}  {}",
+                    "{} {} {}  {}{}",
                     human_bytes(msize, false),
                     meter(frac, mw),
-                    human_bytes(INDEX_BUDGET, false),
-                    c1(&format!("{:.0}%", frac * 100.0), col)
+                    human_bytes(budget, false),
+                    c1(&format!("{:.0}%", frac * 100.0), col),
+                    over
                 ),
                 7
             )

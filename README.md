@@ -15,8 +15,8 @@
 Every session is archived into a local SQLite database and made searchable: last month's work is one `subrosa search` away, relevant past sessions resurface when you type a related prompt, and Claude stops rediscovering what it already figured out. Pulling up an old answer costs a few hundred tokens; having Claude re-derive it from scratch runs into the thousands.
 
 - **No LLM calls to save memory.** Saving a session is plain-text parsing — zero tokens. Most memory plugins run your sessions through an LLM to save them ([the comparison](docs/comparison.md) has the numbers, from their own docs).
-- **Hard token limits, set in the code.** Recall adds ~180 tokens on a strong match, usually nothing — it stays silent otherwise. The always-loaded index is capped at 23 KB. [Check it yourself](#proof-verify-it-yourself), or see [where your tokens go](docs/faq.md#how-many-tokens-does-it-cost-me).
-- **One ~4 MB static binary.** No daemon, no worker port, no background process — a hook fires, finishes in under 10 ms, and exits.
+- **Hard token limits, set in the code.** Recall adds ~180 tokens on a strong match, usually nothing — it stays silent otherwise. The always-loaded index is capped at 23 KB by default. [Check it yourself](#proof-verify-it-yourself), or see [where your tokens go](docs/faq.md#how-many-tokens-does-it-cost-me).
+- **One ~4 MB static binary.** No daemon, no worker port, no background process — a per-prompt hook fires, finishes in under 10 ms, and exits. (The daily backup at session end takes a second or two when mirror encryption is on.)
 - **Your transcripts stay on your machine.** The binary makes zero network calls — no cloud, no telemetry — and obvious secret shapes are masked before storage. [Verify every claim yourself](#proof-verify-it-yourself).
 
 <p align="center">
@@ -97,8 +97,8 @@ subrosa          # the dashboard
 - **Shows what clusters together.** `subrosa related <identifier>` ranks the terms and sessions that recur alongside something like `auth.ts` or `TICKET-123` — read from the archive, not guessed. It answers "what did this work touch," which `search` can't.
 - **Follows your curated links.** Notes link to each other with `[[name]]`; `subrosa fact link <slug>` shows what a note links to and what links back, and flags dead links.
 - **Shows you the picture.** `subrosa` alone prints the dashboard: activity sparkline, store size, per-project share, index budget.
-- **Backs itself up.** Consistent snapshots on a 24h throttle, plus an optional mirror of the latest to a folder you pick.
-- **Masks secrets at the door.** Private key blocks, AWS keys, bearer tokens, and `password=`-style values are redacted before they're written.
+- **Backs itself up.** Consistent snapshots on a 24h throttle, plus an optional mirror of the latest to a folder you pick. Set a passphrase and the mirror copy is encrypted (XChaCha20-Poly1305, key from argon2id); `subrosa restore` reads it back.
+- **Masks secrets at the door.** Private key blocks, AWS keys, bearer tokens, and `password=`-style values are redacted before they're written. A `passphrase=` line is masked all the way to the end of that line, because a passphrase can contain spaces.
 
 ## Commands
 
@@ -133,6 +133,7 @@ subrosa checkpoint-drop <id>             # de-queue one session after saving it
 
 subrosa sweep                            # catch up on changed transcripts
 subrosa backup --force                   # snapshot now
+subrosa restore <mirror>/subrosa-latest.db.enc   # decrypt an encrypted mirror snapshot
 subrosa setup                            # one-time backup-mirror question
 ```
 
@@ -200,31 +201,31 @@ Together they add about 250 tokens of always-loaded context — your call. The f
 |---|---|---|
 | Live database | `~/.claude/subrosa/memory.db` | Not in synced folders — cloud sync corrupts a live SQLite database (its WAL/SHM helper files) |
 | Snapshots | `~/.claude/subrosa/backups/` | Last 7 kept, owner-only permissions |
-| Mirror | the folder you picked in `subrosa setup` | A single static snapshot file is safe to sync |
+| Mirror | the folder you picked in `subrosa setup` | A single static snapshot file is safe to sync; encrypted as `subrosa-latest.db.enc` when you set a passphrase |
 | Checkpoint queue | `~/.claude/subrosa/pending-checkpoint.log` | Plain text, one session per line |
 
-Everything is overridable with env vars: `SUBROSA_DIR`, `SUBROSA_DB`, `SUBROSA_PROJECTS_DIR`, `SUBROSA_PENDING_LOG`, `SUBROSA_MIRROR`, `SUBROSA_CHECKPOINT_NUDGE`.
+Everything is overridable with env vars: `SUBROSA_DIR`, `SUBROSA_DB`, `SUBROSA_PROJECTS_DIR`, `SUBROSA_PENDING_LOG`, `SUBROSA_MIRROR`, `SUBROSA_MIRROR_PASSPHRASE`, `SUBROSA_CHECKPOINT_NUDGE`.
 
-Two settings also live in `~/.claude/subrosa/config` (plain `KEY=VALUE`): `mirror` (the snapshot folder, or `none`) and `checkpoint_nudge` — `loud` (default, the `ACTION REQUIRED` block), `quiet` (a one-line reminder), or `off`. The matching env var wins when set.
+Three settings also live in `~/.claude/subrosa/config` (plain `KEY=VALUE`, mode `0600`): `mirror` (the snapshot folder, or `none`), `mirror_passphrase` (set it and the mirror copy is encrypted; leave it out and the mirror stays plaintext), and `checkpoint_nudge` — `loud` (default, the `ACTION REQUIRED` block), `quiet` (a one-line reminder), or `off`. The matching env var wins when set, with one exception: `none` turns mirroring off whichever side says it, so `mirror=none` in the config also switches off a `SUBROSA_MIRROR` override — and `SUBROSA_MIRROR=none` switches off a configured folder. Delete the line, unset the variable, or re-run `subrosa setup`, to mirror again. Turning it off only stops subrosa writing there: if the other side still names a real folder, `subrosa restore` goes on refusing to put a readable copy into it.
 
 ## Privacy model
 
 - **Local-only.** The binary makes zero network calls; recall reads only your local database, and hook output goes only into your own session.
 - **Locked down.** The database and its folder are readable only by you (`0600`/`0700`), and secret shapes are redacted before storage.
-- **One opt-in exit.** The only thing that can leave the machine is a backup-mirror snapshot, if you point it at a synced folder (off by default). The live database is never synced.
+- **One opt-in exit.** The only thing that can leave the machine is a backup-mirror snapshot, if you point it at a synced folder (off by default). Set a mirror passphrase and that copy goes out encrypted. The live database is never synced.
 
 Full limits — what redaction misses, why the archive isn't encrypted, what recall re-injects — are in the [FAQ](docs/faq.md#what-does-subrosa-not-protect).
 
 ## Proof: verify it yourself
 
-Claims are only worth the commands that check them. The whole thing is ~7,800 lines of Rust, MIT licensed.
+Claims are only worth the commands that check them. The whole thing is ~9,000 lines of Rust, MIT licensed.
 
 | Claim | Check it | What you'll see |
 |---|---|---|
-| Token limits are constants in the code | read `MAX_INJECT` + `SNIPPET_CHARS` in `src/recall.rs`, `DEFAULT_BUDGET` in `src/generate.rs` | `MAX_INJECT = 3`, `SNIPPET_CHARS = 160` (≈ 180 tokens at recall), and a 23 KB index budget — values you can read, not settings that drift |
+| Token limits are constants in the code | read `MAX_INJECT` + `SNIPPET_CHARS` in `src/recall.rs`, `DEFAULT_BUDGET` in `src/generate.rs` | `MAX_INJECT = 3`, `SNIPPET_CHARS = 160` (≈ 180 tokens at recall), and a 23 KB index budget — values you can read, not settings that drift. Raise it per project with `echo 24500 > <memdir>/.budget` (Claude stops reading past ~25 KB / line 200) |
 | Recall stays near ~180 tokens a prompt | `scripts/bench.sh` — the `recall injection` line | the injected block weighed in bytes → ~180 tokens on a strong match (3 snippets) |
 | The binary makes zero network calls | `cargo tree -e normal \| grep -Ei 'reqwest\|hyper\|tokio\|rustls\|openssl\|curl'` | no output — no HTTP or networking library in the build (trace it live with `strace`/`dtruss` and see no `connect()`) |
-| The supply chain is small and audited | `cargo tree --depth 1` · `cargo audit` | 5 direct dependencies, no known advisories; CI runs `cargo audit` on every push, and release binaries ship a pinned `sha256sums.txt` |
+| The supply chain is small and audited | `cargo tree --depth 1` · `cargo audit` | 7 direct dependencies, no known advisories; CI runs `cargo audit` on every push, and release binaries ship a pinned `sha256sums.txt` |
 
 More checks (redaction, file permissions, no background process) and the honest limits are in the [FAQ](docs/faq.md#what-does-subrosa-not-protect).
 
@@ -236,12 +237,13 @@ A hook that runs on every prompt has to be invisible. Measured with `scripts/ben
 |---|---|
 | Prompt recall check, no match — the usual case | ~4 ms |
 | Prompt recall check, match found and injected | ~14 ms |
-| A full hook fire as Claude Code runs it (shell wrapper + binary) | under 10 ms |
+| A full per-prompt hook fire as Claude Code runs it (shell wrapper + binary) | under 10 ms |
+| Session-end backup, once per 24h, with mirror encryption on | a second or two (argon2id + sealing the whole snapshot) |
 | Session-start catch-up sweep, nothing changed | ~5 ms |
 | Live-session ingest after a turn (one transcript, flat at any session length) | ~7 ms |
 | `subrosa search` over 50,000 turns | 5–11 ms |
 | `subrosa related <identifier>` over 50,000 turns | 0.3–0.4 s |
-| Archiving 50,000 turns from scratch (first install) | ~1.1 s |
+| Archiving 50,000 turns from scratch (first install) | ~1.5 s |
 
 One static ~4 MB binary, no background process, no runtime dependencies.
 

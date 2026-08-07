@@ -10,6 +10,8 @@ keywords = ["claude", "claude-code", "memory", "sqlite", "fts5"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
+argon2 = { version = "0.5.3", default-features = false, features = ["alloc"] }
+chacha20poly1305 = "0.10.1"
 clap = { version = "4.6", features = ["derive"] }
 regex = "1"
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
