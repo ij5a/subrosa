@@ -5,6 +5,22 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] - 2026-08-08
+
+### Added
+
+- Per-project `MEMORY.md` budget: a `.budget` file in a project's memory folder (one number, bytes) overrides the 23,000-byte default, so a saturated project can stop dropping good facts. An explicit `--budget` still beats the file; a bad file warns and falls back; an unreadable one stops `generate` before it rewrites anything.
+- The index now also honors Claude Code's 200-line `MEMORY.md` load cap: facts past line 200 are archive-dropped and reported exactly like byte-budget drops, and the session-start nudge and dashboard flag line overflow too.
+- Encrypted mirror snapshots: set a passphrase (`subrosa setup`, or the `mirror_passphrase` config key / `SUBROSA_MIRROR_PASSPHRASE`) and the mirror copy of each backup snapshot is sealed with XChaCha20-Poly1305, keyed by Argon2id from your passphrase, parameters stored in the file header. The live database and local snapshots stay plaintext — this protects the copy that leaves the machine. Keep the passphrase in a password manager: without it the off-machine copy is unrecoverable.
+- `subrosa restore <file.enc> [--out path]`: decrypts a sealed snapshot, verifies it is a SQLite database, refuses to write into cloud-synced folders by default, never overwrites an existing file, and never touches the live database.
+- Redaction now masks passphrase-shaped secrets whole-line (`SUBROSA_MIRROR_PASSPHRASE=...`, `mirror_passphrase: ...`) and env-var-style names the old pattern missed (`MYSQL_PASSWORD=`, `API_TOKEN=`), so the mirror passphrase can never reach the archive it seals.
+
+### Changed
+
+- `mirror=none` in the config now also switches off a `SUBROSA_MIRROR` environment override — a security opt-out must not lose to a shell profile. Delete the line or re-run `subrosa setup` to mirror again. This is a behavior change if you kept `mirror=none` in the config while mirroring purely through the env var.
+- Once encryption is intended — a passphrase resolves, or a sealed `.enc` sits in the mirror folder — the mirror never goes out in plaintext: stale readable copies (including iCloud eviction placeholders) are purged on every backup path, downgrading requires deleting the `.enc` yourself, and any failure skips the mirror instead of falling back.
+- Two new dependencies, `chacha20poly1305` and `argon2` (both pure Rust); direct crates go 5 → 7.
+
 ## [0.20.1] - 2026-07-19
 
 ### Fixed
@@ -208,6 +224,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.21.0]: https://github.com/ij5a/subrosa/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/ij5a/subrosa/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/ij5a/subrosa/compare/v0.19.2...v0.20.0
 [0.19.2]: https://github.com/ij5a/subrosa/compare/v0.19.1...v0.19.2
