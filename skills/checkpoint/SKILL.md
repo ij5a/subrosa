@@ -63,7 +63,9 @@ The user is about to run `/clear` or `/compact`. Without saving first, `/clear` 
 
    Never hand-edit `MEMORY.md`; it is overwritten on every regenerate. The generator owns the byte budget — there is no manual hook-trimming step.
 
-9. **Mark this session done, then clear the queue.** First run `subrosa checkpoint-mark` — it stamps the current (live) session's checkpoint high-water mark so it won't re-queue on the next `SessionEnd` unless it grows past this point (without it, the session you just saved pops back into the queue when it ends). Then run `subrosa checkpoint-clear` to empty the pending queue (the `SessionEnd` hook appends a line for every ended session, and the start-of-session nudge counts those; running this skill *is* being caught up, so clearing resets the counter). Order: mark first, then clear.
+9. **Lint what you just wrote.** `subrosa fact doctor` — read-only, and it exits 1 on anything that stops a fact loading: broken or spliced frontmatter, a missing `name`/`description`/`type`, two active facts claiming one name slug, and fact rows pointing at leaf files that are gone. A slug that only collides with an archived fact is a warning, not an error. Warnings (exit 0) are bookkeeping — an unregistered leaf, an unknown type, a dangling `[[link]]`. Run it here, right after the leaves were written: a spliced frontmatter block leaves a live rule on disk that silently never loads again. Fix the errors on the leaves you touched this session; it never edits a leaf itself, and older findings on an established memdir belong to a cleanup pass, not this one.
+
+10. **Mark this session done, then clear the queue.** First run `subrosa checkpoint-mark` — it stamps the current (live) session's checkpoint high-water mark so it won't re-queue on the next `SessionEnd` unless it grows past this point (without it, the session you just saved pops back into the queue when it ends). Then run `subrosa checkpoint-clear` to empty the pending queue (the `SessionEnd` hook appends a line for every ended session, and the start-of-session nudge counts those; running this skill *is* being caught up, so clearing resets the counter). Order: mark first, then clear.
 
 ## Report format
 
@@ -90,8 +92,8 @@ per-category Saved/Updated/Skipped lists, no byte dumps, no named archive/review
   accomplished (reads like `/recap`), NOT a list of which facts were saved. Always
   show it, even in the zero case.
 - **Safe line** — `👍 Safe to /clear or /compact.`
-- Still run the full procedure above (save, update, staleness pass, regenerate, mark,
-  clear) — this changes only what you print, not what you do.
+- Still run the full procedure above (save, update, staleness pass, regenerate, lint,
+  mark, clear) — this changes only what you print, not what you do.
 
 ## Notes
 

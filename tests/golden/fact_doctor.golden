@@ -1,0 +1,19 @@
+error feedback_spliced.md: frontmatter debris in the body (a spliced write) — merge it back into the one `---` block
+error feedback_unclosed.md: frontmatter block never closes — add the closing `---`
+warn  foreign_cc_leaf.md: no frontmatter — the fact falls back to the filename; add a `---` block with name, description and type
+warn  foreign_cc_leaf.md: not registered — `subrosa fact upsert --leaf foreign_cc_leaf.md`
+error project_missing_field.md: frontmatter is missing description
+error project_nofrontmatter.md: no frontmatter — the fact falls back to the filename; add a `---` block with name, description and type
+warn  reference_archived_gone.md: leaf file is gone — an archived fact row still points at it
+warn  reference_badtype.md: leaf type `guardrail` is not user/feedback/project/reference
+warn  reference_badtype.md: fact row type `guardrail` is not user/feedback/project/reference — `subrosa fact upsert --leaf reference_badtype.md --type <type>`
+warn  reference_dbdupe_a.md: name drift: the leaf says `dbdupe-a-now`, the fact row says `db-shared-slug` — upsert never rewrites a name, so make them match
+warn  reference_dbdupe_b.md: name drift: the leaf says `dbdupe-b-now`, the fact row says `db-shared-slug` — upsert never rewrites a name, so make them match
+error reference_dbdupe_b.md: duplicate name `db-shared-slug` — reference_dbdupe_a.md claims it too; one shadows the other
+warn  reference_drift.md: name drift: the leaf says `renamed-thing`, the fact row says `original-name` — upsert never rewrites a name, so make them match
+error reference_dupe_b.md: duplicate name `shared-slug` — reference_dupe_a.md claims it too; one shadows the other
+error reference_gone.md: leaf file is gone but the fact still loads — restore it, or `subrosa fact archive --leaf reference_gone.md`
+warn  reference_links.md: dangling link [[nope-missing]] — fix the slug or write that leaf
+warn  reference_orphan.md: not registered — `subrosa fact upsert --leaf reference_orphan.md`
+
+[subrosa] doctor: 7 error(s), 10 warning(s)

@@ -21,7 +21,7 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 | recall.rs | UserPromptSubmit relevance gate + context injection |
 | text.rs | shared tokenizer/term-quality helpers (STOPWORDS, extract_terms, is_anchor, turn_tokens, token_matches); used by recall + related + tags |
 | tags.rs | auto-derived read-only session tags (`tool:`/`ext:`/`topic:`): `derive_tags` at ingest, `backfill` at schema v3; fully deterministic |
-| facts.rs | curated facts CRUD, frontmatter parsing, type weights, `fact link` ([[name]] graph reader) |
+| facts.rs | curated facts CRUD, frontmatter parsing, type weights, `fact link` ([[name]] graph reader), `fact doctor` (read-only leaf+row integrity lint) |
 | generate.rs | byte-budgeted MEMORY.md from the facts table; per-project `<memdir>/.budget` override, and selection also stops at Claude Code's 200-line load limit |
 | import_existing.rs | one-time import of a MEMORY.md + leaves into the facts table |
 | session.rs | session dump (full id or unique prefix, opt-in `--tags`) + checkpoint queue ops (drop/enqueue/mark-current) |
@@ -50,7 +50,7 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 - `git config core.hooksPath .githooks` once per clone. The pre-commit hook runs `scripts/sweep.sh` (secret shapes, database files, stray legacy naming), then fmt/clippy/tests.
 - Checks CI runs: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build --locked`, `cargo test --locked`, `scripts/sweep.sh`, and a cargo-audit job.
 - Always test against a throwaway dir, never live data: `SUBROSA_DIR=/tmp/x SUBROSA_PROJECTS_DIR=/tmp/x/projects cargo run -- init`.
-- Smoke recipe: write a synthetic transcript `.jsonl` under `/tmp/x/projects/-tmp-demo/`, then `init` → `ingest` → `search` (try `--after`/`--before`/`--tag`) → `sessions --tag tool:bash` → `session <id> --tags` → `fact upsert --memdir /tmp/x/memdir --leaf note.md` → `generate --memdir /tmp/x/memdir --dry-run` → pipe `{"prompt":"...","cwd":"...","session_id":"..."}` into `hook user-prompt-submit` → pipe `{"transcript_path":"…","session_id":"…"}` into `hook stop` (mid-session live ingest) then `hook session-end` → check `hook.log`, `pending`, the nudge from `hook session-start`, that secrets in the stored turns are redacted, and that tags were derived.
+- Smoke recipe: write a synthetic transcript `.jsonl` under `/tmp/x/projects/-tmp-demo/`, then `init` → `ingest` → `search` (try `--after`/`--before`/`--tag`) → `sessions --tag tool:bash` → `session <id> --tags` → `fact upsert --memdir /tmp/x/memdir --leaf note.md` → `fact doctor --memdir /tmp/x/memdir` → `generate --memdir /tmp/x/memdir --dry-run` → pipe `{"prompt":"...","cwd":"...","session_id":"..."}` into `hook user-prompt-submit` → pipe `{"transcript_path":"…","session_id":"…"}` into `hook stop` (mid-session live ingest) then `hook session-end` → check `hook.log`, `pending`, the nudge from `hook session-start`, that secrets in the stored turns are redacted, and that tags were derived.
 
 ## Verification gate (before commit, push, and release)
 

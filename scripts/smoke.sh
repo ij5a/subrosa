@@ -70,6 +70,12 @@ MD="$ROOT/notes"
 mkdir -p "$MD"
 { echo '---'; echo 'name: n'; echo 'description: d'; echo 'metadata:'; echo '  type: reference'; echo '---'; echo 'body text'; } > "$MD/n.md"
 "$BIN" fact upsert --memdir "$MD" --leaf n.md --hook "smoke fact" >/dev/null
+
+# --- fact doctor: a well-formed, registered leaf lints clean at exit 0 ---
+DOC="$("$BIN" fact doctor --memdir "$MD")" || fail "doctor exited non-zero on a clean memdir"
+echo "$DOC" | grep -q 'doctor: 1 leaf(s), 1 fact(s) — clean' || fail "doctor did not report a clean memdir: $DOC"
+echo "smoke: fact doctor ok"
+
 printf '30000\n' > "$MD/.budget"
 "$BIN" generate --memdir "$MD" >/dev/null || fail "a good .budget was rejected"
 SUM1="$(cksum "$MD/MEMORY.md")"

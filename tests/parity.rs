@@ -409,6 +409,413 @@ fn fact_link_matches_golden() {
 }
 
 #[test]
+fn fact_doctor_matches_golden() {
+    let env = setup("factdoctor");
+    let memdir = env.data.join("memdir");
+    fs::create_dir_all(&memdir).unwrap();
+    let md = memdir.to_str().unwrap();
+
+    // One registered leaf per finding kind. The corrupted one is the shape that
+    // actually happened: a frontmatter tail spliced in below the body, no leading
+    // `---`, so the leaf still looks fine to a body-start check.
+    let registered = [
+        (
+            "feedback_spliced.md",
+            "---\nname: spliced-rule\ndescription: A live rule that quietly stopped loading\n\
+             type: feedback\n---\nAlways check the thing before the other thing.\n\n\
+             metadata:\n  type: feedback\noriginSessionId: 0f0f\n---\n",
+        ),
+        // Prose that merely starts with `---` is no closing delimiter: the loose
+        // `\n---` scan used to read this whole leaf as closed and clean.
+        (
+            "feedback_unclosed.md",
+            "---\nname: unclosed-rule\ndescription: The block never closes\ntype: feedback\n\
+             --- banner text, not a closer\nThe rule body starts here.\n",
+        ),
+        (
+            "project_missing_field.md",
+            "---\nname: no-description\ntype: project\n---\nBody.\n",
+        ),
+        ("project_nofrontmatter.md", "Just a body, no frontmatter.\n"),
+        (
+            "reference_badtype.md",
+            "---\nname: bad-type\ndescription: Type is not one of the four\ntype: guardrail\n\
+             ---\nBody.\n",
+        ),
+        (
+            "reference_dupe_a.md",
+            "---\nname: shared-slug\ndescription: First claim on the slug\ntype: reference\n\
+             ---\nBody.\n",
+        ),
+        (
+            "reference_dupe_b.md",
+            "---\nname: shared-slug\ndescription: Second claim on the same slug\n\
+             type: reference\n---\nBody.\n",
+        ),
+        (
+            "reference_links.md",
+            "---\nname: link-holder\ndescription: Links out to one live and one dead slug\n\
+             type: reference\n---\nPoints at [[shared-slug]] and at [[nope-missing]].\n",
+        ),
+    ];
+    for (leaf, text) in registered {
+        fs::write(memdir.join(leaf), text).unwrap();
+        run(
+            &env,
+            &["fact", "upsert", "--leaf", leaf, "--memdir", md],
+            None,
+        );
+    }
+
+    // Unregistered: one well-formed (a plain orphan) and one with no subrosa
+    // frontmatter at all — the shape Claude Code's own auto-memory leaves take.
+    fs::write(
+        memdir.join("reference_orphan.md"),
+        "---\nname: never-registered\ndescription: Well-formed but no fact row\n\
+         type: reference\n---\nBody.\n",
+    )
+    .unwrap();
+    fs::write(
+        memdir.join("foreign_cc_leaf.md"),
+        "Notes Claude Code wrote on its own.\n",
+    )
+    .unwrap();
+
+    // Name drift: registered under the old name, then the leaf renamed in place.
+    let drift = |name: &str| {
+        format!("---\nname: {name}\ndescription: Renamed after registering\ntype: reference\n---\nBody.\n")
+    };
+    fs::write(memdir.join("reference_drift.md"), drift("original-name")).unwrap();
+    run(
+        &env,
+        &[
+            "fact",
+            "upsert",
+            "--leaf",
+            "reference_drift.md",
+            "--memdir",
+            md,
+        ],
+        None,
+    );
+    fs::write(memdir.join("reference_drift.md"), drift("renamed-thing")).unwrap();
+
+    // Two active rows left holding one stored slug after both leaves were renamed
+    // apart. The leaves no longer collide, but the rows still shadow each other in
+    // the link map — frontmatter alone can't see this.
+    for (leaf, renamed) in [
+        ("reference_dbdupe_a.md", "dbdupe-a-now"),
+        ("reference_dbdupe_b.md", "dbdupe-b-now"),
+    ] {
+        fs::write(
+            memdir.join(leaf),
+            "---\nname: db-shared-slug\ndescription: Registered under a shared slug\n\
+             type: reference\n---\nBody.\n",
+        )
+        .unwrap();
+        run(
+            &env,
+            &["fact", "upsert", "--leaf", leaf, "--memdir", md],
+            None,
+        );
+        fs::write(
+            memdir.join(leaf),
+            format!(
+                "---\nname: {renamed}\ndescription: Registered under a shared slug\n\
+                 type: reference\n---\nBody.\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    // Two facts whose leaf file isn't there: one still active, one archived.
+    for leaf in ["reference_gone.md", "reference_archived_gone.md"] {
+        run(
+            &env,
+            &["fact", "upsert", "--leaf", leaf, "--memdir", md],
+            None,
+        );
+    }
+    run(
+        &env,
+        &[
+            "fact",
+            "archive",
+            "--leaf",
+            "reference_archived_gone.md",
+            "--memdir",
+            md,
+        ],
+        None,
+    );
+
+    let out = run_full(&env, &["fact", "doctor", "--memdir", md], None);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        golden("fact_doctor.golden")
+    );
+    assert_eq!(out.status.code(), Some(1), "any error exits 1");
+}
+
+#[test]
+fn fact_doctor_clean_then_warning_only_stay_exit_zero() {
+    let env = setup("factdoctorok");
+    let memdir = env.data.join("memdir");
+    fs::create_dir_all(&memdir).unwrap();
+    let md = memdir.to_str().unwrap();
+    fs::write(
+        memdir.join("reference_clean.md"),
+        "---\nname: clean-fact\ndescription: Nothing wrong with this one\ntype: reference\n\
+         ---\nBody.\n",
+    )
+    .unwrap();
+    run(
+        &env,
+        &[
+            "fact",
+            "upsert",
+            "--leaf",
+            "reference_clean.md",
+            "--memdir",
+            md,
+        ],
+        None,
+    );
+
+    let clean = run_full(&env, &["fact", "doctor", "--memdir", md], None);
+    assert_eq!(
+        String::from_utf8_lossy(&clean.stdout),
+        "[subrosa] doctor: 1 leaf(s), 1 fact(s) \u{2014} clean\n"
+    );
+    assert_eq!(clean.status.code(), Some(0), "a clean memdir exits 0");
+
+    // An unregistered leaf is bookkeeping, not corruption: warn, and still exit 0.
+    fs::write(
+        memdir.join("reference_extra.md"),
+        "---\nname: extra-fact\ndescription: On disk but never registered\ntype: reference\n\
+         ---\nBody.\n",
+    )
+    .unwrap();
+    let warned = run_full(&env, &["fact", "doctor", "--memdir", md], None);
+    let text = String::from_utf8_lossy(&warned.stdout);
+    assert!(
+        text.contains("warn  reference_extra.md: not registered"),
+        "the orphan leaf is named, got:\n{text}"
+    );
+    assert!(
+        text.contains("[subrosa] doctor: 0 error(s), 1 warning(s)"),
+        "the summary counts one warning, got:\n{text}"
+    );
+    assert_eq!(
+        warned.status.code(),
+        Some(0),
+        "warnings alone stay exit 0, got:\n{text}"
+    );
+}
+
+// A memdir it could not read must never print "clean" — false reassurance is the
+// worst outcome for an integrity check, so an unverifiable path exits 1.
+#[test]
+fn fact_doctor_missing_memdir_is_not_clean() {
+    let env = setup("factdoctorpath");
+    let missing = env.data.join("no-such-memdir");
+    let out = run_full(
+        &env,
+        &["fact", "doctor", "--memdir", missing.to_str().unwrap()],
+        None,
+    );
+    assert_eq!(out.status.code(), Some(1), "an unverifiable path exits 1");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("not a directory") && err.contains("no-such-memdir"),
+        "the path is named on stderr, got:\n{err}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("clean"),
+        "nothing is called clean"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn fact_doctor_unreadable_memdir_is_not_clean() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = setup("factdoctorperm");
+    let memdir = env.data.join("memdir");
+    fs::create_dir_all(&memdir).unwrap();
+    fs::set_permissions(&memdir, fs::Permissions::from_mode(0o000)).unwrap();
+    let out = run_full(
+        &env,
+        &["fact", "doctor", "--memdir", memdir.to_str().unwrap()],
+        None,
+    );
+    fs::set_permissions(&memdir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(out.status.code(), Some(1), "an unreadable memdir exits 1");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("cannot read"),
+        "the read failure is named on stderr, got:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("clean"),
+        "an unreadable folder is never reported clean"
+    );
+}
+
+// An archive that exists but won't read is an integrity failure, not the same
+// thing as having no archive yet.
+#[test]
+fn fact_doctor_unreadable_db_is_not_clean() {
+    let env = setup("factdoctordb");
+    let memdir = env.data.join("memdir");
+    fs::create_dir_all(&memdir).unwrap();
+    fs::write(
+        memdir.join("reference_clean.md"),
+        "---\nname: clean-fact\ndescription: Nothing wrong with this one\ntype: reference\n\
+         ---\nBody.\n",
+    )
+    .unwrap();
+    fs::write(env.data.join("memory.db"), b"this is not a database").unwrap();
+    let out = run_full(
+        &env,
+        &["fact", "doctor", "--memdir", memdir.to_str().unwrap()],
+        None,
+    );
+    assert_eq!(out.status.code(), Some(1), "a broken archive exits 1");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("cannot read facts db"),
+        "the db failure is named on stderr, got:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !text.contains("clean") && !text.contains("no facts db"),
+        "a corrupt db is neither clean nor 'no db yet', got:\n{text}"
+    );
+}
+
+// A dangling db symlink is broken, not absent: Path::exists() follows the link and
+// answers false, which used to downgrade this to a clean leaf-only run.
+#[cfg(unix)]
+#[test]
+fn fact_doctor_dangling_db_symlink_is_not_clean() {
+    let env = setup("factdoctorlink");
+    let memdir = env.data.join("memdir");
+    fs::create_dir_all(&memdir).unwrap();
+    fs::write(
+        memdir.join("reference_clean.md"),
+        "---\nname: clean-fact\ndescription: Nothing wrong with this one\ntype: reference\n\
+         ---\nBody.\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(env.data.join("gone.db"), env.data.join("memory.db")).unwrap();
+    let out = run_full(
+        &env,
+        &["fact", "doctor", "--memdir", memdir.to_str().unwrap()],
+        None,
+    );
+    assert_eq!(out.status.code(), Some(1), "a broken db link exits 1");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("cannot read facts db"),
+        "the db failure is named on stderr, got:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !text.contains("clean") && !text.contains("no facts db"),
+        "a dangling link is neither clean nor 'no db yet', got:\n{text}"
+    );
+}
+
+// The active pair must break whichever leaf sorts first: an archived claimant
+// landing at the top of the sort used to soften both live ones to warnings.
+#[test]
+fn fact_doctor_active_pair_errors_behind_an_archived_claimant() {
+    let env = setup("factdoctorslug");
+    let memdir = env.data.join("memdir");
+    fs::create_dir_all(&memdir).unwrap();
+    let md = memdir.to_str().unwrap();
+    // a_ sorts first and gets archived; b_ and c_ stay active on the same slug.
+    for name in [
+        "reference_a_old.md",
+        "reference_b_live.md",
+        "reference_c_live.md",
+    ] {
+        fs::write(
+            memdir.join(name),
+            "---\nname: contested-slug\ndescription: Claims the shared slug\n\
+             type: reference\n---\nBody.\n",
+        )
+        .unwrap();
+        run(
+            &env,
+            &["fact", "upsert", "--leaf", name, "--memdir", md],
+            None,
+        );
+    }
+    run(
+        &env,
+        &[
+            "fact",
+            "archive",
+            "--leaf",
+            "reference_a_old.md",
+            "--memdir",
+            md,
+        ],
+        None,
+    );
+
+    let out = run_full(&env, &["fact", "doctor", "--memdir", md], None);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains(
+            "error reference_c_live.md: duplicate name `contested-slug` — \
+             reference_b_live.md claims it too"
+        ),
+        "the two live facts error against each other, got:\n{text}"
+    );
+    assert!(
+        text.contains("warn  reference_b_live.md: duplicate name"),
+        "the clash with the archived leaf stays a warning, got:\n{text}"
+    );
+    assert_eq!(out.status.code(), Some(1), "an active pair exits 1");
+}
+
+#[test]
+fn fact_doctor_without_a_db_lints_leaves_only() {
+    let env = setup("factdoctornodb");
+    let memdir = env.data.join("memdir");
+    fs::create_dir_all(&memdir).unwrap();
+    fs::write(
+        memdir.join("reference_lonely.md"),
+        "A plain note with no frontmatter.\n",
+    )
+    .unwrap();
+    // Nothing has opened the DB in this env, so the row-dependent checks are off:
+    // the same problem warns instead of erroring, and no leaf is called an orphan.
+    let out = run_full(
+        &env,
+        &["fact", "doctor", "--memdir", memdir.to_str().unwrap()],
+        None,
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("[subrosa] doctor: no facts db \u{2014} leaf checks only"),
+        "the note line leads, got:\n{text}"
+    );
+    assert!(
+        text.contains("warn  reference_lonely.md: no frontmatter"),
+        "the leaf check still runs, at warn level, got:\n{text}"
+    );
+    assert!(
+        !text.contains("not registered"),
+        "the orphan check stays off without rows, got:\n{text}"
+    );
+    assert_eq!(out.status.code(), Some(0), "leaf-only mode never exits 1");
+}
+
+#[test]
 fn fact_search_matches_content_and_respects_status() {
     let env = setup("factsearch");
     let memdir = env.data.join("memdir");

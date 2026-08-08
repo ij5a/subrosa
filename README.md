@@ -96,6 +96,7 @@ subrosa          # the dashboard
 - **Lists and filters sessions.** `subrosa sessions` shows past sessions newest-first, filterable by `--project`, date (`--after`/`--before`), and `--tag`. Each session carries auto-derived tags (`tool:bash`, `ext:rs`, `topic:cache-prod`) — computed locally at archive time, so they cost zero tokens and nothing to maintain.
 - **Shows what clusters together.** `subrosa related <identifier>` ranks the terms and sessions that recur alongside something like `auth.ts` or `TICKET-123` — read from the archive, not guessed. It answers "what did this work touch," which `search` can't.
 - **Follows your curated links.** Notes link to each other with `[[name]]`; `subrosa fact link <slug>` shows what a note links to and what links back, and flags dead links.
+- **Catches broken notes.** `subrosa fact doctor` lints a project's memory folder and names what's wrong: frontmatter that's missing, unclosed, or spliced (the shape that leaves a note on disk that quietly stops loading), duplicate name slugs, dead links, and facts pointing at files that are gone. Read-only — it reports the fix, it never edits a note.
 - **Shows you the picture.** `subrosa` alone prints the dashboard: activity sparkline, store size, per-project share, index budget.
 - **Backs itself up.** Consistent snapshots on a 24h throttle, plus an optional mirror of the latest to a folder you pick. Set a passphrase and the mirror copy is encrypted (XChaCha20-Poly1305, key from argon2id); `subrosa restore` reads it back.
 - **Masks secrets at the door.** Private key blocks, AWS keys, bearer tokens, and `password=`-style values are redacted before they're written. A `passphrase=` line is masked all the way to the end of that line, because a passphrase can contain spaces.
@@ -124,6 +125,7 @@ subrosa fact list                        # curated facts for the current project
 subrosa fact search pgbouncer            # full-text search the curated facts (bm25-ranked)
 subrosa fact upsert --leaf note.md       # add/update a fact from a markdown file (one fact per file)
 subrosa fact link auth-decision          # show [[name]] links into/out of a fact (flags dead links)
+subrosa fact doctor                      # lint the notes + facts of one project (read-only; exit 1 on a break)
 subrosa generate                         # rebuild MEMORY.md (byte-budgeted)
 subrosa import ~/.claude/projects/<project>/memory   # one-time import of an existing MEMORY.md
 

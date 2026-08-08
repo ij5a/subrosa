@@ -21,6 +21,7 @@ pub enum FactAction {
     List,
     Link,
     Search,
+    Doctor,
 }
 
 #[derive(ValueEnum, Clone, Copy, PartialEq)]
@@ -637,6 +638,383 @@ fn render_links(
     println!("\n[subrosa] {outbound} outbound{dang}, {inbound} inbound");
 }
 
+/// A frontmatter value, trimmed — `None` when the key is absent or blank.
+fn fm_get<'a>(fm: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
+    fm.get(key).map(|s| s.trim()).filter(|s| !s.is_empty())
+}
+
+/// Body lines outside fenced code, blanks dropped. Both ``` and ~~~ fences count,
+/// under CommonMark's rule that a closing fence is the same character and at
+/// least as long — so a `~~~yaml` example never reads as leaf content.
+fn unfenced_lines(body: &str) -> Vec<&str> {
+    let mut open: Option<(char, usize)> = None;
+    let mut out = Vec::new();
+    for line in body.lines() {
+        // Strip spaces only, and cap the indent at 3: CommonMark reads 4+ leading
+        // spaces (or a tab) as indented code, not a fence. Beyond that cap a fake
+        // fence would put the scan in skip-mode and hide a real splice below it.
+        let indent = line.chars().take_while(|c| *c == ' ').count();
+        let t = &line[indent..];
+        let c = t.chars().next().unwrap_or(' ');
+        let run = if indent <= 3 && (c == '`' || c == '~') {
+            t.chars().take_while(|x| *x == c).count()
+        } else {
+            0
+        };
+        match open {
+            // Only a bare fence, same char and no shorter, closes the block.
+            Some((oc, on)) => {
+                if c == oc && run >= on && t.trim_end().len() == run {
+                    open = None;
+                }
+            }
+            None if run >= 3 => open = Some((c, run)),
+            None => {
+                if !t.trim().is_empty() {
+                    out.push(line);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Frontmatter debris a spliced write leaves in the body: a second `---` block
+/// opening where the body should start, or a displaced frontmatter tail — a
+/// `metadata:`/`originSessionId:` line at column 0 *followed by another
+/// frontmatter-shaped line*. That pairing is what makes it a splice; a lone
+/// `metadata:` in a sentence is just prose. The tail shape carries no leading
+/// `---`, so a body-start check alone never sees it.
+///
+/// ponytail: keyed on the tail the real splice leaves behind. A spliced second
+/// block built only from other keys still slips through — upgrade path is a real
+/// two-block frontmatter parser.
+fn splice_debris(body: &str) -> bool {
+    static CONT: OnceLock<Regex> = OnceLock::new();
+    // What may follow the displaced key: the closing `---`, a nested `  key:`,
+    // or another column-0 frontmatter key.
+    let cont = CONT.get_or_init(|| {
+        Regex::new(
+            r"^(?:---\s*$|\s+[A-Za-z_][\w-]*:|(?:metadata|originSessionId|node_type|name|type|description|pinned|tags):)",
+        )
+        .unwrap()
+    });
+    let lines = unfenced_lines(body);
+    if lines.first().is_some_and(|l| l.trim_end() == "---") {
+        return true;
+    }
+    lines.windows(2).any(|w| {
+        ["metadata:", "originSessionId:"]
+            .iter()
+            .any(|k| w[0].starts_with(k))
+            && cont.is_match(w[1])
+    })
+}
+
+/// Frontmatter problems in one leaf, in a fixed order. Severity is the caller's
+/// call: on a leaf subrosa registered these break the fact, on a foreign leaf
+/// (Claude Code writes its own into the same memdir) they are only warnings.
+fn frontmatter_problems(text: &str) -> Vec<String> {
+    if !text.starts_with("---") {
+        return vec![
+            "no frontmatter — the fact falls back to the filename; add a `---` block with name, \
+             description and type"
+                .to_string(),
+        ];
+    }
+    // Doctor's own boundary rule: only a line that is exactly `---` closes the
+    // block. parse_frontmatter's looser `\n---` scan is golden-pinned and stays as
+    // it is, but here a leaf whose next `---`-ish line is prose ("--- banner …")
+    // must read as unclosed, not clean.
+    if !text.lines().skip(1).any(|l| l.trim() == "---") {
+        return vec!["frontmatter block never closes — add the closing `---`".to_string()];
+    }
+    let mut out = Vec::new();
+    if splice_debris(body_after_frontmatter(text)) {
+        out.push(
+            "frontmatter debris in the body (a spliced write) — merge it back into the one `---` block"
+                .to_string(),
+        );
+    }
+    let fm = parse_frontmatter(text);
+    let missing: Vec<&str> = ["name", "description", "type"]
+        .into_iter()
+        .filter(|k| fm_get(&fm, k).is_none())
+        .collect();
+    if !missing.is_empty() {
+        out.push(format!("frontmatter is missing {}", missing.join(", ")));
+    }
+    out
+}
+
+/// One finding, rendered at push time so the report keeps leaf order and a fixed
+/// per-leaf check order.
+fn finding(error: bool, leaf: &str, msg: String) -> (bool, String) {
+    let level = if error { "error" } else { "warn" };
+    (error, format!("{level:<5} {leaf}: {msg}"))
+}
+
+/// `subrosa fact doctor` — read-only integrity lint over one project's memory:
+/// leaf frontmatter, `[[links]]`, and the fact rows pointing at them. It never
+/// edits a leaf. Exit 1 on an error, 0 on warnings alone.
+fn doctor(project: Option<String>, memdir: Option<PathBuf>) -> ExitCode {
+    // No archive yet is fine — the frontmatter checks are pure file reads, so those
+    // still run with the row-dependent ones off. An archive that exists but won't
+    // open is an integrity failure, not a clean result. Only NotFound counts as
+    // absent: symlink_metadata doesn't follow links and doesn't swallow a stat
+    // error, so a dangling db symlink or an unreadable parent stays "broken".
+    //
+    // ponytail: probe-then-open is deliberately non-atomic. This is a single-user,
+    // hand-run command and nothing creates or removes the archive mid-run; closing
+    // the window would mean reworking the shared connect_readonly.
+    let conn = db::connect_readonly();
+    let absent = std::fs::symlink_metadata(paths::db_path())
+        .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound);
+    if let (false, Err(e)) = (absent, &conn) {
+        eprintln!("[subrosa] doctor: cannot read facts db: {e}");
+        return ExitCode::FAILURE;
+    }
+    let conn = conn.ok();
+    let memdir = memdir
+        .map(|p| paths::expanduser(&p))
+        .unwrap_or_else(|| db::current_memdir(conn.as_ref()));
+    if !memdir.is_dir() {
+        eprintln!("[subrosa] not a directory: {}", memdir.display());
+        return ExitCode::FAILURE;
+    }
+    let project = project.unwrap_or_else(|| project_of(&memdir));
+
+    let rows: Option<Vec<LinkFact>> = match conn.as_ref().map(|c| load_link_facts(c, &project)) {
+        Some(Ok(r)) => Some(r),
+        // The connection opened, so a failed query means corrupt or incompatible.
+        Some(Err(e)) => {
+            eprintln!("[subrosa] doctor: cannot read facts db: {e}");
+            return ExitCode::FAILURE;
+        }
+        None => None,
+    };
+    let by_leaf: HashMap<&str, &LinkFact> = rows
+        .iter()
+        .flatten()
+        .map(|f| (f.leaf_path.as_str(), f))
+        .collect();
+
+    // A memdir we couldn't enumerate is "not verified", never "clean" — an
+    // integrity check that shrugs at an unreadable folder is worse than none.
+    let entries =
+        match std::fs::read_dir(&memdir).and_then(|rd| rd.collect::<std::io::Result<Vec<_>>>()) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[subrosa] doctor: cannot read {}: {e}", memdir.display());
+                return ExitCode::FAILURE;
+            }
+        };
+    let mut on_disk: Vec<String> = entries
+        .iter()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.ends_with(".md") && n != "MEMORY.md")
+        .collect();
+    on_disk.sort();
+
+    // What's on disk plus the leaves only a fact row names — those are the gone ones.
+    let mut leaves = on_disk.clone();
+    leaves.extend(rows.iter().flatten().map(|f| f.leaf_path.clone()));
+    leaves.sort();
+    leaves.dedup();
+
+    let texts: HashMap<&str, std::io::Result<String>> = leaves
+        .iter()
+        .map(|l| (l.as_str(), std::fs::read_to_string(memdir.join(l))))
+        .collect();
+    let fms: HashMap<&str, HashMap<String, String>> = texts
+        .iter()
+        .filter_map(|(l, t)| t.as_ref().ok().map(|t| (*l, parse_frontmatter(t))))
+        .collect();
+
+    // What a [[link]] may resolve to: fact slugs and names, plus every leaf on
+    // disk — a link to a present-but-unregistered leaf isn't dangling.
+    let mut resolvable: HashSet<String> = leaves
+        .iter()
+        .map(|l| leaf_stem(l).to_ascii_lowercase())
+        .collect();
+    for name in rows
+        .iter()
+        .flatten()
+        .filter_map(|f| f.name.as_deref())
+        .chain(fms.values().filter_map(|fm| fm_get(fm, "name")))
+    {
+        if !name.is_empty() {
+            resolvable.insert(name.to_ascii_lowercase());
+        }
+    }
+
+    let known_type = |t: &str| {
+        matches!(
+            t.to_ascii_lowercase().as_str(),
+            "user" | "feedback" | "project" | "reference"
+        )
+    };
+    let mut findings: Vec<(bool, String)> = Vec::new();
+    // slug -> (first claimant, first ACTIVE claimant)
+    let mut slug_owner: HashMap<String, (String, Option<String>)> = HashMap::new();
+
+    for leaf in &leaves {
+        let row = by_leaf.get(leaf.as_str()).copied();
+        // Claude Code writes its own leaves into the same memdir. Only one subrosa
+        // registered as an active fact is ours to call broken; the rest just warn.
+        let ours = row.is_some_and(|f| f.status == "active");
+
+        let text = match &texts[leaf.as_str()] {
+            Ok(t) => t,
+            Err(e) => {
+                let msg = match e.kind() {
+                    std::io::ErrorKind::NotFound if ours => format!(
+                        "leaf file is gone but the fact still loads — restore it, or `subrosa fact archive --leaf {leaf}`"
+                    ),
+                    std::io::ErrorKind::NotFound => {
+                        "leaf file is gone — an archived fact row still points at it".to_string()
+                    }
+                    _ => format!("leaf unreadable ({e}) — check its permissions"),
+                };
+                findings.push(finding(ours, leaf, msg));
+                continue;
+            }
+        };
+
+        for msg in frontmatter_problems(text) {
+            findings.push(finding(ours, leaf, msg));
+        }
+
+        // An unknown type still ranks (type_weight falls back), so it's a warning on
+        // both surfaces rather than a break.
+        let fm = &fms[leaf.as_str()];
+        if let Some(t) = fm_get(fm, "type").filter(|t| !known_type(t)) {
+            findings.push(finding(
+                false,
+                leaf,
+                format!("leaf type `{t}` is not user/feedback/project/reference"),
+            ));
+        }
+        if let Some(t) = row
+            .and_then(|f| f.type_.as_deref())
+            .filter(|t| !t.is_empty() && !known_type(t))
+        {
+            findings.push(finding(
+                false,
+                leaf,
+                format!(
+                    "fact row type `{t}` is not user/feedback/project/reference — \
+                     `subrosa fact upsert --leaf {leaf} --type <type>`"
+                ),
+            ));
+        }
+
+        if let (Some(on_leaf), Some(on_row)) = (
+            fm_get(fm, "name"),
+            row.and_then(|f| f.name.as_deref())
+                .filter(|s| !s.is_empty()),
+        ) {
+            if !on_leaf.eq_ignore_ascii_case(on_row) {
+                findings.push(finding(
+                    false,
+                    leaf,
+                    format!(
+                        "name drift: the leaf says `{on_leaf}`, the fact row says `{on_row}` — \
+                         upsert never rewrites a name, so make them match"
+                    ),
+                ));
+            }
+        }
+
+        // A leaf claims a slug twice over: through its frontmatter and through the
+        // stored row name upsert never rewrites. Both feed the link map, so a
+        // collision on either one silently shadows a fact.
+        let mut claimed_here: Vec<String> = Vec::new();
+        for name in [fm_get(fm, "name"), row.and_then(|f| f.name.as_deref())]
+            .into_iter()
+            .flatten()
+            .filter(|s| !s.is_empty())
+        {
+            let key = name.to_ascii_lowercase();
+            if claimed_here.contains(&key) {
+                continue;
+            }
+            claimed_here.push(key.clone());
+            match slug_owner.get_mut(&key) {
+                Some((first, active_owner)) => {
+                    // Two live facts on one slug always break, whatever order the
+                    // leaves sort in — so compare against the first ACTIVE claimant,
+                    // not just the first. A clash with an archived or unregistered
+                    // leaf stays a warning.
+                    let hard = ours && active_owner.is_some();
+                    let owner = match active_owner.as_deref().filter(|_| hard) {
+                        Some(o) => o,
+                        None => first.as_str(),
+                    };
+                    findings.push(finding(
+                        hard,
+                        leaf,
+                        format!(
+                            "duplicate name `{name}` — {owner} claims it too; one shadows the other"
+                        ),
+                    ));
+                    if ours && active_owner.is_none() {
+                        *active_owner = Some(leaf.clone());
+                    }
+                }
+                None => {
+                    slug_owner.insert(key, (leaf.clone(), ours.then(|| leaf.clone())));
+                }
+            }
+        }
+
+        for target in extract_wiki_links(body_after_frontmatter(text)) {
+            if !resolvable.contains(&link_key(&target)) {
+                findings.push(finding(
+                    false,
+                    leaf,
+                    format!("dangling link [[{target}]] — fix the slug or write that leaf"),
+                ));
+            }
+        }
+
+        // A row-less leaf is bookkeeping, not corruption: it's readable, just never
+        // registered, so MEMORY.md can't point at it.
+        if rows.is_some() && row.is_none() {
+            findings.push(finding(
+                false,
+                leaf,
+                format!("not registered — `subrosa fact upsert --leaf {leaf}`"),
+            ));
+        }
+    }
+
+    if rows.is_none() {
+        println!("[subrosa] doctor: no facts db — leaf checks only");
+    }
+    for (_, line) in &findings {
+        println!("{line}");
+    }
+    if findings.is_empty() {
+        println!(
+            "[subrosa] doctor: {} leaf(s), {} fact(s) — clean",
+            on_disk.len(),
+            rows.as_ref().map_or(0, |r| r.len())
+        );
+        return ExitCode::SUCCESS;
+    }
+    let errors = findings.iter().filter(|(e, _)| *e).count();
+    println!(
+        "\n[subrosa] doctor: {errors} error(s), {} warning(s)",
+        findings.len() - errors
+    );
+    if errors > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 /// `subrosa fact <action> ...` entry point.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -652,12 +1030,16 @@ pub fn run(
     status: StatusFilter,
     anchor: Option<String>,
 ) -> ExitCode {
-    // `link` and `search` are read-only — open read-only before the read-write connect below.
+    // `link`, `search` and `doctor` are read-only — open read-only before the
+    // read-write connect below.
     if let FactAction::Link = action {
         return link(anchor, project, memdir);
     }
     if let FactAction::Search = action {
         return search_facts(anchor, project, memdir, status);
+    }
+    if let FactAction::Doctor = action {
+        return doctor(project, memdir);
     }
     let conn = match db::connect() {
         Ok(c) => c,
@@ -728,7 +1110,9 @@ pub fn run(
                 params![now, project, leaf],
             )
             .map(|n| println!("[subrosa] unpinned {n} fact(s): {leaf}")),
-        FactAction::List | FactAction::Link | FactAction::Search => unreachable!(),
+        FactAction::List | FactAction::Link | FactAction::Search | FactAction::Doctor => {
+            unreachable!()
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -760,6 +1144,68 @@ mod tests {
     fn extract_links_ignores_empty_and_nonlinks() {
         assert!(extract_wiki_links("just [single] brackets, nothing here").is_empty());
         assert!(extract_wiki_links("empty [[]] and [[   ]] targets").is_empty());
+    }
+
+    #[test]
+    fn splice_debris_catches_the_tail_fragment() {
+        // The shape that actually happened: no second `---` at the top of the body,
+        // just a frontmatter tail further down — a body-start check misses it.
+        assert!(splice_debris(
+            "\nThe rule still reads fine.\n\nmetadata:\n  type: feedback\noriginSessionId: 0f0f\n---\n"
+        ));
+        assert!(splice_debris("---\nname: dupe\n---\nbody\n"));
+        assert!(!splice_debris(
+            "clean body\n\n---\n\npast a horizontal rule\n"
+        ));
+    }
+
+    #[test]
+    fn splice_debris_leaves_prose_and_fenced_examples_alone() {
+        // A lone key line in a sentence is prose, not a displaced frontmatter tail.
+        assert!(!splice_debris(
+            "metadata: details follow\nand then the rest of the note.\n"
+        ));
+        // Both fence styles hide their contents; the tilde one used to be scanned.
+        assert!(!splice_debris(
+            "body\n```\nmetadata:\n  type: feedback\n```\nend\n"
+        ));
+        assert!(!splice_debris(
+            "body\n~~~yaml\nmetadata:\n  type: feedback\n~~~\nend\n"
+        ));
+        // A shorter run can't close a longer fence (CommonMark), so this stays fenced.
+        assert!(!splice_debris(
+            "body\n~~~~\nmetadata:\n  type: feedback\n~~~\n"
+        ));
+    }
+
+    #[test]
+    fn splice_debris_ignores_an_over_indented_fake_fence() {
+        // 4+ spaces is indented code, not a fence — treating it as one would put the
+        // scan in skip-mode and hide the real tail below it.
+        assert!(splice_debris(
+            "body\n    ```\nstill body\n\nmetadata:\n  type: feedback\n---\n"
+        ));
+        // A fence indented within the 3-space allowance still hides its content.
+        assert!(!splice_debris(
+            "body\n   ```\nmetadata:\n  type: feedback\n   ```\nend\n"
+        ));
+    }
+
+    #[test]
+    fn frontmatter_problems_flags_the_incident_leaf() {
+        let good = "---\nname: a\ndescription: b\ntype: feedback\n---\nbody\n";
+        assert!(frontmatter_problems(good).is_empty());
+        let spliced = "---\nname: a\ndescription: b\ntype: feedback\n---\nbody\n\nmetadata:\n  type: feedback\n---\n";
+        assert_eq!(frontmatter_problems(spliced).len(), 1);
+        assert!(frontmatter_problems("plain note\n")[0].starts_with("no frontmatter"));
+        assert!(frontmatter_problems("---\nname: a\n")[0].contains("never closes"));
+        // Only an exact `---` line closes the block — prose that merely starts with
+        // `---` used to pass the whole leaf as clean.
+        assert!(frontmatter_problems(
+            "---\nname: a\ndescription: b\n--- banner text, not a closer\n"
+        )[0]
+        .contains("never closes"));
+        assert!(frontmatter_problems("---\nname: a\n---\nbody\n")[0].ends_with("description, type"));
     }
 
     #[test]

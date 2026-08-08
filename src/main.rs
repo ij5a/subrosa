@@ -162,7 +162,7 @@ enum Cmd {
     },
     /// Show the memory archive dashboard (activity, store, by-project share)
     Stats(stats::Args),
-    /// Inspect or mutate curated facts (search/link/list/upsert/archive/pin/unpin)
+    /// Inspect or mutate curated facts (search/link/doctor/list/upsert/archive/pin/unpin)
     Fact {
         #[arg(value_enum)]
         action: facts::FactAction,
