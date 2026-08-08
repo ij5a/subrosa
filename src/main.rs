@@ -1,12 +1,12 @@
 mod backup;
 mod crypt;
 mod db;
+mod embed;
 mod facts;
 mod generate;
 mod hook;
 mod import_existing;
 mod ingest;
-mod ollama;
 mod paths;
 mod recall;
 mod redact;
@@ -19,6 +19,7 @@ mod stats;
 mod tags;
 mod text;
 mod timeutil;
+mod wordpiece;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -132,7 +133,7 @@ enum Cmd {
         #[arg(long)]
         semantic: bool,
     },
-    /// Precompute turn embeddings with a local Ollama, so `search --semantic` works
+    /// Precompute turn embeddings locally (downloads the model once, ~1.3 GB)
     Embed {
         /// Drop this model's stored vectors first, then embed every turn again
         #[arg(long)]

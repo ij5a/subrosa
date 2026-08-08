@@ -47,6 +47,20 @@ done
 echo "$DUMP" | grep -q 'redacted' || fail "no redaction marker in the stored turn"
 echo "smoke: pipeline + redaction ok"
 
+# --- semantic search with no model on disk ---
+# The point is that both entry points stay loud about a missing model instead of
+# falling back to keyword ranking. `embed` is run with a PATH that has no curl
+# on it, so this can never start the 1.3 GB download on a developer's machine.
+if EMB="$(PATH=/nonexistent-subrosa-smoke "$BIN" embed 2>&1)"; then fail "embed succeeded without a model"; fi
+echo "$EMB" | grep -q 'download these into' || fail "embed did not name the manual download path: $EMB"
+echo "$EMB" | grep -q 'huggingface.co/BAAI' || fail "embed did not print the model URLs: $EMB"
+# A hand-download has to be told to use the .part name: dropped at the final
+# path it would be trusted on size alone instead of being checksummed.
+echo "$EMB" | grep -q 'model.safetensors.part' || fail "embed did not ask for .part names: $EMB"
+SEM="$("$BIN" search --semantic xyzzycontrol)" || fail "search --semantic exited non-zero with no index"
+[ "$SEM" = "[subrosa] no embeddings yet — run: subrosa embed" ] || fail "unexpected --semantic output: $SEM"
+echo "smoke: semantic no-model ok"
+
 # --- encrypted mirror + restore ---
 MIRROR="$ROOT/mirror"
 mkdir -p "$MIRROR"

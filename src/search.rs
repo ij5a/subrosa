@@ -1,11 +1,10 @@
 //! Keyword search over the archived transcripts (FTS5, bm25-ranked).
 
 use std::process::ExitCode;
-use std::time::Duration;
 
 use rusqlite::{params, params_from_iter};
 
-use crate::{db, ollama, paths, redact, timeutil};
+use crate::{db, embed, paths, redact, timeutil};
 
 /// How many characters of a neighbouring turn `--context` prints before it's cut
 /// with `…`. Long enough to orient, short enough to keep results scannable.
@@ -456,17 +455,15 @@ fn print_results(conn: &rusqlite::Connection, rows: &[Hit], context: i64) {
     );
 }
 
-//--- semantic search (opt-in, needs a local Ollama) --------------------------
+//--- semantic search (opt-in, runs the bundled model locally) ----------------
 
-/// How much of a turn is sent to the embedding model. Enough for the gist,
-/// short enough that a big archive backfills in one sitting.
+/// How much of a turn is embedded. Enough for the gist, short enough that a big
+/// archive backfills in one sitting; the tokenizer cuts whatever is still over
+/// the model's 512-token window.
 const EMBED_CHARS: usize = 2000;
-/// Turns per `/api/embed` request.
-const EMBED_BATCH: usize = 64;
-/// Localhost refuses instantly when nothing listens, so the connect leash is
-/// short; the first request after a cold start waits on the model loading.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-const IO_TIMEOUT: Duration = Duration::from_secs(60);
+/// Turns per forward pass. Small: this is CPU inference, and a wide batch pads
+/// every row out to the longest one in it.
+const EMBED_BATCH: usize = 8;
 
 /// The one test for "this `turn_embeddings` row counts for `model`", shared by
 /// the ranked scan and the pending count so the two can never disagree about
@@ -488,6 +485,17 @@ fn pending_sql(dim: Option<usize>) -> String {
     )
 }
 
+/// The rows `--semantic` ranks, under the same filters and the same width test
+/// the pending count uses — a row the scan ranks must be one the count doesn't
+/// call pending, or "N of M" double-counts it.
+fn scan_sql(dim: usize, tail: &str) -> String {
+    format!(
+        "SELECT e.turn_id, e.vec FROM turn_embeddings e JOIN turns t ON t.id = e.turn_id \
+         WHERE e.model = ?{}{tail} ORDER BY e.turn_id",
+        same_width(Some(dim))
+    )
+}
+
 /// The backfill's work queue is built against one stored width. If that width
 /// moved while it ran (a concurrent `--rebuild`), rows written now would never
 /// satisfy the old queue and the same batch would re-embed forever.
@@ -495,21 +503,27 @@ fn width_moved(queued: Option<usize>, seen: Option<usize>) -> bool {
     matches!((queued, seen), (Some(a), Some(b)) if a != b)
 }
 
-/// nomic-embed-text is trained asymmetrically — stored text and queries carry
-/// different task prefixes, and dropping them costs real ranking quality.
-/// ponytail: nomic is the default and the only special case here; another model
-/// with its own scheme needs its own arm.
-fn prefixed(model: &str, text: &str, query: bool) -> String {
-    if model.starts_with("nomic") {
-        let tag = if query {
-            "search_query: "
-        } else {
-            "search_document: "
-        };
-        format!("{tag}{text}")
-    } else {
-        text.to_string()
+/// Exactly what the model is shown for a query. Stored turns were redacted at
+/// ingest; the query is live user input, so it gets masked here — and bge's
+/// query-side instruction goes on the front, which stored passages never carry.
+fn query_text(terms: &[String]) -> String {
+    format!(
+        "{}{}",
+        embed::QUERY_PREFIX,
+        redact::redact(&terms.join(" "))
+    )
+}
+
+/// One stored row's score against the query, or `None` when the row can't be
+/// trusted: a blob that isn't `dim` wide, or a cosine outside the [-1, 1] two
+/// unit vectors can reach (NaN, infinity, huge values). Any of those would sort
+/// above every real hit, so they're dropped and counted rather than ranked.
+fn score_row(qvec: &[f32], blob: &[u8], dim: usize) -> Option<f64> {
+    if blob.len() != dim * 4 {
+        return None;
     }
+    let score = embed::cosine(qvec, &decode_vec(blob));
+    (-1.001..=1.001).contains(&score).then_some(score)
 }
 
 /// Vectors are stored little-endian f32, L2-normalized at write time.
@@ -537,9 +551,11 @@ fn model_dim(conn: &rusqlite::Connection, model: &str) -> Option<usize> {
 }
 
 /// `subrosa embed`: precompute a vector per archived turn. Never runs from a
-/// hook — this is the one command that needs Ollama up.
+/// hook — this is the one command that loads the model and downloads it if
+/// it isn't there yet.
 pub fn embed_backfill(rebuild: bool) -> ExitCode {
-    let (host, model) = (paths::ollama_host(), paths::embed_model());
+    // Rows are keyed by model AND revision; the plain name is for reading.
+    let (key, model) = (embed::MODEL_KEY, embed::MODEL_NAME);
     let conn = match db::connect() {
         Ok(c) => c,
         Err(e) => {
@@ -554,7 +570,7 @@ pub fn embed_backfill(rebuild: bool) -> ExitCode {
     // --rebuild is the repair for vectors that went bad on disk: a row of the
     // right width holding garbage still looks complete to the work queue.
     if rebuild {
-        match conn.execute("DELETE FROM turn_embeddings WHERE model = ?1", [&model]) {
+        match conn.execute("DELETE FROM turn_embeddings WHERE model = ?1", [key]) {
             Ok(n) => println!("[subrosa] embed: cleared {n} stored vector(s) for {model}"),
             Err(e) => {
                 eprintln!("[subrosa] cannot clear the stored vectors: {e}");
@@ -564,21 +580,29 @@ pub fn embed_backfill(rebuild: bool) -> ExitCode {
     }
     // One width per model, fixed by the first vector ever stored for it. Rows at
     // any other width are stale and get re-embedded rather than skipped.
-    let dim = model_dim(&conn, &model);
+    let dim = model_dim(&conn, key);
     let pending = pending_sql(dim);
-    let total: i64 = match conn.query_row(&format!("SELECT count(*) {pending}"), [&model], |r| {
-        r.get(0)
-    }) {
-        Ok(n) => n,
-        Err(e) => {
-            eprintln!("[subrosa] query error: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let total: i64 =
+        match conn.query_row(&format!("SELECT count(*) {pending}"), [key], |r| r.get(0)) {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("[subrosa] query error: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
     if total == 0 {
         println!("[subrosa] embed: every turn is already embedded with {model}");
         return ExitCode::SUCCESS;
     }
+    // Loaded only once there's work: this is where the one-time download
+    // happens, and a no-op backfill shouldn't trigger it.
+    let embedder = match embed::Embedder::load() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("[subrosa] {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let mut done = 0i64;
     loop {
         let batch: Vec<(i64, String)> = match conn
@@ -586,7 +610,7 @@ pub fn embed_backfill(rebuild: bool) -> ExitCode {
                 "SELECT t.id, t.text {pending} ORDER BY t.id LIMIT {EMBED_BATCH}"
             ))
             .and_then(|mut s| {
-                s.query_map([&model], |r| Ok((r.get(0)?, r.get::<_, String>(1)?)))?
+                s.query_map([key], |r| Ok((r.get(0)?, r.get::<_, String>(1)?)))?
                     .collect()
             }) {
             Ok(b) => b,
@@ -598,21 +622,16 @@ pub fn embed_backfill(rebuild: bool) -> ExitCode {
         if batch.is_empty() {
             break;
         }
+        // Stored passages go in bare — only the query side carries bge's prefix.
         let inputs: Vec<String> = batch
             .iter()
-            .map(|(_, text)| {
-                prefixed(
-                    &model,
-                    &text.chars().take(EMBED_CHARS).collect::<String>(),
-                    false,
-                )
-            })
+            .map(|(_, text)| text.chars().take(EMBED_CHARS).collect::<String>())
             .collect();
-        let vecs = match ollama::embed(&host, &model, &inputs, CONNECT_TIMEOUT, IO_TIMEOUT) {
+        let vecs = match embedder.embed(&inputs) {
             Ok(v) if v.len() == inputs.len() => v,
             Ok(v) => {
                 eprintln!(
-                    "[subrosa] Ollama returned {} vector(s) for {} input(s)",
+                    "[subrosa] the model returned {} vector(s) for {} input(s)",
                     v.len(),
                     inputs.len()
                 );
@@ -625,12 +644,12 @@ pub fn embed_backfill(rebuild: bool) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        // ollama::embed already rejected empty and non-finite vectors, so width
-        // is all that's left — and it's checked against the stored value INSIDE
-        // the write transaction, where a value read earlier could be stale.
+        // Embedder::embed already rejected non-finite vectors, so width is all
+        // that's left — and it's checked against the stored value INSIDE the
+        // write transaction, where a value read earlier could be stale.
         let stored = (|| -> Result<(), String> {
             let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-            let seen = model_dim(&tx, &model);
+            let seen = model_dim(&tx, key);
             // Something else re-embedded this model at a different width while we
             // ran. Rows written now would never satisfy the queue we built, so the
             // same batch would come back round forever — stop instead.
@@ -646,17 +665,17 @@ pub fn embed_backfill(rebuild: bool) -> ExitCode {
             if let Some(bad) = vecs.iter().find(|v| v.len() != want) {
                 return Err(format!(
                     "'{model}' returned a {}-value vector but this archive stores {want} — \
-                     refusing to mix dimensions. Use a different SUBROSA_EMBED_MODEL name for a \
-                     different model, or `subrosa embed --rebuild` to replace what's stored.",
+                     refusing to mix dimensions. Run `subrosa embed --rebuild` to replace \
+                     what's stored.",
                     bad.len()
                 ));
             }
             for ((id, _), mut v) in batch.iter().zip(vecs) {
-                ollama::normalize(&mut v);
+                embed::normalize(&mut v);
                 tx.execute(
                     "INSERT OR REPLACE INTO turn_embeddings(turn_id, model, dim, vec) \
                      VALUES (?1, ?2, ?3, ?4)",
-                    params![id, &model, v.len() as i64, encode_vec(&v)],
+                    params![id, key, v.len() as i64, encode_vec(&v)],
                 )
                 .map_err(|e| e.to_string())?;
             }
@@ -689,7 +708,8 @@ fn run_semantic(
     exclude: &[String],
     context: i64,
 ) -> ExitCode {
-    let model = paths::embed_model();
+    // Rows are keyed by model AND revision; the plain name is for reading.
+    let (key, model) = (embed::MODEL_KEY, embed::MODEL_NAME);
     let conn = match db::connect_readonly() {
         Ok(c) => c,
         Err(e) => {
@@ -698,28 +718,18 @@ fn run_semantic(
         }
     };
     // A missing table reads the same as an empty one — both mean "not backfilled".
-    let Some(dim) = model_dim(&conn, &model) else {
+    let Some(dim) = model_dim(&conn, key) else {
         println!("[subrosa] no embeddings yet — run: subrosa embed");
         return ExitCode::SUCCESS;
     };
-    // Stored turns were redacted at ingest; the query is live user input, so it
-    // gets masked before it reaches the model.
-    let query = redact::redact(&terms.join(" ")).into_owned();
-    let host = paths::ollama_host();
-    let qvec = match ollama::embed(
-        &host,
-        &model,
-        &[prefixed(&model, &query, true)],
-        CONNECT_TIMEOUT,
-        IO_TIMEOUT,
-    ) {
+    let qvec = match embed::Embedder::load().and_then(|e| e.embed(&[query_text(terms)])) {
         Ok(mut v) if !v.is_empty() => {
             let mut q = v.swap_remove(0);
-            ollama::normalize(&mut q);
+            embed::normalize(&mut q);
             q
         }
         Ok(_) => {
-            eprintln!("[subrosa] Ollama returned no vector for the query");
+            eprintln!("[subrosa] the model returned no vector for the query");
             return ExitCode::FAILURE;
         }
         Err(e) => {
@@ -748,7 +758,7 @@ fn run_semantic(
         tail.push_str(" AND t.id NOT IN (SELECT rowid FROM turns_fts WHERE turns_fts MATCH ?)");
         filter_binds.push(nots);
     }
-    let mut binds: Vec<String> = vec![model.clone()];
+    let mut binds: Vec<String> = vec![key.to_string()];
     binds.extend(filter_binds);
 
     // ponytail: brute-force scan of every candidate vector, no index. Linear in
@@ -756,13 +766,7 @@ fn run_semantic(
     // upgrade if that stops holding.
     let mut scored: Vec<(f64, i64)> = Vec::new();
     let mut corrupt = 0usize;
-    // Same width test as the pending count below: a row the scan ranks must be
-    // one the count doesn't call pending, or "N of M" double-counts it.
-    let sql = format!(
-        "SELECT e.turn_id, e.vec FROM turn_embeddings e JOIN turns t ON t.id = e.turn_id \
-         WHERE e.model = ?{}{tail} ORDER BY e.turn_id",
-        same_width(Some(dim))
-    );
+    let sql = scan_sql(dim, &tail);
     // One read transaction over the scan AND the pending count, so a backfill
     // running alongside can't leave the "N of M" warning quoting two snapshots.
     let scan = conn.unchecked_transaction().and_then(|tx| {
@@ -772,21 +776,10 @@ fn run_semantic(
             while let Some(r) = rows.next()? {
                 let id: i64 = r.get(0)?;
                 let blob: Vec<u8> = r.get(1)?;
-                // The row says it's `dim` wide; a blob that isn't is corrupt.
-                if blob.len() != dim * 4 {
-                    corrupt += 1;
-                    continue;
+                match score_row(&qvec, &blob, dim) {
+                    Some(score) => scored.push((score, id)),
+                    None => corrupt += 1,
                 }
-                // Stored and query vectors are unit-normalized, so a real cosine
-                // lands in [-1, 1] give or take float slop. NaN, infinity or a
-                // huge score all mean a corrupt row — and any of them would sort
-                // above every real hit, so drop it rather than rank it.
-                let score = ollama::cosine(&qvec, &decode_vec(&blob));
-                if !(-1.001..=1.001).contains(&score) {
-                    corrupt += 1;
-                    continue;
-                }
-                scored.push((score, id));
             }
         }
         tx.query_row(
@@ -883,14 +876,99 @@ mod tests {
         assert_eq!(encode_vec(&v).len(), 12);
     }
 
+    /// The query is the one piece of live user input that reaches the model, so
+    /// a secret in it must be masked before it goes — and the query prefix must
+    /// be there, or ranking quality drops without anything looking wrong.
     #[test]
-    fn nomic_gets_asymmetric_prefixes_and_other_models_dont() {
+    fn the_query_is_masked_and_prefixed_before_the_model_sees_it() {
+        let out = query_text(&["password=hunter2".into(), "failover".into()]);
         assert_eq!(
-            prefixed("nomic-embed-text", "hi", false),
-            "search_document: hi"
+            out,
+            "Represent this sentence for searching relevant passages: \
+             password=‹redacted› failover"
         );
-        assert_eq!(prefixed("nomic-embed-text", "hi", true), "search_query: hi");
-        assert_eq!(prefixed("mxbai-embed-large", "hi", true), "hi");
+        assert!(!out.contains("hunter2"));
+        assert!(out.starts_with(embed::QUERY_PREFIX));
+    }
+
+    /// A row we can't trust must be dropped, never scored — every one of these
+    /// would otherwise sort above the real hits.
+    #[test]
+    fn score_row_drops_rows_it_cannot_trust() {
+        let q = [1.0f32, 0.0, 0.0];
+        assert_eq!(score_row(&q, &encode_vec(&[1.0, 0.0, 0.0]), 3), Some(1.0));
+        assert_eq!(score_row(&q, &encode_vec(&[-1.0, 0.0, 0.0]), 3), Some(-1.0));
+        // A blob that isn't the width its row claims.
+        assert_eq!(score_row(&q, &encode_vec(&[1.0, 0.0]), 3), None);
+        // Values that went bad on disk: NaN and a magnitude no unit vector has.
+        assert_eq!(score_row(&q, &encode_vec(&[f32::NAN, 0.0, 0.0]), 3), None);
+        assert_eq!(score_row(&q, &encode_vec(&[f32::MAX, 0.0, 0.0]), 3), None);
+    }
+
+    /// A three-turn archive: one embedded at the model's width, one embedded at
+    /// a stale width, one never embedded at all.
+    fn seeded() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE turns (id INTEGER PRIMARY KEY, project TEXT, session_id TEXT, \
+               ts TEXT, text TEXT, seq INTEGER);\
+             CREATE TABLE turn_embeddings (turn_id INTEGER, model TEXT, dim INTEGER, \
+               vec BLOB, PRIMARY KEY (turn_id, model));\
+             INSERT INTO turns VALUES (1,'proj-a','s',NULL,'failover',0),\
+                                      (2,'proj-a','s',NULL,'pod drained',1),\
+                                      (3,'proj-b','s',NULL,'invoice totals',2);\
+             INSERT INTO turn_embeddings VALUES (1,'m',2,x'0000803f00000000'),\
+                                               (2,'m',1,x'0000803f');",
+        )
+        .unwrap();
+        conn
+    }
+
+    /// What `--semantic` ranks and what it calls "not yet embedded" have to add
+    /// up to the whole filtered archive: a stale-width row belongs to the
+    /// pending side only, and a turn with no vector at all belongs there too.
+    /// Between them that's the "N of M matching turns" the warning quotes.
+    #[test]
+    fn every_turn_is_either_ranked_or_pending_never_both() {
+        let conn = seeded();
+        let count = |sql: &str, binds: &[String]| -> i64 {
+            conn.query_row(sql, params_from_iter(binds.iter()), |r| r.get(0))
+                .unwrap()
+        };
+        let (tail, filter_binds) = turn_filters(None, None, None, None, &[]);
+        let binds: Vec<String> = std::iter::once("m".to_string())
+            .chain(filter_binds)
+            .collect();
+        let ranked = count(
+            &format!("SELECT count(*) FROM ({})", scan_sql(2, &tail)),
+            &binds,
+        );
+        let pending = count(
+            &format!("SELECT count(*) {}{tail}", pending_sql(Some(2))),
+            &binds,
+        );
+        // Turn 1 ranks; turns 2 (stale width) and 3 (no vector) are pending.
+        assert_eq!((ranked, pending), (1, 2));
+        assert_eq!(ranked + pending, 3, "a turn was counted twice or lost");
+    }
+
+    /// Filters narrow both sides the same way. A filter that selects only
+    /// un-embedded turns gives an empty result, which reads as "nothing here"
+    /// unless the pending count still says what wasn't searched.
+    #[test]
+    fn filters_narrow_the_scan_and_the_pending_count_together() {
+        let conn = seeded();
+        let (tail, filter_binds) = turn_filters(Some("proj-b"), None, None, None, &[]);
+        let binds: Vec<String> = std::iter::once("m".to_string())
+            .chain(filter_binds)
+            .collect();
+        let count = |sql: String| -> i64 {
+            conn.query_row(&sql, params_from_iter(binds.iter()), |r| r.get(0))
+                .unwrap()
+        };
+        let ranked = count(format!("SELECT count(*) FROM ({})", scan_sql(2, &tail)));
+        let pending = count(format!("SELECT count(*) {}{tail}", pending_sql(Some(2))));
+        assert_eq!((ranked, pending), (0, 1), "only turn 3 is in proj-b");
     }
 
     /// The scan and the pending count have to test width the same way, or a

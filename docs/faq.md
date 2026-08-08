@@ -2,7 +2,7 @@
 
 ## Can my data leave my machine?
 
-Not to us or to anyone else: no cloud, no telemetry, no update checker, and nothing subrosa does on its own opens a socket. Three network things exist, and you switch on all three. The plugin's one-time bootstrap downloads the program from GitHub releases (sha256-verified against checksums in this repo). The optional backup mirror copies a snapshot into a folder you pick — aim it at iCloud or Dropbox and your sync client uploads the snapshot, your choice, off by default, only static snapshots ever land there, never the live database, and it goes out encrypted if you set a mirror passphrase. And the opt-in `subrosa embed` / `search --semantic` send text to an Ollama running on your own machine — [why keyword search](#why-keyword-search-instead-of-embeddings) says exactly what crosses that wire.
+Not to us or to anyone else: no cloud, no telemetry, no update checker, and the binary never opens a socket itself. Three network things exist, and you switch on all three. The plugin's one-time bootstrap downloads the program from GitHub releases (sha256-verified against checksums in this repo). The optional backup mirror copies a snapshot into a folder you pick — aim it at iCloud or Dropbox and your sync client uploads the snapshot, your choice, off by default, only static snapshots ever land there, never the live database, and it goes out encrypted if you set a mirror passphrase. And the opt-in `subrosa embed` downloads its model from Hugging Face the first time you run it, by handing three URLs to your own `curl` — a download only, nothing of yours goes up. [Why keyword search](#why-keyword-search-instead-of-embeddings) has the details.
 
 ## Where is my data?
 
@@ -94,13 +94,14 @@ Yes. After each assistant turn subrosa archives the in-progress transcript (the 
 
 Keyword is the default because it needs nothing — no model, no weights, no second process, no cost to save a session. subrosa matches word roots, so `deploy` finds `deployed` and `deploying`, while identifiers like `TICKET-123` and `my-app-prod` stay exact. For partial names and typos, `subrosa search --fuzzy` adds a local trigram index (built on first use); when no substring matches, it falls back to the nearest matches within one edit (a wrong, missing, extra, or swapped letter) — still no model.
 
-Meaning-based search is there when you want it, as something you turn on yourself:
+Meaning-based search is there when you want it, as something you turn on yourself. There's nothing to install — the model runs inside the same binary:
 
-1. Install [Ollama](https://ollama.com) and pull a model: `ollama pull nomic-embed-text`.
-2. Run `subrosa embed` once. It sends each archived turn to Ollama and stores the vector beside it — minutes on a big archive, and resumable, so Ctrl-C just means the next run finishes the rest. Re-run it after new sessions pile up: only embedded turns can be ranked, so `--semantic` warns you whenever some were left out and tells you how many. `subrosa embed --rebuild` throws away what's stored for the model and starts over — that's the fix if a search ever reports unreadable vectors.
-3. `subrosa search --semantic "why did checkout get slow"` ranks by meaning: a turn can surface without sharing a single word with your query.
+1. Run `subrosa embed` once. The first run downloads the model it uses ([`BAAI/bge-large-en-v1.5`](https://huggingface.co/BAAI/bge-large-en-v1.5), MIT licensed, ~1.3 GB) into `~/.claude/subrosa/models/`, through your own `curl`, checked against a sha256 pinned in the source. Then it embeds each archived turn and stores the vector beside it — this is CPU work, so a big archive takes a while, and it's resumable: Ctrl-C just means the next run finishes the rest. Re-run it after new sessions pile up, since only embedded turns can be ranked — `--semantic` warns you whenever some were left out and tells you how many. `subrosa embed --rebuild` throws away what's stored and starts over, which is the fix if a search ever reports unreadable vectors.
+2. `subrosa search --semantic "why did checkout get slow"` ranks by meaning: a turn can surface without sharing a single word with your query.
 
-What crosses the wire, and only to the Ollama on `localhost` that you installed: the turn text during `subrosa embed` (already redacted at archive time) and your query on each `--semantic` search (redacted too, before it's sent). Plain HTTP, no TLS — this is meant for a model server on your own machine. Point it somewhere else with `SUBROSA_OLLAMA_HOST` / `ollama_host`, and pick a different model with `SUBROSA_EMBED_MODEL` / `embed_model`. If Ollama isn't running, `--semantic` says so and stops; it never quietly falls back to keyword.
+Nothing you typed leaves the machine. The download only pulls files down; your turns and your queries are embedded locally, and the query is redacted before the model sees it, same as the archived text was. If the model isn't on disk and can't be fetched, `--semantic` says so, prints the three URLs to grab by hand, and stops — it never quietly falls back to keyword. Save a hand-download under the `.part` name it shows you: subrosa checksums those and renames them into place itself, and a file dropped straight at its final name is only checked by size.
+
+The model is English-only. Non-English text still embeds and still ranks, just less well; keyword search treats every language the same, so that stays the better tool there.
 
 Automatic recall stays keyword, always. It fires on every prompt and has to be silent and instant when nothing matches — putting a model round-trip in front of every message you type is the opposite of that. Semantic is something you ask for, never something that happens to you.
 

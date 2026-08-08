@@ -11,12 +11,19 @@ categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 argon2 = { version = "0.5.3", default-features = false, features = ["alloc"] }
+# Pinned to 0.9: candle 0.10+ hard-depends on `tokenizers`, which pulls in
+# onig_sys (bundled C oniguruma). Check that before bumping — a guard test in
+# src/embed.rs fails if either name reappears in Cargo.lock.
+candle-core = "0.9"
+candle-nn = "0.9"
+candle-transformers = "0.9"
 chacha20poly1305 = "0.10.1"
 clap = { version = "4.6", features = ["derive"] }
 regex = "1"
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 serde = "1"
 serde_json = "1"
+sha2 = "0.11"
 
 [profile.release]
 lto = true

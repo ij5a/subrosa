@@ -5,13 +5,13 @@ Persistent-memory options for Claude Code, as of 2026-06-13. This compares what 
 | | subrosa | claude-mem | Remember (Anthropic) | memsearch | claude-supermemory |
 |---|---|---|---|---|---|
 | What it is | Saves every session locally + selective recall | Memory compression, meaning-based search, web UI | Official plugin: tiered daily logs | Markdown memory + local vector search | Bridge to the Supermemory cloud |
-| Runtime | One 3.7 MB static binary, no daemon | TypeScript + Bun worker on port 37777 [^cm-readme] | Plugin (uses Claude Haiku to process saves) | Python + Milvus Lite | Node plugin + cloud API |
+| Runtime | One 5 MB static binary, no daemon | TypeScript + Bun worker on port 37777 [^cm-readme] | Plugin (uses Claude Haiku to process saves) | Python + Milvus Lite | Node plugin + cloud API |
 | Storage | Local SQLite (full-text search) | Local SQLite + vector store | Local logs | Local Markdown + Milvus Lite (cloud opt-in) | Supermemory cloud [^sm-docs] |
 | Cost to save a session | Zero — mechanical parsing, no LLM call | Runs each session through Claude (Agent SDK) [^cm-arch] | "Typical cost is less than $0.01 per session save." [^rem] | Builds embeddings locally, no LLM call | Cloud processing; plugin requires Supermemory Pro ($19/mo+) [^sm-price] |
 | Context injected | ~180 tokens per prompt, usually 0; index capped at 23 KB by default | Some users report heavy token use at session start [^cm-618] [^cm-1848] | Reloads tiered logs at session start | "Automatic Context Injection Costs Zero Extra Tokens" [^ms-blog] | Injects saved memories at session start [^sm-docs] |
-| Recall | Keyword search, word-root matching, hyphen-safe identifiers, match-centered snippets, recency tie-break, + opt-in fuzzy (trigram) and opt-in meaning-based (`--semantic`, local Ollama), project-scoped, deduped per session | Keyword + meaning-based | Log reload | Meaning-based (vector) | Cloud, meaning-based |
+| Recall | Keyword search, word-root matching, hyphen-safe identifiers, match-centered snippets, recency tie-break, + opt-in fuzzy (trigram) and opt-in meaning-based (`--semantic`, model runs in the binary), project-scoped, deduped per session | Keyword + meaning-based | Log reload | Meaning-based (vector) | Cloud, meaning-based |
 | Secret redaction before storage | Yes — keys, tokens, `password=` values masked at write | Manual `<private>` tags | Not documented | Not documented | Not documented either way [^sm-redact] |
-| Network calls | None by default; `subrosa embed` / `search --semantic` talk to an Ollama you run on `localhost` | Local worker; SDK calls for summarization | Anthropic API (Haiku) | Local by default | Required, every session |
+| Network calls | None; `subrosa embed` downloads its model once, then everything runs locally | Local worker; SDK calls for summarization | Anthropic API (Haiku) | Local by default | Required, every session |
 | Price / license | Free, MIT | Free, Apache-2.0 | Free plugin, pay per save | Free, MIT | Plugin free, service $19/mo+ |
 | State (2026-06-13) | Active | v13.5.6, 82k stars, very active | Official, active | Active (Zilliz) | Last release 2026-02-09 [^sm-repo] |
 
@@ -22,7 +22,7 @@ Persistent-memory options for Claude Code, as of 2026-06-13. This compares what 
 - **Remember** for the official Anthropic option with zero setup, if you accept the per-save cost.
 - **claude-supermemory** if team-shared memory is the point — a cloud feature subrosa deliberately doesn't have.
 
-What subrosa won't do: multi-user memory, or anything that needs your transcripts to leave your machine. Meaning-based search exists, but it stays opt-in and local — you install Ollama and run `subrosa embed` — so keyword remains the default and the only thing automatic recall ever uses.
+What subrosa won't do: multi-user memory, or anything that needs your transcripts to leave your machine. Meaning-based search exists, but it stays opt-in and local — `subrosa embed` fetches a model once and runs it on your machine — so keyword remains the default and the only thing automatic recall ever uses.
 
 [^cm-readme]: claude-mem README — "Worker Service - HTTP API on port 37777 … managed by Bun": <https://github.com/thedotmack/claude-mem>
 [^cm-arch]: claude-mem hooks architecture — "Sends to Claude Agent SDK for summarization": <https://docs.claude-mem.ai/hooks-architecture>

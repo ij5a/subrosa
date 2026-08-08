@@ -266,26 +266,8 @@ pub fn checkpoint_nudge_mode() -> String {
         .unwrap_or_else(|| "loud".to_string())
 }
 
-/// Where the local Ollama server listens. Only `subrosa embed` and
-/// `search --semantic` ever use it. Env beats config.
-pub fn ollama_host() -> String {
-    std::env::var("SUBROSA_OLLAMA_HOST")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .or_else(|| config_get("ollama_host").ok().flatten())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "localhost:11434".to_string())
-}
-
-/// Which Ollama model embeds turns and queries. Stored alongside every vector,
-/// so switching models is a fresh backfill and never mixes vector spaces.
-pub fn embed_model() -> String {
-    std::env::var("SUBROSA_EMBED_MODEL")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .or_else(|| config_get("embed_model").ok().flatten())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "nomic-embed-text".to_string())
+/// Where the embedding model's files are downloaded, one folder per model.
+/// Only `subrosa embed` and `search --semantic` ever look here.
+pub fn models_dir() -> PathBuf {
+    mem_dir().join("models")
 }
