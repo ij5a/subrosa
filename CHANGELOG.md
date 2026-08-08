@@ -5,6 +5,18 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0] - 2026-08-08
+
+### Added
+
+- Battery-included semantic search: `subrosa embed` and `search --semantic` now run the bge-large-en-v1.5 model inside subrosa itself via candle, CPU-only, pure Rust. No Ollama, no server, nothing else to install. On the first `subrosa embed` the model (~1.3 GB, MIT-licensed, pinned to one revision) downloads once into `~/.claude/subrosa/models/` through your system `curl` — every file sha256-pinned and size-capped, resumable if interrupted, and serialized by a lock so two runs never fight. No curl? The error names the three files and where to put them, and hand-downloaded files are checksummed too.
+
+### Changed
+
+- BREAKING: the Ollama backend is gone, and with it `SUBROSA_OLLAMA_HOST`/`ollama_host` and `SUBROSA_EMBED_MODEL`/`embed_model`. Vectors made with v0.22.0 stay in the database under their old key and are ignored; run `subrosa embed` once after upgrading to re-index with the built-in model.
+- The binary now opens no sockets at all — the one network touch left is the model download, a visible `curl` child process. Search queries are still redacted before they reach the model, and nothing ever leaves your machine.
+- Direct dependencies 7 → 11 (candle-core, candle-nn, candle-transformers, sha2). candle is pinned to 0.9 — the last version with a pure-Rust tree — and a guard test fails the build if a bump drags C code back in. Binary ~4 → ~5.3 MB.
+
 ## [0.22.0] - 2026-08-08
 
 ### Added
@@ -235,6 +247,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.23.0]: https://github.com/ij5a/subrosa/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/ij5a/subrosa/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/ij5a/subrosa/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/ij5a/subrosa/compare/v0.20.0...v0.20.1
