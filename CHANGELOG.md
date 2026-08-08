@@ -5,6 +5,17 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-08-08
+
+### Added
+
+- `subrosa fact doctor` — a read-only integrity check over a project's memory. It flags malformed or spliced frontmatter, missing or invalid fields, dangling `[[links]]`, duplicate name slugs, and orphaned leaves or facts. It errors on your own registered facts and only warns on foreign leaves, so it never cries wolf on Claude Code's native auto-memory. The `/subrosa:checkpoint` skill now runs it after each save, so a corrupted leaf — the kind that silently stops loading — gets caught where it happens. Exit 1 on any error, so it can gate a script.
+- Opt-in semantic search. `subrosa embed` precomputes an embedding per turn via a local Ollama endpoint into a lazy `turn_embeddings` table (no schema change, zero cost until you use it), and `search --semantic` ranks the whole archive by meaning — surfacing turns that share no words with your query. Configure with `SUBROSA_OLLAMA_HOST` / `ollama_host` (default `localhost:11434`) and `SUBROSA_EMBED_MODEL` / `embed_model` (default `nomic-embed-text`); `subrosa embed --rebuild` re-embeds a model from scratch. The query is redacted before it is sent, and if the index is incomplete the search says so rather than quietly under-searching. Needs Ollama running; the one-time backfill takes minutes and roughly 150 MB on a large archive. The Ollama client is hand-rolled over `std::net` and the existing `serde_json`, so this adds zero dependencies — still 7 crates, still a single static binary with no networking crate.
+
+### Changed
+
+- Positioning: subrosa's core — capture, recall, storage, and all non-semantic search — stays zero-network. The one exception is the opt-in `search --semantic` and `subrosa embed`, which reach a local Ollama model you run over a plain-HTTP localhost call. Recall stays keyword-only and never touches the network. README, FAQ, and the comparison doc are reworded to match.
+
 ## [0.21.0] - 2026-08-08
 
 ### Added
@@ -224,6 +235,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.22.0]: https://github.com/ij5a/subrosa/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/ij5a/subrosa/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/ij5a/subrosa/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/ij5a/subrosa/compare/v0.19.2...v0.20.0
