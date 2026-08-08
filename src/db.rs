@@ -385,6 +385,23 @@ pub fn ensure_trigram_index(conn: &Connection) -> rusqlite::Result<bool> {
     Ok(true)
 }
 
+/// Create the opt-in embeddings store on first `subrosa embed`. Outside the
+/// versioned schema, same as the trigram index: nobody who skips semantic
+/// search pays for it, and SCHEMA_VERSION stays put. `model` is part of the key
+/// so switching models is a fresh backfill, never a migration. Needs a
+/// read-write connection.
+pub fn ensure_embeddings_table(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS turn_embeddings (\
+           turn_id INTEGER NOT NULL,\
+           model   TEXT NOT NULL,\
+           dim     INTEGER NOT NULL,\
+           vec     BLOB NOT NULL,\
+           PRIMARY KEY (turn_id, model)\
+         );",
+    )
+}
+
 /// ISO-8601 UTC timestamp with seconds precision, e.g. 2026-06-12T06:20:02+00:00.
 /// Hand-rolled because std has no date formatting and we keep the dep tree small.
 pub fn now_iso() -> String {

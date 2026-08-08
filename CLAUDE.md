@@ -12,10 +12,10 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 |---|---|
 | main.rs | clap dispatch + small command runners |
 | paths.rs | data locations, env overrides, KEY=VALUE config file |
-| db.rs | schema (compatibility-critical, incl. `session_tags`), connect/connect_readonly, migrate, now_iso, encode_cwd, current_memdir |
+| db.rs | schema (compatibility-critical, incl. `session_tags`), connect/connect_readonly, migrate, now_iso, encode_cwd, current_memdir, lazy opt-in tables (trigram index, `turn_embeddings`) |
 | redact.rs | secret masking before storage |
 | ingest.rs | JSONL flatten → turns rows, incremental seek-resume ingest (`scan_offset`/`scan_seq` cursor), sweep, checkpoint queue, tag derivation hook |
-| search.rs | FTS5 query building + result output (incl. `--after`/`--before`/`--tag` filters) |
+| search.rs | FTS5 query building + result output (incl. `--after`/`--before`/`--tag` filters), plus the opt-in `--semantic` ranking and the `subrosa embed` backfill |
 | sessions.rs | `sessions` verb: list past sessions newest-first, filter by project/date/tag |
 | related.rs | `related` verb: co-occurrence over the archive (anchor → terms + sessions; FTS-count idf down-weight) |
 | recall.rs | UserPromptSubmit relevance gate + context injection |
@@ -30,6 +30,7 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 | backup.rs | throttled snapshots via SQLite backup API + mirror copy (plain or encrypted) |
 | crypt.rs | encrypted mirror snapshots: XChaCha20-Poly1305 + argon2id, 60-byte header as AAD, `subrosa restore` |
 | setup.rs | interactive first-run config (mirror folder + optional mirror passphrase) |
+| ollama.rs | hand-rolled HTTP client for a local Ollama's `/api/embed` (the only socket in the tree) + cosine/normalize |
 | hook.rs | hook entrypoints: stdin JSON in, log to file, always exit 0 |
 
 ## Invariants (the load-bearing decisions)
@@ -38,6 +39,7 @@ One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires 
 - **Hooks never fail, never block.** They log to `$SUBROSA_DIR/hook.log` and exit 0 no matter what. Stdout is reserved for intentional context injection (the session-start nudge, the per-prompt checkpoint-backlog directive, recall hits) — never error noise. They never spawn `claude` (recursion).
 - **The live DB never goes in a synced folder.** iCloud/Dropbox-style sync corrupts live SQLite WAL/SHM sidecars mid-write. Only static snapshot files mirror out (backup.rs). Don't add anything that moves the live DB.
 - **Once encryption is intended, the mirror never goes out plaintext.** Intent means a passphrase resolves (even to an error) or a `subrosa-latest.db.enc` is already there. Any failure after that skips the mirror and leaves it stale — it never falls back to a readable copy — and the plaintext twin is cleared before any bailout. Turning encryption off is a manual delete of the `.enc`, never something a missing config does on its own.
+- **`search --semantic` and `subrosa embed` are the ONLY network paths.** Opt-in, plain HTTP to a localhost Ollama, redacted text only (turns are redacted at ingest; the query goes through `redact::redact` before it's sent). Recall, every hook and ingest never touch the network, and `--semantic` fails loudly rather than falling back to keyword. Its store (`turn_embeddings`) is a lazy table like the trigram index — created on first use, outside `migrate()`, so SCHEMA_VERSION stays put.
 - **Redact before write.** Any new path that stores transcript text must go through `redact::redact`.
 - **Recall must stay quiet and read-only.** It opens the DB read-only, gates on distinctive terms, and injects nothing on a weak match. Its `[subrosa recall]` header is filtered on ingest (NOISE_PREFIXES) so injections never feed back into the archive.
 - **Phrase-quote FTS queries.** Hyphenated identifiers (`my-app-prod`, `TICKET-123`) trip FTS5's column/NOT syntax unless each term is quoted — `build_match` handles it; `--raw` is the opt-out.

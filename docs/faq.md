@@ -2,7 +2,7 @@
 
 ## Can my data leave my machine?
 
-Your data — no. The binary makes zero network calls: no cloud, no telemetry, no update checker. Two network things happen, neither sends your data out: the plugin's one-time bootstrap downloads the program from GitHub releases (sha256-verified against checksums in this repo), and the optional backup mirror copies a snapshot into a folder you pick. Aim that mirror at iCloud or Dropbox and your sync client uploads the snapshot — your choice, off by default, and only static snapshots ever land there, never the live database. Set a mirror passphrase and that snapshot is encrypted before it's written.
+Not to us or to anyone else: no cloud, no telemetry, no update checker, and nothing subrosa does on its own opens a socket. Three network things exist, and you switch on all three. The plugin's one-time bootstrap downloads the program from GitHub releases (sha256-verified against checksums in this repo). The optional backup mirror copies a snapshot into a folder you pick — aim it at iCloud or Dropbox and your sync client uploads the snapshot, your choice, off by default, only static snapshots ever land there, never the live database, and it goes out encrypted if you set a mirror passphrase. And the opt-in `subrosa embed` / `search --semantic` send text to an Ollama running on your own machine — [why keyword search](#why-keyword-search-instead-of-embeddings) says exactly what crosses that wire.
 
 ## Where is my data?
 
@@ -92,7 +92,17 @@ Yes. After each assistant turn subrosa archives the in-progress transcript (the 
 
 ## Why keyword search instead of embeddings?
 
-A deliberate trade. Embeddings (meaning-based search) need model weights or API calls — that breaks the single static binary, the 5-crate supply chain, and zero-cost capture. Instead subrosa matches word roots, so `deploy` finds `deployed` and `deploying`, while identifiers like `TICKET-123` and `my-app-prod` stay exact. For partial names and typos, `subrosa search --fuzzy` adds a local trigram index (built on first use); when no substring matches, it falls back to the nearest matches within one edit (a wrong, missing, extra, or swapped letter) — still no model. Meaning-based search stays the deliberate omission.
+Keyword is the default because it needs nothing — no model, no weights, no second process, no cost to save a session. subrosa matches word roots, so `deploy` finds `deployed` and `deploying`, while identifiers like `TICKET-123` and `my-app-prod` stay exact. For partial names and typos, `subrosa search --fuzzy` adds a local trigram index (built on first use); when no substring matches, it falls back to the nearest matches within one edit (a wrong, missing, extra, or swapped letter) — still no model.
+
+Meaning-based search is there when you want it, as something you turn on yourself:
+
+1. Install [Ollama](https://ollama.com) and pull a model: `ollama pull nomic-embed-text`.
+2. Run `subrosa embed` once. It sends each archived turn to Ollama and stores the vector beside it — minutes on a big archive, and resumable, so Ctrl-C just means the next run finishes the rest. Re-run it after new sessions pile up: only embedded turns can be ranked, so `--semantic` warns you whenever some were left out and tells you how many. `subrosa embed --rebuild` throws away what's stored for the model and starts over — that's the fix if a search ever reports unreadable vectors.
+3. `subrosa search --semantic "why did checkout get slow"` ranks by meaning: a turn can surface without sharing a single word with your query.
+
+What crosses the wire, and only to the Ollama on `localhost` that you installed: the turn text during `subrosa embed` (already redacted at archive time) and your query on each `--semantic` search (redacted too, before it's sent). Plain HTTP, no TLS — this is meant for a model server on your own machine. Point it somewhere else with `SUBROSA_OLLAMA_HOST` / `ollama_host`, and pick a different model with `SUBROSA_EMBED_MODEL` / `embed_model`. If Ollama isn't running, `--semantic` says so and stops; it never quietly falls back to keyword.
+
+Automatic recall stays keyword, always. It fires on every prompt and has to be silent and instant when nothing matches — putting a model round-trip in front of every message you type is the opposite of that. Semantic is something you ask for, never something that happens to you.
 
 ## What are session tags?
 

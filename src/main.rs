@@ -6,6 +6,7 @@ mod generate;
 mod hook;
 mod import_existing;
 mod ingest;
+mod ollama;
 mod paths;
 mod recall;
 mod redact;
@@ -127,6 +128,15 @@ enum Cmd {
         /// Also print N turns on each side of every hit (same session), for context
         #[arg(short = 'C', long, default_value_t = 0)]
         context: i64,
+        /// Rank by meaning using precomputed embeddings (run `subrosa embed` first)
+        #[arg(long)]
+        semantic: bool,
+    },
+    /// Precompute turn embeddings with a local Ollama, so `search --semantic` works
+    Embed {
+        /// Drop this model's stored vectors first, then embed every turn again
+        #[arg(long)]
+        rebuild: bool,
     },
     /// Find terms and sessions that co-occur with an identifier across the archive
     Related {
@@ -318,6 +328,7 @@ fn main() -> ExitCode {
             tag,
             exclude,
             context,
+            semantic,
         } => search::run(
             &terms,
             limit,
@@ -331,7 +342,9 @@ fn main() -> ExitCode {
             &tag,
             &exclude,
             context,
+            semantic,
         ),
+        Cmd::Embed { rebuild } => search::embed_backfill(rebuild),
         Cmd::Related {
             identifier,
             limit,

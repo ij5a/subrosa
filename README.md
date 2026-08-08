@@ -17,7 +17,7 @@ Every session is archived into a local SQLite database and made searchable: last
 - **No LLM calls to save memory.** Saving a session is plain-text parsing — zero tokens. Most memory plugins run your sessions through an LLM to save them ([the comparison](docs/comparison.md) has the numbers, from their own docs).
 - **Hard token limits, set in the code.** Recall adds ~180 tokens on a strong match, usually nothing — it stays silent otherwise. The always-loaded index is capped at 23 KB by default. [Check it yourself](#proof-verify-it-yourself), or see [where your tokens go](docs/faq.md#how-many-tokens-does-it-cost-me).
 - **One ~4 MB static binary.** No daemon, no worker port, no background process — a per-prompt hook fires, finishes in under 10 ms, and exits. (The daily backup at session end takes a second or two when mirror encryption is on.)
-- **Your transcripts stay on your machine.** The binary makes zero network calls — no cloud, no telemetry — and obvious secret shapes are masked before storage. [Verify every claim yourself](#proof-verify-it-yourself).
+- **Your transcripts stay on your machine.** No cloud, no telemetry, and obvious secret shapes are masked before storage. The core makes zero network calls; one opt-in feature (`search --semantic`) reaches a local model you run yourself. [Verify every claim yourself](#proof-verify-it-yourself).
 
 <p align="center">
   <img src="assets/demo.gif" alt="subrosa demo: search the archive, automatic recall on a prompt, dashboard" width="800">
@@ -114,6 +114,9 @@ subrosa search api --tag tool:kubectl    # only sessions that used a given tool 
 subrosa search pgbouncer -C 2            # print 2 turns on each side of every hit (read around the match)
 subrosa search timeout --exclude test    # drop hits that also mention a term (repeat --exclude to add more)
 subrosa search redis valkey --any        # match any of the terms (OR) instead of all (AND)
+subrosa embed                            # one-time: precompute embeddings with a local Ollama (opt-in)
+subrosa embed --rebuild                  # drop this model's stored vectors and embed everything again
+subrosa search --semantic 'why did checkout get slow'   # rank by meaning, no shared word needed
 subrosa related cache-prod               # terms + sessions that co-occur with an identifier
 subrosa related TICKET-123 --project api # what clustered around it, scoped to one project
 
@@ -206,15 +209,15 @@ Together they add about 250 tokens of always-loaded context — your call. The f
 | Mirror | the folder you picked in `subrosa setup` | A single static snapshot file is safe to sync; encrypted as `subrosa-latest.db.enc` when you set a passphrase |
 | Checkpoint queue | `~/.claude/subrosa/pending-checkpoint.log` | Plain text, one session per line |
 
-Everything is overridable with env vars: `SUBROSA_DIR`, `SUBROSA_DB`, `SUBROSA_PROJECTS_DIR`, `SUBROSA_PENDING_LOG`, `SUBROSA_MIRROR`, `SUBROSA_MIRROR_PASSPHRASE`, `SUBROSA_CHECKPOINT_NUDGE`.
+Everything is overridable with env vars: `SUBROSA_DIR`, `SUBROSA_DB`, `SUBROSA_PROJECTS_DIR`, `SUBROSA_PENDING_LOG`, `SUBROSA_MIRROR`, `SUBROSA_MIRROR_PASSPHRASE`, `SUBROSA_CHECKPOINT_NUDGE`, `SUBROSA_OLLAMA_HOST`, `SUBROSA_EMBED_MODEL`.
 
-Three settings also live in `~/.claude/subrosa/config` (plain `KEY=VALUE`, mode `0600`): `mirror` (the snapshot folder, or `none`), `mirror_passphrase` (set it and the mirror copy is encrypted; leave it out and the mirror stays plaintext), and `checkpoint_nudge` — `loud` (default, the `ACTION REQUIRED` block), `quiet` (a one-line reminder), or `off`. The matching env var wins when set, with one exception: `none` turns mirroring off whichever side says it, so `mirror=none` in the config also switches off a `SUBROSA_MIRROR` override — and `SUBROSA_MIRROR=none` switches off a configured folder. Delete the line, unset the variable, or re-run `subrosa setup`, to mirror again. Turning it off only stops subrosa writing there: if the other side still names a real folder, `subrosa restore` goes on refusing to put a readable copy into it.
+Five settings also live in `~/.claude/subrosa/config` (plain `KEY=VALUE`, mode `0600`): `mirror` (the snapshot folder, or `none`), `mirror_passphrase` (set it and the mirror copy is encrypted; leave it out and the mirror stays plaintext), `checkpoint_nudge` — `loud` (default, the `ACTION REQUIRED` block), `quiet` (a one-line reminder), or `off` — and, for the opt-in semantic search, `ollama_host` (default `localhost:11434`) and `embed_model` (default `nomic-embed-text`). The matching env var wins when set, with one exception: `none` turns mirroring off whichever side says it, so `mirror=none` in the config also switches off a `SUBROSA_MIRROR` override — and `SUBROSA_MIRROR=none` switches off a configured folder. Delete the line, unset the variable, or re-run `subrosa setup`, to mirror again. Turning it off only stops subrosa writing there: if the other side still names a real folder, `subrosa restore` goes on refusing to put a readable copy into it.
 
 ## Privacy model
 
-- **Local-only.** The binary makes zero network calls; recall reads only your local database, and hook output goes only into your own session.
+- **Local-only.** Recall reads only your local database, and hook output goes only into your own session. No hook, no ingest and no recall ever opens a socket.
 - **Locked down.** The database and its folder are readable only by you (`0600`/`0700`), and secret shapes are redacted before storage.
-- **One opt-in exit.** The only thing that can leave the machine is a backup-mirror snapshot, if you point it at a synced folder (off by default). Set a mirror passphrase and that copy goes out encrypted. The live database is never synced.
+- **Two opt-in exits, both yours.** A backup-mirror snapshot leaves the machine only if you point it at a synced folder (off by default; set a mirror passphrase and that copy goes out encrypted). And `subrosa embed` / `search --semantic` send text to an Ollama on `localhost` that you install and run — off unless you ask for it. The live database is never synced.
 
 Full limits — what redaction misses, why the archive isn't encrypted, what recall re-injects — are in the [FAQ](docs/faq.md#what-does-subrosa-not-protect).
 
@@ -226,7 +229,7 @@ Claims are only worth the commands that check them. The whole thing is ~9,000 li
 |---|---|---|
 | Token limits are constants in the code | read `MAX_INJECT` + `SNIPPET_CHARS` in `src/recall.rs`, `DEFAULT_BUDGET` in `src/generate.rs` | `MAX_INJECT = 3`, `SNIPPET_CHARS = 160` (≈ 180 tokens at recall), and a 23 KB index budget — values you can read, not settings that drift. Raise it per project with `echo 24500 > <memdir>/.budget` (Claude stops reading past ~25 KB / line 200) |
 | Recall stays near ~180 tokens a prompt | `scripts/bench.sh` — the `recall injection` line | the injected block weighed in bytes → ~180 tokens on a strong match (3 snippets) |
-| The binary makes zero network calls | `cargo tree -e normal \| grep -Ei 'reqwest\|hyper\|tokio\|rustls\|openssl\|curl'` | no output — no HTTP or networking library in the build (trace it live with `strace`/`dtruss` and see no `connect()`) |
+| No networking library in the build | `cargo tree -e normal \| grep -Ei 'reqwest\|hyper\|tokio\|rustls\|openssl\|curl'` | no output — no HTTP or networking library at all. Trace a hook or a plain search with `strace`/`dtruss` and see no `connect()`; only `subrosa embed` and `search --semantic` open a socket, to the local Ollama you point them at |
 | The supply chain is small and audited | `cargo tree --depth 1` · `cargo audit` | 7 direct dependencies, no known advisories; CI runs `cargo audit` on every push, and release binaries ship a pinned `sha256sums.txt` |
 
 More checks (redaction, file permissions, no background process) and the honest limits are in the [FAQ](docs/faq.md#what-does-subrosa-not-protect).
