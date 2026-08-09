@@ -5,6 +5,17 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0] - 2026-08-09
+
+### Changed
+
+- Semantic search sets itself up. You never type `subrosa embed` — not the first time, not ever. A session start or end hands the work to a separate low-priority process and returns straight away (no measurable change to hook time), and that process downloads the model once, indexes your archive newest-first so recent sessions are searchable within a minute, then exits. It picks up each new session the same way. `subrosa` shows how far along it is, and a partly-built index says so instead of telling you to go and run something.
+- `semantic=off` in `~/.claude/subrosa/config` (or `SUBROSA_SEMANTIC=off`) is a real off switch: no background run, no model download, and with it every network call subrosa can make. It fails closed too — if the config can't be read at all, subrosa treats that as off rather than guessing. `subrosa embed` still indexes by hand whenever you want it.
+- A failed run — no network on a first install, say — is recorded and retried an hour later, then doubling up to a day, with the actual reason shown rather than a guess. Nothing retries on every session, and keyword search is unaffected throughout.
+- Only one indexing run happens at a time, whether a hook started it or you did: a lock keyed to the database itself, so two sessions ending together index once. The background run takes half your cores; `subrosa embed` typed by hand still uses all of them.
+- Hardening that came out of reviewing the above: subrosa now runs `curl`, `stty` and `git` from absolute paths instead of looking them up on `PATH`, and every file it uses to steer itself is read with a size cap and refuses anything that isn't a plain file, so a stray pipe or symlink can't stall a hook or send a write somewhere else. Files it replaces are written to a temporary file and renamed into place, so an interrupted write can't leave a half-file behind. If the terminal can't hide what you type, subrosa now refuses to ask for your mirror passphrase instead of showing it on screen.
+- README, FAQ and the comparison doc are corrected throughout: the model download now happens on first run for everyone, so "no background process" became "no daemon — the only background work is a finite indexing pass that exits when done", and the network section says plainly what is downloaded and what never leaves.
+
 ## [0.24.0] - 2026-08-09
 
 ### Changed
@@ -257,6 +268,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.25.0]: https://github.com/ij5a/subrosa/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/ij5a/subrosa/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/ij5a/subrosa/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/ij5a/subrosa/compare/v0.21.0...v0.22.0
