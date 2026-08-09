@@ -5,6 +5,16 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0] - 2026-08-09
+
+### Changed
+
+- `subrosa embed` is about 300x faster. A real 127,688-turn archive went from 47 hours to 9 minutes 21 seconds (227 turns/sec) on an M3 Max, peaking at 1.25 GB of memory. Three things did it: a smaller model, one worker thread per core sharing a single loaded model instead of one core doing everything, and embedding each repeated turn only once — a fifth of a real archive repeats itself.
+- BREAKING: the embedding model moves from bge-large-en-v1.5 to [bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) (MIT, pinned to one revision) — 133 MB to download instead of 1.3 GB, and 384-dimensional vectors instead of 1024, which also makes every semantic search about 2.7x faster to scan. Vectors are keyed by model, so old ones can no longer be ranked: `subrosa embed` deletes any vector left by a model it no longer ships, says how many, and re-indexes. The smaller vectors take about as much disk as the ones they replace, so the database barely changes size.
+- `subrosa embed` now works newest first, so recent sessions are searchable within the first minute instead of only when the whole archive finishes. It is still resumable — press Ctrl-C and the next run picks up the rest.
+- The progress line carries a rate and an estimate — `embedded 4096/127688 · 192/s · ~11m left` — instead of just a count.
+- macOS builds link Apple's Accelerate framework for the matrix work. That is a link line, not a compile step: direct dependencies stay at 11 on every platform, and Linux and musl builds are unchanged.
+
 ## [0.23.0] - 2026-08-08
 
 ### Added
@@ -247,6 +257,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.24.0]: https://github.com/ij5a/subrosa/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/ij5a/subrosa/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/ij5a/subrosa/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/ij5a/subrosa/compare/v0.20.1...v0.21.0
