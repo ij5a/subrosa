@@ -50,7 +50,7 @@ echo "smoke: pipeline + redaction ok"
 # --- semantic search with no model on disk ---
 # The point is that both entry points stay loud about a missing model instead of
 # falling back to keyword ranking. `embed` is run with a PATH that has no curl
-# on it, so this can never start the 1.3 GB download on a developer's machine.
+# on it, so this can never start the model download on a developer's machine.
 if EMB="$(PATH=/nonexistent-subrosa-smoke "$BIN" embed 2>&1)"; then fail "embed succeeded without a model"; fi
 echo "$EMB" | grep -q 'download these into' || fail "embed did not name the manual download path: $EMB"
 echo "$EMB" | grep -q 'huggingface.co/BAAI' || fail "embed did not print the model URLs: $EMB"

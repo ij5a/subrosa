@@ -1,4 +1,4 @@
-//! The embedding model, run in-process by candle: BAAI/bge-large-en-v1.5, a
+//! The embedding model, run in-process by candle: BAAI/bge-small-en-v1.5, a
 //! BERT encoder pinned to one revision and fetched once into `<SUBROSA_DIR>/models`.
 //! Only `subrosa embed` and `search --semantic` build one — recall, ingest and
 //! every hook stay far away from it.
@@ -21,17 +21,17 @@ use crate::paths;
 use crate::wordpiece::Vocab;
 
 /// What the model is called on screen and on disk.
-pub const MODEL_NAME: &str = "bge-large-en-v1.5";
+pub const MODEL_NAME: &str = "bge-small-en-v1.5";
 
-/// The pinned revision on huggingface.co/BAAI/bge-large-en-v1.5 (MIT licensed).
-const REVISION: &str = "d4aa6901d3a41ba39fb536a557fa166f842b0e09";
+/// The pinned revision on huggingface.co/BAAI/bge-small-en-v1.5 (MIT licensed).
+const REVISION: &str = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a";
 
 /// Stored beside every vector. The revision is part of it so that vectors from
 /// a different model — or a different revision of this one, or a v0.22 archive
 /// that happened to use the bare name — can never be mistaken for these and
 /// mixed in. Re-pinning the revision re-keys the store and forces a clean
 /// backfill.
-pub const MODEL_KEY: &str = "bge-large-en-v1.5@d4aa6901";
+pub const MODEL_KEY: &str = "bge-small-en-v1.5@5c38ec7c";
 
 /// Every file the model needs: name, byte size, and the sha256 a fresh download
 /// is checked against before it's kept. The weights come off the network, so
@@ -39,13 +39,13 @@ pub const MODEL_KEY: &str = "bge-large-en-v1.5@d4aa6901";
 const FILES: [(&str, u64, &str); 3] = [
     (
         "model.safetensors",
-        1_340_616_616,
-        "45e1954914e29bd74080e6c1510165274ff5279421c89f76c418878732f64ae7",
+        133_466_304,
+        "3c9f31665447c8911517620762200d2245a2518d6e7208acc78cd9db317e21ad",
     ),
     (
         "config.json",
-        779,
-        "446712fac367857b4b1302762fe1cd7bfa8b3c4b77b4dc5d77c4025407660896",
+        743,
+        "094f8e891b932f2000c92cfc663bac4c62069f5d8af5b5278c4306aef3084750",
     ),
     (
         "vocab.txt",
@@ -75,8 +75,9 @@ pub struct Embedder {
 }
 
 impl Embedder {
-    /// Fetch (once) and load the weights. Seconds of work and over a gigabyte
-    /// of memory — build one and reuse it for the whole run.
+    /// Fetch (once) and load the weights. Seconds of work and a few hundred MB
+    /// of memory — build one and reuse it for the whole run. `embed` takes
+    /// `&self`, so one loaded model serves every worker thread.
     pub fn load() -> Result<Embedder, String> {
         let dir = ensure_model()?;
         let read = |name: &str| {
@@ -183,8 +184,8 @@ fn ensure_model() -> Result<PathBuf, String> {
         return Ok(dir);
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    // Only the slow path locks. Waiting behind a peer's 1.3 GB download is the
-    // point, so the leash is long.
+    // Only the slow path locks. Waiting behind a peer's download is the point,
+    // so the leash is long.
     let _lock = download_lock()?;
     // A peer may have finished the whole thing while we waited.
     let missing = missing_files(&dir);
@@ -192,7 +193,7 @@ fn ensure_model() -> Result<PathBuf, String> {
         return Ok(dir);
     }
     // Progress goes to stderr: stdout carries search results.
-    eprintln!("[subrosa] downloading {MODEL_NAME} (~1.3 GB, one time)");
+    eprintln!("[subrosa] downloading {MODEL_NAME} (~133 MB, one time)");
     for (name, size, sha) in missing {
         fetch(&dir, name, *size, sha).map_err(|e| format!("{e}\n{}", manual_hint(&dir)))?;
     }
@@ -354,7 +355,7 @@ fn fetch(dir: &Path, name: &str, size: u64, sha: &str) -> Result<(), String> {
 /// writer. Everything we don't re-specify (a proxy, `--cacert`, cookies) rides
 /// along the same way unless the rc file is disabled. `--output -` and
 /// `--retry 0` are belt and braces on top. The rest: `-#` for a progress bar (a
-/// gigabyte in silence reads as hung), the connect and minimum-speed watchdogs
+/// download in silence reads as hung), the connect and minimum-speed watchdogs
 /// so a stalling server can't sit on the download lock, and `-C` to pick up our
 /// staging file where it stopped.
 fn curl_args(at: u64, url: &str) -> Vec<String> {
@@ -397,7 +398,7 @@ fn staging_sink(path: &Path) -> std::io::Result<std::fs::File> {
 /// Copy at most `budget` bytes of the child's output into `sink`, then reap it.
 ///
 /// The read end is closed BEFORE the wait, and first of all on an error (a full
-/// disk, 1.3 GB in). Curl blocks inside `write()` once the pipe fills and only
+/// disk, part way in). Curl blocks inside `write()` once the pipe fills and only
 /// learns to stop when the reader goes away, so waiting on it while still
 /// holding the pipe open never returns — with the download lock held.
 ///
@@ -456,8 +457,8 @@ fn manual_hint(dir: &Path) -> String {
 
 /// Is this file there at the size we pinned? Anything else — missing, short,
 /// half-written — reads as "fetch it again".
-/// ponytail: a stat, not a hash. Re-reading 1.3 GB before every search cost far
-/// more than it bought, and the checksum was already verified on download. What
+/// ponytail: a stat, not a hash. Re-reading the weights before every search cost
+/// far more than it bought, and the checksum was verified on download. What
 /// this gives up: a file that rots in place at exactly the right size fails
 /// loudly only if the corruption touches the safetensors header — damage to the
 /// weights alone loads fine and quietly returns worse vectors. Anything dropped
@@ -515,23 +516,22 @@ mod tests {
     fn the_pinned_config_deserializes_into_candles_bert() {
         let config: Config = serde_json::from_str(
             r#"{
-  "_name_or_path": "/root/.cache/torch/sentence_transformers/BAAI_bge-large-en/",
+  "_name_or_path": "/root/.cache/torch/sentence_transformers/BAAI_bge-small-en/",
   "architectures": ["BertModel"],
   "attention_probs_dropout_prob": 0.1,
   "classifier_dropout": null,
-  "gradient_checkpointing": false,
   "hidden_act": "gelu",
   "hidden_dropout_prob": 0.1,
-  "hidden_size": 1024,
+  "hidden_size": 384,
   "id2label": {"0": "LABEL_0"},
   "initializer_range": 0.02,
-  "intermediate_size": 4096,
+  "intermediate_size": 1536,
   "label2id": {"LABEL_0": 0},
   "layer_norm_eps": 1e-12,
   "max_position_embeddings": 512,
   "model_type": "bert",
-  "num_attention_heads": 16,
-  "num_hidden_layers": 24,
+  "num_attention_heads": 12,
+  "num_hidden_layers": 12,
   "pad_token_id": 0,
   "position_embedding_type": "absolute",
   "torch_dtype": "float32",
@@ -541,9 +541,9 @@ mod tests {
   "vocab_size": 30522
 }"#,
         )
-        .expect("bge-large-en-v1.5 config.json must load as a candle bert Config");
-        assert_eq!(config.hidden_size, 1024);
-        assert_eq!(config.num_hidden_layers, 24);
+        .expect("bge-small-en-v1.5 config.json must load as a candle bert Config");
+        assert_eq!(config.hidden_size, 384);
+        assert_eq!(config.num_hidden_layers, 12);
         assert_eq!(config.max_position_embeddings, MAX_TOKENS);
     }
 
@@ -865,8 +865,8 @@ mod tests {
     fn downloads_come_from_the_pinned_revision() {
         assert_eq!(
             url("model.safetensors"),
-            "https://huggingface.co/BAAI/bge-large-en-v1.5/resolve/\
-             d4aa6901d3a41ba39fb536a557fa166f842b0e09/model.safetensors"
+            "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/\
+             5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/model.safetensors"
         );
         let hint = manual_hint(Path::new("/tmp/models"));
         assert!(hint.contains("/tmp/models"), "{hint}");
@@ -894,7 +894,7 @@ mod tests {
                 "grocery list apples".to_string(),
             ])
             .unwrap();
-        assert_eq!(v[0].len(), 1024, "bge-large is 1024-dimensional");
+        assert_eq!(v[0].len(), 384, "bge-small is 384-dimensional");
         let (related, unrelated) = (cosine(&v[0], &v[1]), cosine(&v[0], &v[2]));
         assert!(
             related > unrelated,

@@ -1,5 +1,5 @@
 //! Opt-in semantic search, with the model NOT on disk — the half CI can run.
-//! Nothing here downloads or loads the 1.3 GB weights: the child gets a PATH
+//! Nothing here downloads or loads the real weights: the child gets a PATH
 //! with no curl on it, so the fetch fails exactly the way it does offline.
 //! The ranking itself is covered by the `#[ignore]`d test in `src/embed.rs`,
 //! which needs the real weights.
@@ -96,7 +96,7 @@ fn embed_without_the_model_says_where_to_get_it() {
     let (_, err, ok) = run(&env, &["embed"]);
     assert!(!ok, "embed can't work without the model");
     assert!(
-        err.contains("[subrosa] downloading bge-large-en-v1.5 (~1.3 GB, one time)"),
+        err.contains("[subrosa] downloading bge-small-en-v1.5 (~133 MB, one time)"),
         "{err}"
     );
     assert!(err.contains("cannot run curl"), "{err}");
@@ -107,7 +107,7 @@ fn embed_without_the_model_says_where_to_get_it() {
             "download these into {}",
             env.data
                 .join("models")
-                .join("bge-large-en-v1.5@d4aa6901")
+                .join("bge-small-en-v1.5@5c38ec7c")
                 .display()
         )),
         "{err}"
@@ -115,8 +115,8 @@ fn embed_without_the_model_says_where_to_get_it() {
     for file in ["model.safetensors", "config.json", "vocab.txt"] {
         assert!(
             err.contains(&format!(
-                "https://huggingface.co/BAAI/bge-large-en-v1.5/resolve/\
-                 d4aa6901d3a41ba39fb536a557fa166f842b0e09/{file}"
+                "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/\
+                 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/{file}"
             )),
             "{file} is not in the manual instructions: {err}"
         );
@@ -130,7 +130,7 @@ fn embed_without_the_model_says_where_to_get_it() {
 }
 
 /// Nothing to embed means nothing to load: an archive that's already done must
-/// not trigger a 1.3 GB download.
+/// not trigger a download.
 #[test]
 fn an_empty_backfill_never_reaches_for_the_model() {
     let env = setup("nowork");
@@ -138,7 +138,7 @@ fn an_empty_backfill_never_reaches_for_the_model() {
     assert!(ok, "{err}");
     assert_eq!(
         out,
-        "[subrosa] embed: every turn is already embedded with bge-large-en-v1.5\n"
+        "[subrosa] embed: every turn is already embedded with bge-small-en-v1.5\n"
     );
     assert!(!err.contains("downloading"), "{err}");
 }
@@ -170,7 +170,7 @@ fn semantic_with_stored_vectors_but_no_model_fails_loudly() {
         "CREATE TABLE turn_embeddings (turn_id INTEGER NOT NULL, model TEXT NOT NULL, \
          dim INTEGER NOT NULL, vec BLOB NOT NULL, PRIMARY KEY (turn_id, model));\
          INSERT INTO turn_embeddings(turn_id, model, dim, vec) \
-         SELECT id, 'bge-large-en-v1.5@d4aa6901', 2, x'0000803f00000000' FROM turns;",
+         SELECT id, 'bge-small-en-v1.5@5c38ec7c', 2, x'0000803f00000000' FROM turns;",
     )
     .unwrap();
     drop(conn);
@@ -181,9 +181,10 @@ fn semantic_with_stored_vectors_but_no_model_fails_loudly() {
     assert_eq!(out, "", "no results without a query vector");
 }
 
-/// A v0.22 archive backfilled through Ollama can hold rows under the bare model
-/// name. That's a different vector space, so it must not be ranked against, and
-/// must not read as a finished backfill either.
+/// An older archive can hold rows under a bare model name or a retired
+/// revision. That's a different vector space, so it must not be ranked against,
+/// must not read as a finished backfill, and the next backfill throws it away —
+/// those rows are the biggest thing in the file and nothing can ever use them.
 #[test]
 fn vectors_stored_under_the_old_bare_name_are_ignored() {
     let env = setup("oldkey");
@@ -193,7 +194,7 @@ fn vectors_stored_under_the_old_bare_name_are_ignored() {
         "CREATE TABLE turn_embeddings (turn_id INTEGER NOT NULL, model TEXT NOT NULL, \
          dim INTEGER NOT NULL, vec BLOB NOT NULL, PRIMARY KEY (turn_id, model));\
          INSERT INTO turn_embeddings(turn_id, model, dim, vec) \
-         SELECT id, 'bge-large-en-v1.5', 2, x'0000803f00000000' FROM turns;",
+         SELECT id, 'bge-small-en-v1.5', 2, x'0000803f00000000' FROM turns;",
     )
     .unwrap();
     drop(conn);
@@ -204,7 +205,19 @@ fn vectors_stored_under_the_old_bare_name_are_ignored() {
     // And the backfill still has every turn to do, so it reaches for the model.
     let (_, err, ok) = run(&env, &["embed"]);
     assert!(!ok, "old rows must not count as an embedded archive");
-    assert!(err.contains("downloading bge-large-en-v1.5"), "{err}");
+    assert!(err.contains("downloading bge-small-en-v1.5"), "{err}");
+    assert!(
+        err.contains("deleted 3 vector(s) left by an older model"),
+        "{err}"
+    );
+    assert_eq!(
+        db(&env)
+            .query_row("SELECT count(*) FROM turn_embeddings", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0,
+        "the retired model's rows are still taking up the file"
+    );
 }
 
 /// `--semantic` builds no FTS5 query, so the flags that shape one are rejected

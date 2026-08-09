@@ -461,9 +461,17 @@ fn print_results(conn: &rusqlite::Connection, rows: &[Hit], context: i64) {
 /// archive backfills in one sitting; the tokenizer cuts whatever is still over
 /// the model's 512-token window.
 const EMBED_CHARS: usize = 2000;
-/// Turns per forward pass. Small: this is CPU inference, and a wide batch pads
-/// every row out to the longest one in it.
-const EMBED_BATCH: usize = 8;
+/// Turns per forward pass. One, because the parallelism is already one turn per
+/// core and a wide batch only makes each core's working set too big for cache.
+/// Measured over 8192 real turns on an M3 Max, 14 workers — 1: 186/s at 1.2 GB,
+/// 4: 173/s at 3.1 GB, 8: 159/s at 5.3 GB, 16: 139/s at 9.0 GB, 32: 125/s at
+/// 13.2 GB. Held at one worker too (1: 22/s, 8: 20/s), so it isn't a threading
+/// artefact. Re-measure this before trusting it on a machine with few cores.
+const EMBED_BATCH: usize = 1;
+/// Turns pulled from the archive per round, newest first. Big enough that the
+/// dedupe has something to work with, small enough that stopping halfway still
+/// leaves the most recent months searchable.
+const EMBED_SLAB: usize = 4096;
 
 /// The one test for "this `turn_embeddings` row counts for `model`", shared by
 /// the ranked scan and the pending count so the two can never disagree about
@@ -550,6 +558,101 @@ fn model_dim(conn: &rusqlite::Connection, model: &str) -> Option<usize> {
     .map(|d| d as usize)
 }
 
+/// One slab, ready to embed: every distinct truncated text once, carrying the
+/// turn ids that share it. A fifth of a real archive is repeats — "Updated task
+/// #N status" alone runs into the hundreds — and each is now embedded once.
+/// If EMBED_BATCH is ever raised above 1, sort these by length before batching:
+/// a batch pads out to its longest member, and database order wasted 2.5x.
+fn group_slab(slab: Vec<(i64, String)>) -> Vec<(String, Vec<i64>)> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut groups: Vec<(String, Vec<i64>)> = Vec::new();
+    for (id, text) in slab {
+        // Stored passages go in bare — only the query side carries bge's prefix.
+        let text: String = text.chars().take(EMBED_CHARS).collect();
+        match seen.get(&text) {
+            Some(&at) => groups[at].1.push(id),
+            None => {
+                seen.insert(text.clone(), groups.len());
+                groups.push((text, vec![id]));
+            }
+        }
+    }
+    groups
+}
+
+/// Every worker shares one loaded model — `embed` takes `&self` and the weights
+/// are a read-only mmap. A candle release that stops guaranteeing that fails
+/// here, at compile time, instead of needing N copies of the weights.
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<embed::Embedder>();
+};
+
+/// Every distinct text in the slab, embedded in order across `workers` threads.
+/// Batches are claimed by index and results come back over a channel, so the
+/// caller stays the only thing that touches the database.
+fn embed_texts(
+    embedder: &embed::Embedder,
+    texts: &[String],
+    workers: usize,
+) -> Result<Vec<Vec<f32>>, String> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let batches: Vec<&[String]> = texts.chunks(EMBED_BATCH).collect();
+    let next = AtomicUsize::new(0);
+    let mut results: Vec<(usize, Vec<Vec<f32>>)> = Vec::with_capacity(batches.len());
+    let sent = std::thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..workers.min(batches.len()) {
+            let (tx, next, batches) = (tx.clone(), &next, &batches);
+            scope.spawn(move || {
+                loop {
+                    let at = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(batch) = batches.get(at) else { break };
+                    // A batch that comes back short would slide every later
+                    // vector onto the wrong turn, so it's caught per batch.
+                    let out = embedder.embed(batch).and_then(|v| {
+                        (v.len() == batch.len()).then_some(v).ok_or_else(|| {
+                            format!(
+                                "the model returned a short batch for {} input(s)",
+                                batch.len()
+                            )
+                        })
+                    });
+                    let failed = out.is_err();
+                    if tx.send((at, out)).is_err() || failed {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(tx);
+        rx.iter().collect::<Vec<_>>()
+    });
+    for (at, batch) in sent {
+        results.push((at, batch?));
+    }
+    results.sort_by_key(|(at, _)| *at);
+    let vecs: Vec<Vec<f32>> = results.into_iter().flat_map(|(_, v)| v).collect();
+    if vecs.len() != texts.len() {
+        return Err(format!(
+            "the model returned {} vector(s) for {} input(s)",
+            vecs.len(),
+            texts.len()
+        ));
+    }
+    Ok(vecs)
+}
+
+/// Roughly how much longer, for the progress line only. Clamped because an
+/// infinite estimate casts to `u64::MAX` and prints as a nonsense age.
+fn eta(secs: f64) -> String {
+    match secs.clamp(0.0, 359_999.0) as u64 {
+        s if s < 90 => format!("{s}s"),
+        s if s < 5400 => format!("{}m", (s + 30) / 60),
+        s => format!("{}h{}m", s / 3600, (s % 3600) / 60),
+    }
+}
+
 /// `subrosa embed`: precompute a vector per archived turn. Never runs from a
 /// hook — this is the one command that loads the model and downloads it if
 /// it isn't there yet.
@@ -566,6 +669,19 @@ pub fn embed_backfill(rebuild: bool) -> ExitCode {
     if let Err(e) = db::ensure_embeddings_table(&conn) {
         eprintln!("[subrosa] cannot create the embeddings store: {e}");
         return ExitCode::FAILURE;
+    }
+    // Vectors from a model we no longer ship are a different space: nothing can
+    // rank them, nothing can resume from them, and they're the biggest thing in
+    // the archive. Their pages go back to the free list for the new ones.
+    match conn.execute("DELETE FROM turn_embeddings WHERE model <> ?1", [key]) {
+        Ok(n) if n > 0 => {
+            eprintln!("[subrosa] embed: deleted {n} vector(s) left by an older model")
+        }
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("[subrosa] cannot clear the older model's vectors: {e}");
+            return ExitCode::FAILURE;
+        }
     }
     // --rebuild is the repair for vectors that went bad on disk: a row of the
     // right width holding garbage still looks complete to the work queue.
@@ -603,11 +719,18 @@ pub fn embed_backfill(rebuild: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // One thread per core, all sharing that model. Inference is the whole cost
+    // of this command, and one forward pass at a time leaves every other core
+    // idle — this is where nearly all of the wall clock went.
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let started = std::time::Instant::now();
     let mut done = 0i64;
     loop {
-        let batch: Vec<(i64, String)> = match conn
+        // Newest first: an archive this size takes minutes, and recent work is
+        // what a search asked in those minutes is looking for.
+        let slab: Vec<(i64, String)> = match conn
             .prepare(&format!(
-                "SELECT t.id, t.text {pending} ORDER BY t.id LIMIT {EMBED_BATCH}"
+                "SELECT t.id, t.text {pending} ORDER BY t.id DESC LIMIT {EMBED_SLAB}"
             ))
             .and_then(|mut s| {
                 s.query_map([key], |r| Ok((r.get(0)?, r.get::<_, String>(1)?)))?
@@ -619,26 +742,14 @@ pub fn embed_backfill(rebuild: bool) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        if batch.is_empty() {
+        if slab.is_empty() {
             break;
         }
-        // Stored passages go in bare — only the query side carries bge's prefix.
-        let inputs: Vec<String> = batch
-            .iter()
-            .map(|(_, text)| text.chars().take(EMBED_CHARS).collect::<String>())
-            .collect();
-        let vecs = match embedder.embed(&inputs) {
-            Ok(v) if v.len() == inputs.len() => v,
-            Ok(v) => {
-                eprintln!(
-                    "[subrosa] the model returned {} vector(s) for {} input(s)",
-                    v.len(),
-                    inputs.len()
-                );
-                return ExitCode::FAILURE;
-            }
-            // A hard stop, never a silent fall back to keyword. What was stored
-            // so far persists, so re-running picks up where this left off.
+        let (inputs, turns): (Vec<String>, Vec<Vec<i64>>) = group_slab(slab).into_iter().unzip();
+        // A hard stop, never a silent fall back to keyword. What was stored so
+        // far persists, so re-running picks up where this left off.
+        let vecs = match embed_texts(&embedder, &inputs, workers) {
+            Ok(v) => v,
             Err(e) => {
                 eprintln!("[subrosa] {e}");
                 return ExitCode::FAILURE;
@@ -670,14 +781,18 @@ pub fn embed_backfill(rebuild: bool) -> ExitCode {
                     bad.len()
                 ));
             }
-            for ((id, _), mut v) in batch.iter().zip(vecs) {
+            // One vector, then a row per turn that shares its text.
+            for (ids, mut v) in turns.iter().zip(vecs) {
                 embed::normalize(&mut v);
-                tx.execute(
-                    "INSERT OR REPLACE INTO turn_embeddings(turn_id, model, dim, vec) \
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![id, key, v.len() as i64, encode_vec(&v)],
-                )
-                .map_err(|e| e.to_string())?;
+                let blob = encode_vec(&v);
+                for id in ids {
+                    tx.execute(
+                        "INSERT OR REPLACE INTO turn_embeddings(turn_id, model, dim, vec) \
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![id, key, v.len() as i64, &blob],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
             }
             tx.commit().map_err(|e| e.to_string())
         })();
@@ -685,10 +800,15 @@ pub fn embed_backfill(rebuild: bool) -> ExitCode {
             eprintln!("[subrosa] {e}");
             return ExitCode::FAILURE;
         }
-        done += batch.len() as i64;
+        done += turns.iter().map(|ids| ids.len() as i64).sum::<i64>();
         // The total is a snapshot; a live session ingesting mid-run can push the
         // real work past it, so the denominator grows rather than reading 70/64.
-        eprintln!("[subrosa] embedded {done}/{}", total.max(done));
+        let total = total.max(done);
+        let rate = done as f64 / started.elapsed().as_secs_f64();
+        eprintln!(
+            "[subrosa] embedded {done}/{total} · {rate:.0}/s · ~{} left",
+            eta((total - done) as f64 / rate)
+        );
     }
     println!("[subrosa] embed: {done} turn(s) embedded with {model}");
     ExitCode::SUCCESS
@@ -868,6 +988,48 @@ fn warn_incomplete(pending: i64, searched: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every turn keeps its own id and repeats collapse onto one text, so the
+    /// vector a turn gets is still the vector for the text it holds. Losing an
+    /// id here would leave that turn silently unsearchable; putting it in the
+    /// wrong group would give it another turn's meaning.
+    #[test]
+    fn grouping_keeps_every_turn_and_embeds_a_repeat_once() {
+        let slab = vec![
+            (1, "a longer line about a failover".to_string()),
+            (2, "short".to_string()),
+            (3, "a longer line about a failover".to_string()),
+            (4, "mid length line".to_string()),
+        ];
+        let groups = group_slab(slab);
+        assert_eq!(
+            groups,
+            vec![
+                ("a longer line about a failover".to_string(), vec![1, 3]),
+                ("short".to_string(), vec![2]),
+                ("mid length line".to_string(), vec![4]),
+            ],
+            "the repeat carries both turn ids"
+        );
+        // Only what's over EMBED_CHARS is cut, and two turns that differ only
+        // past the cut are one text — they'd embed identically anyway.
+        let long = "x".repeat(EMBED_CHARS + 50);
+        let groups = group_slab(vec![(1, format!("{long}aaa")), (2, format!("{long}bbb"))]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0.chars().count(), EMBED_CHARS);
+        assert_eq!(groups[0].1, vec![1, 2]);
+    }
+
+    /// The progress line's only job is to be readable at a glance.
+    #[test]
+    fn eta_reads_in_the_unit_that_fits() {
+        assert_eq!(eta(45.0), "45s");
+        assert_eq!(eta(600.0), "10m");
+        assert_eq!(eta(7200.0), "2h0m");
+        // A rate of zero divides to infinity, which casts to u64::MAX.
+        assert_eq!(eta(f64::INFINITY), "99h59m");
+        assert_eq!(eta(f64::NAN), "0s");
+    }
 
     #[test]
     fn vec_blob_roundtrips_little_endian_f32() {

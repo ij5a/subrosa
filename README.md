@@ -114,7 +114,7 @@ subrosa search api --tag tool:kubectl    # only sessions that used a given tool 
 subrosa search pgbouncer -C 2            # print 2 turns on each side of every hit (read around the match)
 subrosa search timeout --exclude test    # drop hits that also mention a term (repeat --exclude to add more)
 subrosa search redis valkey --any        # match any of the terms (OR) instead of all (AND)
-subrosa embed                            # one-time: precompute embeddings (opt-in; downloads a ~1.3 GB model on first run)
+subrosa embed                            # one-time: precompute embeddings (opt-in; downloads a ~133 MB model on first run)
 subrosa embed --rebuild                  # drop the stored vectors and embed everything again
 subrosa search --semantic 'why did checkout get slow'   # rank by meaning, no shared word needed
 subrosa related cache-prod               # terms + sessions that co-occur with an identifier
@@ -208,7 +208,7 @@ Together they add about 250 tokens of always-loaded context — your call. The f
 | Snapshots | `~/.claude/subrosa/backups/` | Last 7 kept, owner-only permissions |
 | Mirror | the folder you picked in `subrosa setup` | A single static snapshot file is safe to sync; encrypted as `subrosa-latest.db.enc` when you set a passphrase |
 | Checkpoint queue | `~/.claude/subrosa/pending-checkpoint.log` | Plain text, one session per line |
-| Embedding model | `~/.claude/subrosa/models/` | Only if you run `subrosa embed`; ~1.3 GB, downloaded once and checksum-verified |
+| Embedding model | `~/.claude/subrosa/models/` | Only if you run `subrosa embed`; ~133 MB, downloaded once and checksum-verified |
 
 Everything is overridable with env vars: `SUBROSA_DIR`, `SUBROSA_DB`, `SUBROSA_PROJECTS_DIR`, `SUBROSA_PENDING_LOG`, `SUBROSA_MIRROR`, `SUBROSA_MIRROR_PASSPHRASE`, `SUBROSA_CHECKPOINT_NUDGE`.
 
@@ -232,7 +232,7 @@ Claims are only worth the commands that check them. The whole thing is ~9,000 li
 | Token limits are constants in the code | read `MAX_INJECT` + `SNIPPET_CHARS` in `src/recall.rs`, `DEFAULT_BUDGET` in `src/generate.rs` | `MAX_INJECT = 3`, `SNIPPET_CHARS = 160` (≈ 180 tokens at recall), and a 23 KB index budget — values you can read, not settings that drift. Raise it per project with `echo 24500 > <memdir>/.budget` (Claude stops reading past ~25 KB / line 200) |
 | Recall stays near ~180 tokens a prompt | `scripts/bench.sh` — the `recall injection` line | the injected block weighed in bytes → ~180 tokens on a strong match (3 snippets) |
 | No networking library in the build | `cargo tree -e normal \| grep -Ei 'reqwest\|hyper\|tokio\|rustls\|openssl\|curl'` | no output — no HTTP or networking library at all. Trace a hook or a search with `strace`/`dtruss` and see no `connect()`. The one-time model download runs your own `curl`, as a separate process you can watch |
-| The embedding model is pinned | read `FILES` + `REVISION` in `src/embed.rs` | one revision of `BAAI/bge-large-en-v1.5` and a sha256 per file; a download that doesn't match is deleted, not loaded |
+| The embedding model is pinned | read `FILES` + `REVISION` in `src/embed.rs` | one revision of `BAAI/bge-small-en-v1.5` and a sha256 per file; a download that doesn't match is deleted, not loaded |
 | The supply chain is small and audited | `cargo tree --depth 1` · `cargo audit` | 11 direct dependencies, no known advisories; CI runs `cargo audit` on every push, and release binaries ship a pinned `sha256sums.txt` |
 
 More checks (redaction, file permissions, no background process) and the honest limits are in the [FAQ](docs/faq.md#what-does-subrosa-not-protect).
@@ -253,7 +253,7 @@ A hook that runs on every prompt has to be invisible. Measured with `scripts/ben
 | `subrosa related <identifier>` over 50,000 turns | 0.3–0.4 s |
 | Archiving 50,000 turns from scratch (first install) | ~1.5 s |
 
-One static ~5 MB binary, no background process, no runtime dependencies. (Opt-in semantic search adds a ~1.3 GB model file on disk — nothing else changes.)
+One static ~5 MB binary, no background process, no runtime dependencies. (Opt-in semantic search adds a ~133 MB model file on disk — nothing else changes.)
 
 ## Development
 

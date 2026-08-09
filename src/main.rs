@@ -133,7 +133,7 @@ enum Cmd {
         #[arg(long)]
         semantic: bool,
     },
-    /// Precompute turn embeddings locally (downloads the model once, ~1.3 GB)
+    /// Precompute turn embeddings locally (downloads the model once, ~133 MB)
     Embed {
         /// Drop this model's stored vectors first, then embed every turn again
         #[arg(long)]
