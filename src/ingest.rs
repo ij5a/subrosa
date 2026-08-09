@@ -522,14 +522,20 @@ pub fn enqueue_checkpoint(
     if last_seq <= checkpointed_seq {
         return Ok("unchanged"); // already checkpointed and hasn't grown past the mark
     }
-    let pending: HashSet<String> = fs::read_to_string(log_path)
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| queue_sid(l).to_string())
-        .collect();
+    // Bounded and regular-file-only, both ways: this runs from SessionEnd, and
+    // a FIFO here would block the hook — on the read, and again on the append.
+    let pending: HashSet<String> =
+        crate::paths::read_control_file(log_path, crate::paths::CONTROL_FILE_MAX)?
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| queue_sid(l).to_string())
+            .collect();
     if pending.contains(sid) {
         return Ok("duplicate");
+    }
+    if !crate::paths::appendable(log_path) {
+        return Err(format!("{} is not a plain file", log_path.display()).into());
     }
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent)?;

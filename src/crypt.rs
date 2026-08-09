@@ -342,31 +342,47 @@ fn passphrase() -> Result<String, String> {
     }
 }
 
-/// Read one line with the terminal echo off. `stty` is on every macOS and
-/// Linux box, and those are all we ship to; if it won't run we still read,
-/// just visibly — a setup you can't finish is worse than a visible
-/// passphrase. Echo is put back on every way out, read errors included.
+/// Read one line with the terminal echo off. Fails closed: if echo can't be
+/// turned off, nothing is asked for at all. A passphrase typed in the clear
+/// lands on the screen, in the scrollback and in whatever else records that
+/// terminal — worse than not finishing setup, and the caller can still supply
+/// one through the environment. Echo goes back on every way out, read errors
+/// included.
 pub(crate) fn prompt_hidden(label: &str) -> Option<String> {
     // Echo off BEFORE the prompt goes out: turning it off afterwards leaves a
     // window where input that arrives immediately is echoed anyway.
-    let hidden = stty("-echo");
+    if !stty("-echo") {
+        eprintln!(
+            "[subrosa] I can't hide what you type on this terminal, so I won't ask for your \
+             passphrase here — it would stay on the screen and in the scrollback."
+        );
+        eprintln!(
+            "[subrosa] Pass it in instead: put SUBROSA_MIRROR_PASSPHRASE='your passphrase' in \
+             front of the command. (Hiding it needs a working `stty`.)"
+        );
+        return None;
+    }
     print!("[subrosa] {label}");
     let _ = std::io::stdout().flush();
     let mut s = String::new();
     let read = std::io::stdin().read_line(&mut s);
-    if hidden {
-        stty("echo");
-        println!();
-    }
+    stty("echo");
+    println!();
     read.ok()?;
     Some(s.trim().to_string())
 }
 
+/// Absolute path, never a PATH lookup: this one runs while a passphrase is
+/// about to be typed. `system_tool` resolves a symlinked candidate as long as
+/// it stays in a system directory, which is what BusyBox's `/bin/stty ->
+/// /bin/busybox` needs. False here means the prompt refuses to run at all.
 fn stty(arg: &str) -> bool {
-    std::process::Command::new("stty")
-        .arg(arg)
-        .status()
-        .is_ok_and(|s| s.success())
+    paths::system_tool(&["/bin/stty", "/usr/bin/stty"]).is_some_and(|stty| {
+        std::process::Command::new(stty)
+            .arg(arg)
+            .status()
+            .is_ok_and(|s| s.success())
+    })
 }
 
 #[cfg(test)]

@@ -29,9 +29,9 @@ pub const CC_LOAD_LINES: usize = 200;
 /// rewrite MEMORY.md against a number it had to guess.
 pub fn resolve_budget(memdir: &Path) -> Result<(i64, Option<String>), String> {
     let path = memdir.join(".budget");
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((DEFAULT_BUDGET, None)),
+    let text = match paths::read_control_file(&path, 4096) {
+        Ok(Some(t)) => t,
+        Ok(None) => return Ok((DEFAULT_BUDGET, None)),
         Err(e) => return Err(format!("[subrosa] cannot read {}: {e}", path.display())),
     };
     match text.trim().parse::<i64>() {

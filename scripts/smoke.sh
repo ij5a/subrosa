@@ -14,6 +14,8 @@ ROOT="$(mktemp -d)"
 trap 'rm -rf "$ROOT"' EXIT
 export SUBROSA_DIR="$ROOT/data"
 export SUBROSA_PROJECTS_DIR="$ROOT/projects"
+# The hooks below must not start the background indexer — it downloads a model.
+export SUBROSA_SEMANTIC=off
 # Start from a clean mirror config so a developer's own env can't skew the run.
 unset SUBROSA_MIRROR SUBROSA_MIRROR_PASSPHRASE SUBROSA_DB 2>/dev/null || true
 mkdir -p "$SUBROSA_PROJECTS_DIR/-tmp-demo"
@@ -48,18 +50,31 @@ echo "$DUMP" | grep -q 'redacted' || fail "no redaction marker in the stored tur
 echo "smoke: pipeline + redaction ok"
 
 # --- semantic search with no model on disk ---
-# The point is that both entry points stay loud about a missing model instead of
-# falling back to keyword ranking. `embed` is run with a PATH that has no curl
-# on it, so this can never start the model download on a developer's machine.
-if EMB="$(PATH=/nonexistent-subrosa-smoke "$BIN" embed 2>&1)"; then fail "embed succeeded without a model"; fi
+# `semantic=off` (exported at the top) is a master switch: nothing reaches for
+# the model, whoever asked, and the refusal names the setting instead of dying
+# somewhere inside curl. Checked first, while nothing has touched the folder.
+if OFF="$(SUBROSA_CURL=/nonexistent-subrosa-smoke/curl "$BIN" embed 2>&1)"; then fail "embed succeeded with indexing off"; fi
+echo "$OFF" | grep -q 'semantic indexing is switched off' || fail "off did not refuse the download: $OFF"
+if echo "$OFF" | grep -q 'downloading'; then fail "off still tried to download: $OFF"; fi
+if [ -d "$SUBROSA_DIR/models" ]; then fail "off created the model folder"; fi
+SEM="$("$BIN" search --semantic xyzzycontrol)" || fail "search --semantic exited non-zero with no index"
+# Off and no model on disk: the advice has to be the one that works. Telling
+# someone to run `subrosa embed` here is a dead end, since off refuses the
+# download too.
+echo "$SEM" | grep -q 'automatic indexing is off' || fail "unexpected --semantic output: $SEM"
+echo "$SEM" | grep -q 'SUBROSA_SEMANTIC=on' || fail "--semantic did not say how to turn it back on: $SEM"
+if echo "$SEM" | grep -q 'run: subrosa embed'; then fail "--semantic gave advice that cannot work: $SEM"; fi
+# Switched back on, both entry points stay loud about a missing model instead of
+# falling back to keyword ranking. SUBROSA_CURL points at nothing, so this can
+# never start a real download on a developer's machine or in CI — curl is found
+# by absolute path now, so an empty PATH would not have stopped it.
+if EMB="$(SUBROSA_SEMANTIC=on SUBROSA_CURL=/nonexistent-subrosa-smoke/curl "$BIN" embed 2>&1)"; then fail "embed succeeded without a model"; fi
 echo "$EMB" | grep -q 'download these into' || fail "embed did not name the manual download path: $EMB"
 echo "$EMB" | grep -q 'huggingface.co/BAAI' || fail "embed did not print the model URLs: $EMB"
 # A hand-download has to be told to use the .part name: dropped at the final
 # path it would be trusted on size alone instead of being checksummed.
 echo "$EMB" | grep -q 'model.safetensors.part' || fail "embed did not ask for .part names: $EMB"
-SEM="$("$BIN" search --semantic xyzzycontrol)" || fail "search --semantic exited non-zero with no index"
-[ "$SEM" = "[subrosa] no embeddings yet — run: subrosa embed" ] || fail "unexpected --semantic output: $SEM"
-echo "smoke: semantic no-model ok"
+echo "smoke: semantic no-model + master switch ok"
 
 # --- encrypted mirror + restore ---
 MIRROR="$ROOT/mirror"

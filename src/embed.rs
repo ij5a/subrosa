@@ -7,6 +7,7 @@
 //! curl, which is the only thing in the tree that opens a socket. An HTTP
 //! client would be a much larger supply chain for a fetch that happens once.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::time::Duration;
@@ -18,6 +19,7 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
 use crate::paths;
+use crate::timeutil;
 use crate::wordpiece::Vocab;
 
 /// What the model is called on screen and on disk.
@@ -168,6 +170,13 @@ pub fn normalize(v: &mut [f32]) {
     }
 }
 
+/// Is the model already on disk, whole? Decides whether `subrosa embed` can do
+/// anything at all without the network — which is what the advice a search
+/// gives out has to be built on.
+pub fn model_ready() -> bool {
+    missing_files(&model_dir()).is_empty()
+}
+
 /// The files that aren't there at their pinned size yet.
 fn missing_files(dir: &Path) -> Vec<&'static (&'static str, u64, &'static str)> {
     FILES
@@ -182,6 +191,16 @@ fn ensure_model() -> Result<PathBuf, String> {
     let dir = model_dir();
     if missing_files(&dir).is_empty() {
         return Ok(dir);
+    }
+    // The one switch, one meaning: off means no subrosa process opens a socket,
+    // whoever asked. A model already on disk still loads above this line, so an
+    // index built before it was switched off keeps working.
+    if auto_off() {
+        return Err(format!(
+            "semantic indexing is switched off, so the {MODEL_NAME} model is not downloaded — \
+             remove `semantic=off` from {} (or set `semantic=on`) to turn it back on",
+            paths::config_path().display()
+        ));
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     // Only the slow path locks. Waiting behind a peer's download is the point,
@@ -212,6 +231,265 @@ fn download_lock() -> Result<Connection, String> {
         .map_err(fail)?;
     conn.execute_batch("BEGIN IMMEDIATE").map_err(fail)?;
     Ok(conn)
+}
+
+//--- the automatic indexer ---------------------------------------------------
+
+/// Where the run lock for a given database lives: beside the database itself,
+/// under its canonical path. Keying it to `SUBROSA_DIR` instead would let two
+/// data dirs pointed at one `SUBROSA_DB` take different locks and backfill the
+/// same archive at once. The path is canonicalized (the parent, when the file
+/// isn't there yet) so two spellings of one database still meet on one lock.
+fn lock_path(db: &Path) -> PathBuf {
+    let real = db.canonicalize().unwrap_or_else(|_| {
+        match (db.parent(), db.file_name()) {
+            (Some(dir), Some(name)) => dir.canonicalize().map(|d| d.join(name)),
+            _ => Err(std::io::Error::other("no parent")),
+        }
+        .unwrap_or_else(|_| db.to_path_buf())
+    });
+    let mut name = real.file_name().unwrap_or_default().to_os_string();
+    name.push(".embed-lock");
+    real.with_file_name(name)
+}
+
+/// The lock one indexing run holds, so two never embed the same turns at once.
+/// `Ok(None)` means another run has it. Same open-write-transaction trick as
+/// `download_lock`: holding the connection IS the lock, and a killed run
+/// releases it because the OS closes the file.
+pub fn run_lock(wait: Duration) -> Result<Option<Connection>, String> {
+    let db = paths::db_path();
+    if let Some(dir) = db.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let path = lock_path(&db);
+    let fail = |e: rusqlite::Error| format!("cannot lock {}: {e}", path.display());
+    let conn = Connection::open(&path).map_err(fail)?;
+    conn.busy_timeout(wait).map_err(fail)?;
+    match conn.execute_batch("BEGIN IMMEDIATE") {
+        Ok(()) => Ok(Some(conn)),
+        Err(e) if held_by_someone_else(&e) => Ok(None),
+        Err(e) => Err(fail(e)),
+    }
+}
+
+fn held_by_someone_else(e: &rusqlite::Error) -> bool {
+    matches!(
+        e.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
+
+/// Automatic indexing switched off — a config we can't read counts as off, so
+/// nothing downloads on a maybe. Use this wherever the answer is only yes/no;
+/// `paths::semantic_mode()` keeps the reason for the places that report it.
+pub fn auto_off() -> bool {
+    !matches!(paths::semantic_mode().as_deref(), Ok(m) if m != "off")
+}
+
+/// What the last automatic run left behind. `running` is written before the
+/// expensive work starts, so a run that is killed or runs out of memory still
+/// leaves something for the next hook to back off from; `failed` carries the
+/// error the run actually hit.
+pub struct Retry {
+    pub failures: u32,
+    /// The epoch second the next automatic attempt may start.
+    pub at: i64,
+    pub running: bool,
+    pub last_error: String,
+}
+
+/// How long a failed run waits before the next automatic attempt: an hour,
+/// doubling to a day. Typing `subrosa embed` ignores this and tries now.
+fn backoff_secs(failures: u32) -> i64 {
+    3600i64
+        .saturating_mul(1i64 << failures.saturating_sub(1).min(20))
+        .min(86_400)
+}
+
+/// The state file, read the way a hook has to read anything: only a regular
+/// file, never through a symlink, and never more than a few KB. A FIFO or a
+/// device node would block the hook forever and a huge file would eat its
+/// memory — both are worse than having no state at all.
+///
+/// ponytail: the stat and the open are two steps, so this trusts that nothing
+/// swaps the file in between. Anything that could is already inside the 0700
+/// data dir, where it can write the state file directly anyway.
+fn read_state() -> Option<String> {
+    match paths::read_control_file(&paths::embed_state_path(), 4096) {
+        Ok(text) => text,
+        // Unusable reads as healthy on purpose: the worst it costs is one
+        // wasted attempt, and that run replaces the file.
+        Err(e) => {
+            crate::hook::log(&format!("embed: ignoring the indexer state — {e}"));
+            None
+        }
+    }
+}
+
+/// The recorded state, or `None` when the last run finished cleanly. A file we
+/// can't read or parse reads as healthy: the worst that costs is one wasted
+/// attempt, and the run that follows replaces the file.
+pub fn retry_state() -> Option<Retry> {
+    let text = read_state()?;
+    let failures: u32 = paths::kv_get(&text, "failures")?.parse().ok()?;
+    let last: i64 = paths::kv_get(&text, "last_attempt")?.parse().ok()?;
+    Some(Retry {
+        failures,
+        at: last.saturating_add(backoff_secs(failures)),
+        running: paths::kv_get(&text, "state").as_deref() == Some("running"),
+        last_error: paths::kv_get(&text, "last_error").unwrap_or_default(),
+    })
+}
+
+/// True while the last run is still inside its retry window — whether it failed
+/// or was killed part way. Either way, another one now would just repeat it.
+pub fn retry_pending() -> bool {
+    retry_state().is_some_and(|r| timeutil::now_unix() <= r.at)
+}
+
+/// The last run that did NOT finish, for the lines that explain why the index
+/// is standing still. A `running` marker whose window has passed is a run that
+/// died without saying so, so it reports as an unfinished one rather than
+/// leaving the dashboard claiming progress that isn't happening.
+pub fn last_failure() -> Option<Retry> {
+    let r = retry_state()?;
+    match r.running && timeutil::now_unix() <= r.at {
+        true => None,
+        false => Some(r),
+    }
+}
+
+/// Note that a run is starting. Cleared on success, replaced by the real error
+/// on a clean failure — and left exactly as it is by a kill or an OOM, which is
+/// the whole point. Returns the attempt count so the failure that follows
+/// doesn't count the same run twice.
+pub fn record_attempt() -> u32 {
+    let failures = retry_state().map_or(0, |r| r.failures).saturating_add(1);
+    write_state(failures, true, "stopped before it finished");
+    failures
+}
+
+/// Remember why an automatic run failed, so the next ones back off instead of
+/// re-running something that can't work.
+pub fn record_failure(failures: u32, err: &str) {
+    write_state(failures, false, &one_line(err));
+}
+
+/// Failing to write this is worth a line: on a full disk the backoff itself is
+/// what can't be written, so nothing would ever back off and every session
+/// would retry — the one thing the backoff exists to stop.
+fn write_state(failures: u32, running: bool, err: &str) {
+    let state = if running { "running" } else { "failed" };
+    let path = paths::embed_state_path();
+    if let Err(e) = paths::write_control_file(
+        &path,
+        &format!(
+            "last_attempt={}\nfailures={failures}\nstate={state}\nlast_error={err}\n",
+            timeutil::now_unix()
+        ),
+    ) {
+        crate::hook::log(&format!(
+            "embed: cannot write {} — the next session will try again instead of backing off: {e}",
+            path.display()
+        ));
+    }
+}
+
+/// The cause, in one line. A model error can run to several — the first is what
+/// went wrong and the rest is the manual-download instructions, which belong in
+/// front of whoever typed the command, not in a log line or on the dashboard.
+/// The state file is KEY=VALUE and the hook log is one entry per line, so both
+/// need the short version anyway.
+pub fn one_line(err: &str) -> String {
+    let first = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let short: String = first.trim().chars().take(120).collect();
+    match first.trim().chars().count() > 120 {
+        true => format!("{short}…"),
+        false => short,
+    }
+}
+
+/// A run that finished is the healthy state, and healthy is no file at all.
+/// Every completed backfill clears it, typed or automatic — a hand-run
+/// `subrosa embed` that fixes the problem must not leave the hooks backing off.
+pub fn clear_failures() {
+    let path = paths::embed_state_path();
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        // Nothing to clear is the normal case, every run after the first.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        // Left behind, this reads as "waiting to retry" on a healthy install.
+        Err(e) => crate::hook::log(&format!("embed: cannot clear {} — {e}", path.display())),
+    }
+}
+
+/// The system `nice`, by absolute path. This runs on every session start and
+/// end, and a bare name there is a PATH lookup — someone else's binary waiting
+/// to be found. Not being at this path just means the run isn't niced.
+const NICE: &str = "/usr/bin/nice";
+
+/// Start the background indexing run and return — nothing waits on it. Skipped
+/// when semantic is off, or while the last run is inside its retry window; both
+/// are file reads, so a hook can call this without touching the database. What
+/// is left to index is the worker's own decision.
+pub fn spawn_if_due() {
+    match paths::semantic_mode() {
+        Ok(mode) if mode == "off" => return,
+        // Fail closed, and say why once: a config we can't read might say off.
+        Err(e) => return crate::hook::log(&format!("embed: not indexing — {e}")),
+        Ok(_) => {}
+    }
+    if retry_pending() {
+        return;
+    }
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => return crate::hook::log(&format!("embed: cannot find my own binary — {e}")),
+    };
+    let (exe, embed, auto) = (exe.as_os_str(), OsStr::new("embed"), OsStr::new("--auto"));
+    let plain = || detach(&[exe, embed, auto]);
+    // Niced when nice is where it always is; at normal priority when it isn't.
+    // Known limit: a successful spawn of nice tells us nothing about nice's own
+    // exec of our binary, so a stale exe path under a niced spawn is lost until
+    // the next session. Catching it needs a pipe and a handshake — not worth it
+    // for a case that self-heals.
+    let started = match Path::new(NICE).is_file() {
+        true => detach(&[
+            OsStr::new(NICE),
+            OsStr::new("-n"),
+            OsStr::new("10"),
+            exe,
+            embed,
+            auto,
+        ])
+        .or_else(|_| plain()),
+        false => plain(),
+    };
+    // Nothing else records this: the state file is written by the child, and
+    // there is no child. Without a line here the dashboard would go on saying
+    // the index is building.
+    if let Err(e) = started {
+        crate::hook::log(&format!(
+            "embed: could not start the background indexer — {e}"
+        ));
+    }
+}
+
+/// Spawn `argv` into a process group of its own, with no stdio and no wait.
+/// The new group is the whole point: a session ending signals the group its
+/// hooks ran in, and a child outside that group survives it, reparents to init
+/// and finishes the index. Claude Code caps a hook at 120s, so the work cannot
+/// live inside the hook.
+fn detach(argv: &[&OsStr]) -> std::io::Result<()> {
+    let mut cmd = Command::new(argv[0]);
+    cmd.args(&argv[1..])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    cmd.spawn().map(|_| ())
 }
 
 /// Where a file stands before curl runs.
@@ -316,7 +594,7 @@ fn fetch(dir: &Path, name: &str, size: u64, sha: &str) -> Result<(), String> {
     // would go on writing into a file a later run may adopt and promote. On the
     // pipe an orphan dies of SIGPIPE at its next write instead. Structural, so
     // there's no kill test — a flaky one wouldn't prove more than this comment.
-    let mut child = Command::new("curl")
+    let mut child = Command::new(curl_bin()?)
         .args(curl_args(at, &url))
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -344,6 +622,42 @@ fn fetch(dir: &Path, name: &str, size: u64, sha: &str) -> Result<(), String> {
         ));
     }
     promote(&part, &final_path, name)
+}
+
+/// The curl that fetches the model, by absolute path. This is the one process
+/// in the tree that opens a socket, so it is never looked up through PATH —
+/// that PATH belongs to whichever session's hook started the run. `SUBROSA_CURL`
+/// names it for the systems where it lives somewhere else (Nix, a slim
+/// container); that is a deliberate setting, not an ambient one.
+fn curl_bin() -> Result<PathBuf, String> {
+    if let Some(named) = std::env::var_os("SUBROSA_CURL").filter(|v| !v.is_empty()) {
+        let p = PathBuf::from(named);
+        // Absolute only, and the CANONICAL path is what runs. A relative
+        // `./curl` would pass a file check here and then go back through a PATH
+        // lookup at spawn time — the binary checked would not be the binary
+        // executed.
+        if !p.is_absolute() {
+            return Err(format!(
+                "cannot run curl: SUBROSA_CURL={} has to be an absolute path",
+                p.display()
+            ));
+        }
+        let real = p.canonicalize().map_err(|e| {
+            format!(
+                "cannot run curl: SUBROSA_CURL={} cannot be resolved: {e}",
+                p.display()
+            )
+        })?;
+        return match real.is_file() {
+            true => Ok(real),
+            false => Err(format!(
+                "cannot run curl: SUBROSA_CURL={} is not a file",
+                p.display()
+            )),
+        };
+    }
+    paths::system_tool(&["/usr/bin/curl", "/bin/curl"])
+        .ok_or_else(|| "cannot run curl: there is none at /usr/bin/curl or /bin/curl".to_string())
 }
 
 /// The argv for one download, resuming at byte `at`.
@@ -554,6 +868,52 @@ mod tests {
     fn the_storage_key_follows_the_pinned_revision() {
         assert_eq!(MODEL_KEY, format!("{MODEL_NAME}@{}", &REVISION[..8]));
         assert!(model_dir().ends_with(MODEL_KEY));
+    }
+
+    /// One database means one lock, however the process was pointed at it.
+    /// `SUBROSA_DB` can aim two different data dirs at the same archive, and a
+    /// lock keyed to the data dir would let both backfill it at once.
+    #[test]
+    fn one_database_is_one_lock_whatever_path_reaches_it() {
+        let dir = std::env::temp_dir().join(format!("subrosa-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        let db = dir.join("memory.db");
+        std::fs::write(&db, b"").unwrap();
+
+        // The same file, spelled three ways — a plain path, a dot segment, and
+        // a walk back out of a subdirectory.
+        let dotted = dir.join(".").join("memory.db");
+        let around = dir.join("nested").join("..").join("memory.db");
+        assert_eq!(lock_path(&db), lock_path(&dotted));
+        assert_eq!(lock_path(&db), lock_path(&around));
+        assert!(lock_path(&db).ends_with("memory.db.embed-lock"));
+
+        // A database that doesn't exist yet still resolves through its parent,
+        // which is the state of a first run.
+        let fresh = dir.join("other.db");
+        assert_eq!(
+            lock_path(&fresh),
+            lock_path(&dir.join("nested").join("..").join("other.db"))
+        );
+        // And two databases never share one lock.
+        assert_ne!(lock_path(&db), lock_path(&fresh));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The automatic indexer's retry schedule. A machine that stays offline
+    /// must slow down instead of re-trying the same download every session,
+    /// and the doubling must not overflow however long that goes on.
+    #[test]
+    fn the_retry_window_doubles_up_to_a_day() {
+        assert_eq!(backoff_secs(1), 3_600);
+        assert_eq!(backoff_secs(2), 7_200);
+        assert_eq!(backoff_secs(3), 14_400);
+        assert_eq!(backoff_secs(5), 57_600);
+        assert_eq!(backoff_secs(6), 86_400, "capped at a day");
+        assert_eq!(backoff_secs(u32::MAX), 86_400);
+        // No failure recorded still waits the first window rather than 0s.
+        assert_eq!(backoff_secs(0), 3_600);
     }
 
     #[test]

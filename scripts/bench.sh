@@ -14,6 +14,9 @@ BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
 
 export SUBROSA_DIR="$BENCH/data"
 export SUBROSA_PROJECTS_DIR="$BENCH/projects"
+# No background indexer during a benchmark: it would download the model and
+# compete for cores with the very thing being timed.
+export SUBROSA_SEMANTIC=off
 
 # Deterministic synthetic transcripts: prose + identifiers + tool records across
 # 8 projects, shaped like real Claude Code JSONL. awk with a hand-rolled LCG so

@@ -16,8 +16,8 @@ Every session is archived into a local SQLite database and made searchable: last
 
 - **No LLM calls to save memory.** Saving a session is plain-text parsing — zero tokens. Most memory plugins run your sessions through an LLM to save them ([the comparison](docs/comparison.md) has the numbers, from their own docs).
 - **Hard token limits, set in the code.** Recall adds ~180 tokens on a strong match, usually nothing — it stays silent otherwise. The always-loaded index is capped at 23 KB by default. [Check it yourself](#proof-verify-it-yourself), or see [where your tokens go](docs/faq.md#how-many-tokens-does-it-cost-me).
-- **One ~5 MB static binary.** No daemon, no worker port, no background process — a per-prompt hook fires, finishes in under 10 ms, and exits. (The daily backup at session end takes a second or two when mirror encryption is on.)
-- **Your transcripts stay on your machine.** No cloud, no telemetry, and obvious secret shapes are masked before storage. The binary opens no sockets; the one opt-in feature that needs the internet at all (`search --semantic`) downloads its model once and then runs it on your machine. [Verify every claim yourself](#proof-verify-it-yourself).
+- **One ~5 MB static binary.** No daemon, no worker port — a per-prompt hook fires, finishes in under 10 ms, and exits. The only background work is a finite indexing pass for semantic search that exits when it's done. (The daily backup at session end takes a second or two when mirror encryption is on.)
+- **Your transcripts stay on your machine.** No cloud, no telemetry, and obvious secret shapes are masked before storage. The first time subrosa runs it downloads its search model (~133 MB, one time, from Hugging Face, sha256-pinned, through your own `curl`). That is a download only — nothing you typed, stored, or searched is ever sent anywhere. `semantic=off` in the config keeps every subrosa process off the network entirely. [Verify every claim yourself](#proof-verify-it-yourself).
 
 <p align="center">
   <img src="assets/demo.gif" alt="subrosa demo: search the archive, automatic recall on a prompt, dashboard" width="800">
@@ -93,11 +93,12 @@ subrosa          # the dashboard
 - **Recalls on its own.** A prompt with enough distinctive terms pulls the top matching past sessions from the same project into context — silent unless the match is strong.
 - **Builds long-term memory.** Ended sessions queue up; `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog` distill them into curated facts (one per small markdown file). `subrosa generate` then renders `MEMORY.md` — a short, size-capped index Claude Code loads every session, and `subrosa fact search` finds a specific fact once a project has dozens.
 - **Makes everything searchable.** `subrosa search <terms>` runs ranked full-text search — identifiers like `my-app-prod` or `TICKET-123` stay exact. Narrow with `--project`/`--after`/`--before`/`--tag`, read around a hit with `-C/--context`, filter with `--exclude` (drop a term) and `--any` (match any term, not all), or fall back to `--fuzzy` for partial names and small typos.
+- **Ranks by meaning too.** `subrosa search --semantic 'why did checkout get slow'` finds turns that share no word with your query. The index behind it builds itself: on the first run a ~133 MB model is downloaded once, then everything happens on your machine, and later sessions are picked up as they're archived. `semantic=off` in the config turns it off.
 - **Lists and filters sessions.** `subrosa sessions` shows past sessions newest-first, filterable by `--project`, date (`--after`/`--before`), and `--tag`. Each session carries auto-derived tags (`tool:bash`, `ext:rs`, `topic:cache-prod`) — computed locally at archive time, so they cost zero tokens and nothing to maintain.
 - **Shows what clusters together.** `subrosa related <identifier>` ranks the terms and sessions that recur alongside something like `auth.ts` or `TICKET-123` — read from the archive, not guessed. It answers "what did this work touch," which `search` can't.
 - **Follows your curated links.** Notes link to each other with `[[name]]`; `subrosa fact link <slug>` shows what a note links to and what links back, and flags dead links.
 - **Catches broken notes.** `subrosa fact doctor` lints a project's memory folder and names what's wrong: frontmatter that's missing, unclosed, or spliced (the shape that leaves a note on disk that quietly stops loading), duplicate name slugs, dead links, and facts pointing at files that are gone. Read-only — it reports the fix, it never edits a note.
-- **Shows you the picture.** `subrosa` alone prints the dashboard: activity sparkline, store size, per-project share, index budget.
+- **Shows you the picture.** `subrosa` alone prints the dashboard: activity sparkline, store size, per-project share, index budget, and how far the semantic index has got.
 - **Backs itself up.** Consistent snapshots on a 24h throttle, plus an optional mirror of the latest to a folder you pick. Set a passphrase and the mirror copy is encrypted (XChaCha20-Poly1305, key from argon2id); `subrosa restore` reads it back.
 - **Masks secrets at the door.** Private key blocks, AWS keys, bearer tokens, and `password=`-style values are redacted before they're written. A `passphrase=` line is masked all the way to the end of that line, because a passphrase can contain spaces.
 
@@ -114,7 +115,7 @@ subrosa search api --tag tool:kubectl    # only sessions that used a given tool 
 subrosa search pgbouncer -C 2            # print 2 turns on each side of every hit (read around the match)
 subrosa search timeout --exclude test    # drop hits that also mention a term (repeat --exclude to add more)
 subrosa search redis valkey --any        # match any of the terms (OR) instead of all (AND)
-subrosa embed                            # one-time: precompute embeddings (opt-in; downloads a ~133 MB model on first run)
+subrosa embed                            # index for semantic search right now (it's automatic — you never have to type this)
 subrosa embed --rebuild                  # drop the stored vectors and embed everything again
 subrosa search --semantic 'why did checkout get slow'   # rank by meaning, no shared word needed
 subrosa related cache-prod               # terms + sessions that co-occur with an identifier
@@ -208,18 +209,21 @@ Together they add about 250 tokens of always-loaded context — your call. The f
 | Snapshots | `~/.claude/subrosa/backups/` | Last 7 kept, owner-only permissions |
 | Mirror | the folder you picked in `subrosa setup` | A single static snapshot file is safe to sync; encrypted as `subrosa-latest.db.enc` when you set a passphrase |
 | Checkpoint queue | `~/.claude/subrosa/pending-checkpoint.log` | Plain text, one session per line |
-| Embedding model | `~/.claude/subrosa/models/` | Only if you run `subrosa embed`; ~133 MB, downloaded once and checksum-verified |
+| Embedding model | `~/.claude/subrosa/models/` | ~133 MB, downloaded once on the first run and checksum-verified; `semantic=off` skips it |
+| Indexer retry state | `~/.claude/subrosa/embed.state` | Only after a failed index run — when to try again. Gone means healthy |
 
-Everything is overridable with env vars: `SUBROSA_DIR`, `SUBROSA_DB`, `SUBROSA_PROJECTS_DIR`, `SUBROSA_PENDING_LOG`, `SUBROSA_MIRROR`, `SUBROSA_MIRROR_PASSPHRASE`, `SUBROSA_CHECKPOINT_NUDGE`.
+Everything is overridable with env vars: `SUBROSA_DIR`, `SUBROSA_DB`, `SUBROSA_PROJECTS_DIR`, `SUBROSA_PENDING_LOG`, `SUBROSA_MIRROR`, `SUBROSA_MIRROR_PASSPHRASE`, `SUBROSA_CHECKPOINT_NUDGE`, `SUBROSA_SEMANTIC`, `SUBROSA_CURL`.
 
-Three settings also live in `~/.claude/subrosa/config` (plain `KEY=VALUE`, mode `0600`): `mirror` (the snapshot folder, or `none`), `mirror_passphrase` (set it and the mirror copy is encrypted; leave it out and the mirror stays plaintext), and `checkpoint_nudge` — `loud` (default, the `ACTION REQUIRED` block), `quiet` (a one-line reminder), or `off`. The matching env var wins when set, with one exception: `none` turns mirroring off whichever side says it, so `mirror=none` in the config also switches off a `SUBROSA_MIRROR` override — and `SUBROSA_MIRROR=none` switches off a configured folder. Delete the line, unset the variable, or re-run `subrosa setup`, to mirror again. Turning it off only stops subrosa writing there: if the other side still names a real folder, `subrosa restore` goes on refusing to put a readable copy into it.
+subrosa runs `curl` for the one-time model download and looks for it at `/usr/bin/curl` then `/bin/curl` — never through `PATH`, which belongs to whichever session's hook started the run. Set `SUBROSA_CURL` to its full absolute path if yours lives somewhere else (Nix, a slim container).
+
+Four settings also live in `~/.claude/subrosa/config` (plain `KEY=VALUE`, mode `0600`): `mirror` (the snapshot folder, or `none`), `mirror_passphrase` (set it and the mirror copy is encrypted; leave it out and the mirror stays plaintext), `checkpoint_nudge` — `loud` (default, the `ACTION REQUIRED` block), `quiet` (a one-line reminder), or `off` — and `semantic`, where `semantic=off` stops the automatic indexing, the model download, and with it every network call subrosa can make. The matching env var wins when set, with one exception: `none` turns mirroring off whichever side says it, so `mirror=none` in the config also switches off a `SUBROSA_MIRROR` override — and `SUBROSA_MIRROR=none` switches off a configured folder. Delete the line, unset the variable, or re-run `subrosa setup`, to mirror again. Turning it off only stops subrosa writing there: if the other side still names a real folder, `subrosa restore` goes on refusing to put a readable copy into it.
 
 ## Privacy model
 
-- **Local-only.** Recall reads only your local database, and hook output goes only into your own session. No hook, no ingest and no recall ever opens a socket.
+- **Local-only.** Recall reads only your local database, and hook output goes only into your own session. No hook, no ingest and no recall ever opens a socket. A session start hands the indexing run to a separate process and never waits for it; that process is the only thing that fetches the model, once.
 - **Locked down.** The database and its folder are readable only by you (`0600`/`0700`), and secret shapes are redacted before storage.
 - **One opt-in exit, yours.** A backup-mirror snapshot leaves the machine only if you point it at a synced folder (off by default; set a mirror passphrase and that copy goes out encrypted). The live database is never synced.
-- **Nothing you typed is ever uploaded.** The one time subrosa reaches the internet is the model download for `subrosa embed`, which only pulls files down. Your turns and your queries are embedded on your own machine, by a model on your own disk.
+- **Nothing you typed is ever uploaded.** The one time subrosa reaches the internet is the model download, which only pulls files down. Your turns and your queries are embedded on your own machine, by a model on your own disk. `semantic=off` skips even that.
 
 Full limits — what redaction misses, why the archive isn't encrypted, what recall re-injects — are in the [FAQ](docs/faq.md#what-does-subrosa-not-protect).
 
@@ -232,10 +236,11 @@ Claims are only worth the commands that check them. The whole thing is ~9,000 li
 | Token limits are constants in the code | read `MAX_INJECT` + `SNIPPET_CHARS` in `src/recall.rs`, `DEFAULT_BUDGET` in `src/generate.rs` | `MAX_INJECT = 3`, `SNIPPET_CHARS = 160` (≈ 180 tokens at recall), and a 23 KB index budget — values you can read, not settings that drift. Raise it per project with `echo 24500 > <memdir>/.budget` (Claude stops reading past ~25 KB / line 200) |
 | Recall stays near ~180 tokens a prompt | `scripts/bench.sh` — the `recall injection` line | the injected block weighed in bytes → ~180 tokens on a strong match (3 snippets) |
 | No networking library in the build | `cargo tree -e normal \| grep -Ei 'reqwest\|hyper\|tokio\|rustls\|openssl\|curl'` | no output — no HTTP or networking library at all. Trace a hook or a search with `strace`/`dtruss` and see no `connect()`. The one-time model download runs your own `curl`, as a separate process you can watch |
+| The background indexer is finite | `subrosa` (the dashboard `semantic` line) · `pgrep -f 'subrosa embed'` | a progress count that reaches "ready", and no process left behind once it does — it is started by a session hook, not a service |
 | The embedding model is pinned | read `FILES` + `REVISION` in `src/embed.rs` | one revision of `BAAI/bge-small-en-v1.5` and a sha256 per file; a download that doesn't match is deleted, not loaded |
 | The supply chain is small and audited | `cargo tree --depth 1` · `cargo audit` | 11 direct dependencies, no known advisories; CI runs `cargo audit` on every push, and release binaries ship a pinned `sha256sums.txt` |
 
-More checks (redaction, file permissions, no background process) and the honest limits are in the [FAQ](docs/faq.md#what-does-subrosa-not-protect).
+More checks (redaction, file permissions, no daemon) and the honest limits are in the [FAQ](docs/faq.md#what-does-subrosa-not-protect).
 
 ## Performance
 
@@ -253,7 +258,7 @@ A hook that runs on every prompt has to be invisible. Measured with `scripts/ben
 | `subrosa related <identifier>` over 50,000 turns | 0.3–0.4 s |
 | Archiving 50,000 turns from scratch (first install) | ~1.5 s |
 
-One static ~5 MB binary, no background process, no runtime dependencies. (Opt-in semantic search adds a ~133 MB model file on disk — nothing else changes.)
+One static ~5 MB binary, no daemon, no runtime dependencies. (Semantic search adds a ~133 MB model file on disk and one background indexing pass that exits when it's done — nothing else changes.)
 
 ## Development
 

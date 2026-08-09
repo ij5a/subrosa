@@ -129,15 +129,19 @@ enum Cmd {
         /// Also print N turns on each side of every hit (same session), for context
         #[arg(short = 'C', long, default_value_t = 0)]
         context: i64,
-        /// Rank by meaning using precomputed embeddings (run `subrosa embed` first)
+        /// Rank by meaning instead of keywords (the index behind it builds itself)
         #[arg(long)]
         semantic: bool,
     },
-    /// Precompute turn embeddings locally (downloads the model once, ~133 MB)
+    /// Index turns for semantic search now — normally automatic (downloads the model once, ~133 MB)
     Embed {
         /// Drop this model's stored vectors first, then embed every turn again
         #[arg(long)]
         rebuild: bool,
+        /// The background run subrosa starts for itself: silent, low priority,
+        /// gives up if another run is going
+        #[arg(long, hide = true)]
+        auto: bool,
     },
     /// Find terms and sessions that co-occur with an identifier across the archive
     Related {
@@ -345,7 +349,7 @@ fn main() -> ExitCode {
             context,
             semantic,
         ),
-        Cmd::Embed { rebuild } => search::embed_backfill(rebuild),
+        Cmd::Embed { rebuild, auto } => search::embed_backfill(rebuild, auto),
         Cmd::Related {
             identifier,
             limit,
@@ -525,8 +529,15 @@ fn run_ingest(paths: Vec<PathBuf>, sweep: bool, quiet: bool) -> ExitCode {
 
 /// Print the queue, deduped by session id (a session can fire SessionEnd more than once).
 fn run_pending() -> ExitCode {
-    let Ok(text) = std::fs::read_to_string(paths::pending_log()) else {
-        return ExitCode::SUCCESS; // no queue file = empty queue
+    let text = match paths::read_control_file(&paths::pending_log(), paths::CONTROL_FILE_MAX) {
+        Ok(Some(t)) => t,
+        Ok(None) => return ExitCode::SUCCESS, // no queue file = empty queue
+        // Never a silent empty queue: that reads as "nothing to check point"
+        // exactly when something is wrong with the file holding the backlog.
+        Err(e) => {
+            eprintln!("[subrosa] cannot read the checkpoint queue: {e}");
+            return ExitCode::FAILURE;
+        }
     };
     let mut seen = std::collections::HashSet::new();
     for line in text.lines() {
@@ -558,9 +569,18 @@ fn restore_sigpipe() {}
 
 fn run_checkpoint_clear() -> ExitCode {
     let pending = paths::pending_log();
-    let Ok(text) = std::fs::read_to_string(&pending) else {
-        println!("[subrosa] queue empty");
-        return ExitCode::SUCCESS;
+    let text = match paths::read_control_file(&pending, paths::CONTROL_FILE_MAX) {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            println!("[subrosa] queue empty");
+            return ExitCode::SUCCESS;
+        }
+        // Clearing a queue we could not read would throw away a backlog
+        // without ever showing what was in it.
+        Err(e) => {
+            eprintln!("[subrosa] cannot read the checkpoint queue: {e}");
+            return ExitCode::FAILURE;
+        }
     };
     let n = text
         .lines()

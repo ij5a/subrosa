@@ -8,7 +8,7 @@ use std::process::{Command, ExitCode};
 use rusqlite::Connection;
 
 use crate::timeutil::{civil_from_days, civil_to_days, fmt_ts, now_unix, parse_ts, parse_ymd};
-use crate::{db, generate, ingest, paths};
+use crate::{db, embed, generate, ingest, paths};
 
 // Path segments that name containers, not the project itself — dropped when shortening a label.
 const CONTAINER_TOKENS: &[&str] = &[
@@ -134,6 +134,25 @@ fn human(n: i64) -> String {
         v /= 1000.0;
     }
     format!("{:.1}T", v)
+}
+
+/// Exact count, grouped in threes. The index line compares two numbers that
+/// often differ by a handful of turns, and `human` rounds both to "6.0K" —
+/// "6.0K of 6.0K done" reads as frozen exactly when someone is watching it.
+fn commas(n: i64) -> String {
+    let digits = n.unsigned_abs().to_string();
+    let mut out = if n < 0 {
+        "-".to_string()
+    } else {
+        String::new()
+    };
+    for (i, c) in digits.char_indices() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn human_bytes(n: u64, space: bool) -> String {
@@ -418,7 +437,11 @@ fn tilde(path: &str) -> String {
 // interactive prompt; repo-local helper config (fsmonitor) is neutralized so
 // reading an untrusted working dir can never spawn its programs.
 fn git_run_in(cwd: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
+    // Absolute path only. No git there means no repo label on the dashboard,
+    // which is a cosmetic loss; a git found through PATH is an arbitrary
+    // program run against the directory you happen to be sitting in.
+    let git = paths::system_tool(&["/usr/bin/git", "/bin/git"])?;
+    let out = Command::new(git)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "echo")
         .env("SSH_ASKPASS", "echo")
@@ -487,14 +510,85 @@ fn last_backup_age_secs() -> Option<u64> {
     newest.elapsed().ok().map(|d| d.as_secs())
 }
 
-fn pending_count() -> usize {
-    let text = std::fs::read_to_string(paths::pending_log()).unwrap_or_default();
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(ingest::queue_sid)
-        .collect::<HashSet<_>>()
-        .len()
+/// Where the semantic index stands, in one plain line. Nothing here starts a
+/// run or touches the network — the dashboard only reports. Counted over the
+/// same set the backfill works from: turns that hold text.
+fn semantic_line(conn: &Connection) -> String {
+    match paths::semantic_mode() {
+        Ok(mode) if mode == "off" => {
+            return format!(
+                "{} {}",
+                c1("off", "gray"),
+                c1("(semantic=off in config)", "gray")
+            )
+        }
+        // An unreadable config counts as off everywhere else, so it reads off
+        // here too — with the reason, since this is the diagnostic view.
+        Err(e) => return format!("{} {}", c1("off", "gray"), c1(&format!("({e})"), "yellow")),
+        Ok(_) => {}
+    }
+    // The recorded error, not a guess: "offline?" is wrong when the truth is a
+    // full disk or a checksum that didn't match.
+    if let Some(r) = embed::last_failure() {
+        return c1(
+            &format!(
+                "waiting to retry — the last run didn't finish ({}) — retries on its own",
+                r.last_error
+            ),
+            "yellow",
+        );
+    }
+    let total: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM turns WHERE text IS NOT NULL AND text <> ''",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    // The table is created on first use, so a missing one just reads as zero.
+    let done: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM turn_embeddings e JOIN turns t ON t.id = e.turn_id \
+             WHERE e.model = ?1 AND t.text IS NOT NULL AND t.text <> ''",
+            [embed::MODEL_KEY],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if done >= total {
+        return format!(
+            "{} {}",
+            c1("ready", "green"),
+            c1(&format!("— all {} turns indexed", commas(total)), "gray")
+        );
+    }
+    format!(
+        "{} {}",
+        c1("building the index", "yellow"),
+        c1(
+            &format!(
+                "— {} of {} turns done (finishes on its own; searches already work, newest first)",
+                commas(done),
+                commas(total)
+            ),
+            "gray"
+        )
+    )
+}
+
+/// `None` when the queue can't be read — the dashboard says so rather than
+/// drawing a reassuring zero over a file that is actually broken.
+fn pending_count() -> Option<usize> {
+    let text = paths::read_control_file(&paths::pending_log(), paths::CONTROL_FILE_MAX)
+        .ok()?
+        .unwrap_or_default();
+    Some(
+        text.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(ingest::queue_sid)
+            .collect::<HashSet<_>>()
+            .len(),
+    )
 }
 
 // ---- current-context resolution ---------------------------------------------
@@ -938,7 +1032,7 @@ fn render_table(
     }
 }
 
-fn render(stats: &Stats, ctx: &CurrentContext, detail: bool) {
+fn render(conn: &Connection, stats: &Stats, ctx: &CurrentContext, detail: bool) {
     let term_w = term_width();
     let avail = (term_w as isize - 2).max(10) as usize;
 
@@ -1075,7 +1169,7 @@ fn render(stats: &Stats, ctx: &CurrentContext, detail: bool) {
                 sline(
                     "updated",
                     &format!("{} {}", fmt_ts(ts), c1(&format!("({})", ago(ts)), "gray")),
-                    7
+                    8
                 )
             );
         }
@@ -1094,7 +1188,7 @@ fn render(stats: &Stats, ctx: &CurrentContext, detail: bool) {
                     "gray"
                 )
             ),
-            7
+            8
         )
     );
 
@@ -1150,7 +1244,7 @@ fn render(stats: &Stats, ctx: &CurrentContext, detail: bool) {
                     c1(&format!("{:.0}%", frac * 100.0), col),
                     over
                 ),
-                7
+                8
             )
         );
     } else {
@@ -1163,7 +1257,7 @@ fn render(stats: &Stats, ctx: &CurrentContext, detail: bool) {
                     c1("—", "dim"),
                     c1("  no MEMORY.md for this project", "gray")
                 ),
-                7
+                8
             )
         );
     }
@@ -1184,13 +1278,14 @@ fn render(stats: &Stats, ctx: &CurrentContext, detail: bool) {
                 c1("·", "gray"),
                 btxt
             ),
-            7
+            8
         )
     );
 
-    let pend = pending_count();
-    if pend > 0 {
-        println!(
+    println!("{}", sline("semantic", &semantic_line(conn), 8));
+
+    match pending_count() {
+        Some(pend) if pend > 0 => println!(
             "{}",
             sline(
                 "ckpt",
@@ -1199,9 +1294,23 @@ fn render(stats: &Stats, ctx: &CurrentContext, detail: bool) {
                     c1(&format!("{} pending", pend), "yellow"),
                     c1("  run /checkpoint", "gray")
                 ),
-                7
+                8
             )
-        );
+        ),
+        Some(_) => {}
+        // A queue we can't read is louder than one that's empty: the backlog
+        // is invisible exactly when something is wrong with the file holding it.
+        None => println!(
+            "{}",
+            sline(
+                "ckpt",
+                &c1(
+                    "unreadable — check ~/.claude/subrosa/pending-checkpoint.log",
+                    "bred"
+                ),
+                8
+            )
+        ),
     }
 
     // ---- detail section ----
@@ -1317,6 +1426,24 @@ pub fn run(args: &Args) -> ExitCode {
     };
 
     let ctx = current_context(&conn);
-    render(&stats, &ctx, args.detail);
+    render(&conn, &stats, &ctx, args.detail);
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::commas;
+
+    /// The index line's whole job is being readable at a glance, and the
+    /// grouping is where an off-by-one hides.
+    #[test]
+    fn counts_group_every_three_digits() {
+        assert_eq!(commas(0), "0");
+        assert_eq!(commas(999), "999");
+        assert_eq!(commas(1_000), "1,000");
+        assert_eq!(commas(6_027), "6,027");
+        assert_eq!(commas(127_688), "127,688");
+        assert_eq!(commas(1_234_567), "1,234,567");
+        assert_eq!(commas(-1_234), "-1,234");
+    }
 }

@@ -54,7 +54,9 @@ fn base_cmd(env: &TestEnv) -> Command {
         }
     }
     cmd.env("SUBROSA_DIR", &env.data)
-        .env("SUBROSA_PROJECTS_DIR", &env.projects);
+        .env("SUBROSA_PROJECTS_DIR", &env.projects)
+        // Never let a test start the background indexer — it downloads a model.
+        .env("SUBROSA_SEMANTIC", "off");
     cmd
 }
 

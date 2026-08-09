@@ -614,4 +614,48 @@ END;
         drop(conn);
         let _ = fs::remove_file(&p);
     }
+
+    /// The first-ever call races the hooks: the background indexer creates this
+    /// table while a session is still writing turns. It works because the call
+    /// arrives in autocommit — `connect()` leaves no transaction open — so the
+    /// create is a write of its own and the busy handler waits the other writer
+    /// out. What must never happen is calling this from inside an already-open
+    /// read transaction: promoting one comes back SQLITE_BUSY at once, with
+    /// busy_timeout never getting a say. This test is the guard on that.
+    /// Only the first call writes at all; once the table is there it's a read.
+    #[test]
+    fn creating_the_embeddings_table_waits_for_a_writer_instead_of_failing() {
+        let p = std::env::temp_dir().join(format!("subrosa-emb-busy-{}.db", std::process::id()));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = fs::remove_file(format!("{}{suffix}", p.display()));
+        }
+        let conn = Connection::open(&p).unwrap();
+        init_schema(&conn).unwrap();
+        conn.busy_timeout(Duration::from_secs(10)).unwrap();
+
+        // A second connection holding an open write transaction, exactly like a
+        // hook mid-ingest.
+        let holder = Connection::open(&p).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+        holder
+            .execute(
+                "INSERT INTO turns(session_id, seq, text) VALUES('s1', 0, 'mid-ingest')",
+                [],
+            )
+            .unwrap();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            holder.execute_batch("COMMIT").unwrap();
+        });
+
+        ensure_embeddings_table(&conn).expect("must wait out the writer, not return BUSY");
+        writer.join().unwrap();
+        // Idempotent, and from here on it's the cheap read path.
+        ensure_embeddings_table(&conn).unwrap();
+
+        drop(conn);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = fs::remove_file(format!("{}{suffix}", p.display()));
+        }
+    }
 }

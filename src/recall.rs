@@ -44,6 +44,12 @@ const MAX_MIN_REQUIRED: usize = 3;
 // Trim the dedup log once it's clearly past any live-session working set.
 const SEEN_TRIM_AT: usize = 4000;
 const SEEN_KEEP: usize = 2000;
+/// The other trim trigger. Comfortably under `CONTROL_FILE_MAX`, so the file
+/// is cut back long before it grows past what the reader will accept.
+const SEEN_TRIM_BYTES: u64 = 512 * 1024;
+/// Longest line the dedup log can hold. Ours are two ids and a tab; anything
+/// longer came from somewhere else and is dropped on the next trim.
+const SEEN_LINE_MAX: usize = 512;
 
 /// Source sessions already injected into this live session — never repeat them.
 /// Takes the log text (read once per prompt) rather than re-reading the file.
@@ -65,7 +71,7 @@ pub fn forget_session(log: &Path, session: &str) {
     if session.is_empty() {
         return;
     }
-    let Ok(text) = std::fs::read_to_string(log) else {
+    let Ok(Some(text)) = paths::read_control_file(log, paths::CONTROL_FILE_MAX) else {
         return;
     };
     let keep: Vec<&str> = text
@@ -82,38 +88,108 @@ pub fn forget_session(log: &Path, session: &str) {
         } else {
             keep.join("\n") + "\n"
         };
-        let _ = std::fs::write(log, body);
+        let _ = paths::write_control_file(log, &body);
     }
 }
 
 /// Best-effort append (+ occasional trim) of injected source sessions. No
 /// locking: a lost line costs one repeated injection at worst. `seen_text` is
 /// the log content this prompt already read — no second read on the hot path.
+///
+/// Opening is guarded the same way the read is: appending to a FIFO blocks
+/// until someone reads it, and this runs on every prompt.
 fn remember_injected<'a>(
     log: &Path,
     seen_text: &str,
     session: &str,
     sids: impl Iterator<Item = &'a str>,
 ) {
-    if session.is_empty() {
+    if session.is_empty() || !paths::appendable(log) {
         return;
     }
     if let Some(parent) = log.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    // What this prompt is about to add, measured, because the file has to be
+    // under the threshold once those lines are in it too. Held to the same
+    // length bound as anything already in there: an oversized new line must
+    // not be the thing that pushes the file past the cap.
+    let additions: Vec<String> = sids
+        .map(|sid| format!("{session}\t{sid}\n"))
+        .filter(|l| l.len() <= SEEN_LINE_MAX)
+        .collect();
+    let adding: u64 = additions.iter().map(|l| l.len() as u64).sum();
+
     let lines: Vec<&str> = seen_text.lines().collect();
-    if lines.len() > SEEN_TRIM_AT {
-        let _ = std::fs::write(log, lines[lines.len() - SEEN_KEEP..].join("\n") + "\n");
+    let on_disk = std::fs::metadata(log).map(|m| m.len()).unwrap_or(0);
+    // Trimmed on line count OR on bytes. Counting lines alone is not enough:
+    // one pathological line keeps the file over the read cap forever, and past
+    // that cap the dedup goes dark for good.
+    if lines.len() > SEEN_TRIM_AT || on_disk + adding > SEEN_TRIM_BYTES {
+        let body = tail_within(&lines, SEEN_TRIM_BYTES.saturating_sub(adding));
+        // A trim that fails and an append that succeeds is the worst pair:
+        // the file grows past the read cap, and past it reading and healing
+        // both fail, so recall goes quiet on every future prompt with no way
+        // back. Leave the file exactly as it was instead.
+        if paths::write_control_file(log, &body).is_err() {
+            return;
+        }
     }
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .append(true)
         .create(true)
         .open(log)
     {
-        for sid in sids {
-            let _ = writeln!(f, "{session}\t{sid}");
+        for line in &additions {
+            let _ = f.write_all(line.as_bytes());
         }
     }
+}
+
+/// The newest lines that fit in `budget` bytes once written back, oldest
+/// first. Lines past `SEEN_LINE_MAX` are dropped rather than kept: one of them
+/// alone can hold the file over the cap, and nothing we write is ever that
+/// long — two ids and a tab.
+fn tail_within(lines: &[&str], budget: u64) -> String {
+    let mut used = 0u64;
+    let mut keep: Vec<&str> = Vec::new();
+    for line in lines.iter().rev().take(SEEN_KEEP) {
+        if line.len() > SEEN_LINE_MAX {
+            continue;
+        }
+        let cost = line.len() as u64 + 1;
+        if used + cost > budget {
+            break;
+        }
+        used += cost;
+        keep.push(line);
+    }
+    keep.reverse();
+    match keep.is_empty() {
+        true => String::new(),
+        false => keep.join("\n") + "\n",
+    }
+}
+
+/// A dedup log that has outgrown the read cap can never be read again, so the
+/// dedup would stay dark forever and every prompt would re-inject the same
+/// sessions. Emptying it costs one repeated injection and gets it back.
+fn heal_seen_log(log: &Path) {
+    // Only an oversized plain file of ours. Anything else — a FIFO, a symlink
+    // pointing somewhere odd — is left exactly as it is.
+    if std::fs::symlink_metadata(log).is_ok_and(|m| m.is_file() && m.len() > SEEN_TRIM_BYTES) {
+        let _ = paths::write_control_file(log, "");
+        return;
+    }
+    // Nothing we can fix, so recall will stay quiet from here on. This is the
+    // UserPromptSubmit path — stdout belongs to the injected context — so the
+    // only place to say so is the log. One line a prompt is noisy; a silent
+    // hole with no trail anywhere is worse.
+    crate::hook::log(&format!(
+        "recall off: {} can't be read and isn't a plain file we can reset — \
+         delete it to bring recall back",
+        log.display()
+    ));
 }
 
 /// Date part of the stored ISO timestamp (stored zone, ~UTC — same display
@@ -285,7 +361,17 @@ pub fn run(input: &Value) -> Option<String> {
 
     // One hit per session; skip sources already injected into this live session; top 3.
     let seen_log = paths::recall_seen_log();
-    let seen_text = std::fs::read_to_string(&seen_log).unwrap_or_default();
+    let seen_text = match paths::read_control_file(&seen_log, paths::CONTROL_FILE_MAX) {
+        Ok(text) => text.unwrap_or_default(),
+        // Unusable dedup state is not the same as an empty one: injecting now
+        // would be blind, since we could not record what went out, and the same
+        // sessions would come back on every prompt. Stay quiet — and empty a
+        // log that has simply outgrown the cap so the next prompt works.
+        Err(_) => {
+            heal_seen_log(&seen_log);
+            return None;
+        }
+    };
     let already = already_injected(&seen_text, cur_session);
     let mut picked: Vec<Candidate> = Vec::new();
     let mut seen_sessions = HashSet::new();
@@ -339,6 +425,35 @@ pub fn run(input: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The trim has to leave the file provably under the threshold, in BYTES.
+    /// Keeping a fixed number of lines doesn't: one oversized line survives
+    /// every trim and holds the file over the read cap for good, after which
+    /// the dedup goes dark and recall re-injects the same sessions forever.
+    #[test]
+    fn the_trim_bounds_bytes_not_just_lines() {
+        let long = "x".repeat(SEEN_LINE_MAX + 1);
+        let normal = "sess-aaaa\tsrc-bbbb";
+        let lines: Vec<&str> = vec![&long, normal, &long, normal, normal];
+
+        // Way past the bound: only the ordinary lines come back, newest last,
+        // and the result really is under budget.
+        let body = tail_within(&lines, 1024);
+        assert!(!body.contains('x'), "an oversized line survived: {body:?}");
+        assert_eq!(body, format!("{normal}\n{normal}\n{normal}\n"));
+        assert!((body.len() as u64) <= 1024);
+
+        // A budget that fits two lines keeps the two NEWEST, not the oldest.
+        let numbered: Vec<String> = (0..5).map(|i| format!("s\tsid{i}")).collect();
+        let refs: Vec<&str> = numbered.iter().map(String::as_str).collect();
+        let two = tail_within(&refs, (numbered[0].len() as u64 + 1) * 2);
+        assert_eq!(two, "s\tsid3\ns\tsid4\n");
+
+        // No budget at all is an empty file, never a partial line.
+        assert_eq!(tail_within(&refs, 0), "");
+        // Nothing to keep is empty too, not a stray newline.
+        assert_eq!(tail_within(&[&long], 1024), "");
+    }
 
     #[test]
     fn bm25_floor_drops_weak_tail() {

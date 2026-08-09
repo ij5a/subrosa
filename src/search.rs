@@ -1,6 +1,7 @@
 //! Keyword search over the archived transcripts (FTS5, bm25-ranked).
 
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use rusqlite::{params, params_from_iter};
 
@@ -653,108 +654,185 @@ fn eta(secs: f64) -> String {
     }
 }
 
-/// `subrosa embed`: precompute a vector per archived turn. Never runs from a
-/// hook — this is the one command that loads the model and downloads it if
-/// it isn't there yet.
-pub fn embed_backfill(rebuild: bool) -> ExitCode {
-    // Rows are keyed by model AND revision; the plain name is for reading.
-    let (key, model) = (embed::MODEL_KEY, embed::MODEL_NAME);
-    let conn = match db::connect() {
-        Ok(c) => c,
+/// `subrosa embed`: precompute a vector per archived turn. This is the one
+/// command that loads the model and downloads it if it isn't there yet — a hook
+/// only ever spawns it detached (`--auto`), never does the work itself.
+pub fn embed_backfill(rebuild: bool, auto: bool) -> ExitCode {
+    // One indexing run at a time. The automatic one never waits: a second one
+    // has nothing to add, so it leaves the turns to the run already going.
+    let wait = if auto {
+        Duration::ZERO
+    } else {
+        Duration::from_secs(2)
+    };
+    let _lock = match embed::run_lock(wait) {
+        Ok(Some(lock)) => lock,
+        // Someone else is already doing the work: the ordinary outcome of two
+        // sessions ending together. Nothing is wrong and nothing is recorded.
+        Ok(None) => {
+            if !auto {
+                println!("[subrosa] another indexing run is active — it finishes on its own");
+            }
+            return ExitCode::SUCCESS;
+        }
+        // A lock we can't even open is a real failure — a read-only data dir, a
+        // full disk. A detached run's stderr is /dev/null, so without recording
+        // an attempt here it would be both invisible and un-backed-off: every
+        // session would launch another doomed child.
         Err(e) => {
-            eprintln!("[subrosa] cannot open DB: {e}");
-            return ExitCode::FAILURE;
+            let attempt = auto.then(embed::record_attempt);
+            return finish(auto, Err(e), Instant::now(), attempt);
         }
     };
-    if let Err(e) = db::ensure_embeddings_table(&conn) {
-        eprintln!("[subrosa] cannot create the embeddings store: {e}");
-        return ExitCode::FAILURE;
+    // Written before the model load and the embedding, so a run that is killed
+    // or runs out of memory still leaves the next hook something to back off
+    // from instead of relaunching it every session. Only the automatic run: a
+    // typed one that the user interrupts is not a reason to go quiet for an hour.
+    let attempt = auto.then(embed::record_attempt);
+    let started = Instant::now();
+    finish(auto, backfill(rebuild, auto), started, attempt)
+}
+
+/// What the run's outcome does next. The automatic one is silent — its stdio is
+/// /dev/null — so it logs instead, and its failures set the retry backoff that
+/// keeps the next session from re-running a download that can't work.
+fn finish(
+    auto: bool,
+    done: Result<i64, String>,
+    started: Instant,
+    attempt: Option<u32>,
+) -> ExitCode {
+    match done {
+        // Any completed backfill is the healthy state, typed or automatic:
+        // running it by hand is how someone fixes whatever the failure was, and
+        // that must not leave the hooks still backing off.
+        Ok(n) => {
+            embed::clear_failures();
+            if auto && n > 0 {
+                crate::hook::log(&format!(
+                    "embed --auto: done, {n} turn(s) indexed in {:.0}s",
+                    started.elapsed().as_secs_f64()
+                ));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            match attempt {
+                Some(failures) => {
+                    embed::record_failure(failures, &e);
+                    crate::hook::log(&format!("embed --auto: failed — {}", embed::one_line(&e)));
+                }
+                // A detached run has nowhere to print, so anything that reaches
+                // here without an attempt still has to reach the log.
+                None if auto => {
+                    crate::hook::log(&format!("embed --auto: failed — {}", embed::one_line(&e)))
+                }
+                None => eprintln!("[subrosa] {e}"),
+            }
+            ExitCode::FAILURE
+        }
     }
+}
+
+/// The backfill itself, from the work queue to the last slab. Returns how many
+/// turns it embedded; every failure comes back as one line for the caller to
+/// print or log.
+fn backfill(rebuild: bool, auto: bool) -> Result<i64, String> {
+    // Rows are keyed by model AND revision; the plain name is for reading.
+    let (key, model) = (embed::MODEL_KEY, embed::MODEL_NAME);
+    let conn = db::connect().map_err(|e| format!("cannot open DB: {e}"))?;
+    db::ensure_embeddings_table(&conn)
+        .map_err(|e| format!("cannot create the embeddings store: {e}"))?;
     // Vectors from a model we no longer ship are a different space: nothing can
     // rank them, nothing can resume from them, and they're the biggest thing in
     // the archive. Their pages go back to the free list for the new ones.
     match conn.execute("DELETE FROM turn_embeddings WHERE model <> ?1", [key]) {
+        // A detached run's stderr is /dev/null, so anything worth saying at all
+        // has to go to the log when it's the one saying it.
         Ok(n) if n > 0 => {
-            eprintln!("[subrosa] embed: deleted {n} vector(s) left by an older model")
+            let line = format!("embed: deleted {n} vector(s) left by an older model");
+            match auto {
+                true => crate::hook::log(&line),
+                false => eprintln!("[subrosa] {line}"),
+            }
         }
         Ok(_) => {}
-        Err(e) => {
-            eprintln!("[subrosa] cannot clear the older model's vectors: {e}");
-            return ExitCode::FAILURE;
-        }
+        Err(e) => return Err(format!("cannot clear the older model's vectors: {e}")),
     }
     // --rebuild is the repair for vectors that went bad on disk: a row of the
     // right width holding garbage still looks complete to the work queue.
     if rebuild {
         match conn.execute("DELETE FROM turn_embeddings WHERE model = ?1", [key]) {
             Ok(n) => println!("[subrosa] embed: cleared {n} stored vector(s) for {model}"),
-            Err(e) => {
-                eprintln!("[subrosa] cannot clear the stored vectors: {e}");
-                return ExitCode::FAILURE;
-            }
+            Err(e) => return Err(format!("cannot clear the stored vectors: {e}")),
         }
     }
     // One width per model, fixed by the first vector ever stored for it. Rows at
     // any other width are stale and get re-embedded rather than skipped.
     let dim = model_dim(&conn, key);
     let pending = pending_sql(dim);
-    let total: i64 =
-        match conn.query_row(&format!("SELECT count(*) {pending}"), [key], |r| r.get(0)) {
-            Ok(n) => n,
-            Err(e) => {
-                eprintln!("[subrosa] query error: {e}");
-                return ExitCode::FAILURE;
-            }
-        };
+    let total: i64 = conn
+        .query_row(&format!("SELECT count(*) {pending}"), [key], |r| r.get(0))
+        .map_err(|e| format!("query error: {e}"))?;
     if total == 0 {
         println!("[subrosa] embed: every turn is already embedded with {model}");
-        return ExitCode::SUCCESS;
+        return Ok(0);
+    }
+    if auto {
+        crate::hook::log(&format!("embed --auto: indexing {total} turn(s)"));
+        // The download is the long pole on a first run, and its progress bar
+        // goes nowhere in a detached one. One line so the log says why this
+        // run took minutes before it wrote anything.
+        if !embed::model_dir().exists() {
+            crate::hook::log("embed --auto: fetching the model first (~133 MB, one time)");
+        }
     }
     // Loaded only once there's work: this is where the one-time download
     // happens, and a no-op backfill shouldn't trigger it.
-    let embedder = match embed::Embedder::load() {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("[subrosa] {e}");
-            return ExitCode::FAILURE;
-        }
+    let embedder = embed::Embedder::load()?;
+    // Threads sharing one model. Inference is the whole cost of this command,
+    // and one forward pass at a time leaves every other core idle — this is
+    // where nearly all of the wall clock went. The unattended run takes half
+    // the cores at most, so it never makes the machine feel slow.
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let workers = if auto {
+        (cores / 2).max(2).min(cores)
+    } else {
+        cores
     };
-    // One thread per core, all sharing that model. Inference is the whole cost
-    // of this command, and one forward pass at a time leaves every other core
-    // idle — this is where nearly all of the wall clock went.
-    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let mut done = 0i64;
+    // Set once the queue has come back empty, cleared by any slab that follows.
+    let mut last_look = false;
     loop {
         // Newest first: an archive this size takes minutes, and recent work is
         // what a search asked in those minutes is looking for.
-        let slab: Vec<(i64, String)> = match conn
+        let slab: Vec<(i64, String)> = conn
             .prepare(&format!(
                 "SELECT t.id, t.text {pending} ORDER BY t.id DESC LIMIT {EMBED_SLAB}"
             ))
             .and_then(|mut s| {
                 s.query_map([key], |r| Ok((r.get(0)?, r.get::<_, String>(1)?)))?
                     .collect()
-            }) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("[subrosa] query error: {e}");
-                return ExitCode::FAILURE;
-            }
-        };
+            })
+            .map_err(|e| format!("query error: {e}"))?;
+        // A turn archived while the last slab was being written would otherwise
+        // wait for the next session: the hook that archived it saw this run
+        // still marked as running and left it alone. One more look first — it
+        // costs a count on an indexed column and closes all but the last
+        // instant, which the next session start picks up anyway.
         if slab.is_empty() {
-            break;
+            if last_look {
+                break;
+            }
+            last_look = true;
+            continue;
         }
+        last_look = false;
         let (inputs, turns): (Vec<String>, Vec<Vec<i64>>) = group_slab(slab).into_iter().unzip();
         // A hard stop, never a silent fall back to keyword. What was stored so
         // far persists, so re-running picks up where this left off.
-        let vecs = match embed_texts(&embedder, &inputs, workers) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("[subrosa] {e}");
-                return ExitCode::FAILURE;
-            }
-        };
+        let vecs = embed_texts(&embedder, &inputs, workers)?;
         // Embedder::embed already rejected non-finite vectors, so width is all
         // that's left — and it's checked against the stored value INSIDE the
         // write transaction, where a value read earlier could be stale.
@@ -796,10 +874,7 @@ pub fn embed_backfill(rebuild: bool) -> ExitCode {
             }
             tx.commit().map_err(|e| e.to_string())
         })();
-        if let Err(e) = stored {
-            eprintln!("[subrosa] {e}");
-            return ExitCode::FAILURE;
-        }
+        stored?;
         done += turns.iter().map(|ids| ids.len() as i64).sum::<i64>();
         // The total is a snapshot; a live session ingesting mid-run can push the
         // real work past it, so the denominator grows rather than reading 70/64.
@@ -811,7 +886,7 @@ pub fn embed_backfill(rebuild: bool) -> ExitCode {
         );
     }
     println!("[subrosa] embed: {done} turn(s) embedded with {model}");
-    ExitCode::SUCCESS
+    Ok(done)
 }
 
 /// `search --semantic`: rank stored vectors against the query's, so a turn can
@@ -838,8 +913,38 @@ fn run_semantic(
         }
     };
     // A missing table reads the same as an empty one — both mean "not backfilled".
+    // Same three states `warn_incomplete` reports, minus the counts: there's
+    // nothing indexed to count against. Only the switched-off one names a
+    // command, because that's the only state where one has to be typed.
     let Some(dim) = model_dim(&conn, key) else {
-        println!("[subrosa] no embeddings yet — run: subrosa embed");
+        println!(
+            "{}",
+            if embed::auto_off() {
+                // Only worth naming the command when it can actually work:
+                // with indexing off the model download is refused too, so
+                // "run subrosa embed" on its own is a dead end.
+                match embed::model_ready() {
+                    true => "[subrosa] nothing is indexed yet (automatic indexing is off) — run: subrosa embed".to_string(),
+                    false => format!(
+                        "[subrosa] nothing is indexed yet, and automatic indexing is off — so the \
+                         search model was never downloaded. Remove `semantic=off` from {} (or set \
+                         SUBROSA_SEMANTIC=on) and it sorts itself out.",
+                        paths::config_path().display()
+                    ),
+                }
+            } else if let Some(r) = embed::last_failure() {
+                format!(
+                    "[subrosa] nothing is indexed yet: the last indexing run didn't finish ({}) — it retries on its own",
+                    r.last_error
+                )
+            } else {
+                "[subrosa] the index is still being built — searches will cover more of your archive shortly"
+                    .to_string()
+            }
+        );
+        // Nothing stored is the biggest gap there is, so the search that
+        // noticed it starts the run. Self-gating: off and backoff do nothing.
+        embed::spawn_if_due();
         return ExitCode::SUCCESS;
     };
     let qvec = match embed::Embedder::load().and_then(|e| e.embed(&[query_text(terms)])) {
@@ -969,20 +1074,52 @@ fn run_semantic(
     ExitCode::SUCCESS
 }
 
-/// Only embedded turns can be ranked, so a backfill that stopped early — or
-/// turns archived since it ran — drop out of what reads as a whole-archive
-/// search. Warn loudly and still show what we have: refusing outright over one
-/// new turn would be worse. `searched` is the same filtered set the scan saw.
+/// Only embedded turns can be ranked, so an index still building — or turns
+/// archived since it last ran — drop out of what reads as a whole-archive
+/// search. Say so and still show what we have: refusing outright over one new
+/// turn would be worse. `searched` is the same filtered set the scan saw.
+///
+/// What the reader has to do differs by state, so the line does too: with
+/// automatic indexing on there is nothing to do, a failed download retries on
+/// its own, and only `semantic=off` leaves a command to type. Stderr, because
+/// stdout is the result format.
 fn warn_incomplete(pending: i64, searched: usize) {
     if pending <= 0 {
         return;
     }
     let total = searched as i64 + pending;
-    eprintln!(
-        "[subrosa] ACTION REQUIRED — INCOMPLETE INDEX: {pending} of {total} matching turns \
-         have no embedding and were NOT searched. The best match may be missing."
-    );
-    eprintln!("[subrosa] Run `subrosa embed` to finish the index, then search again.");
+    let line = if embed::auto_off() {
+        match embed::model_ready() {
+            true => format!(
+                "[subrosa] {pending} of {total} matching turns aren't indexed (automatic indexing \
+                 is off). Run subrosa embed to index them, or remove semantic=off to make it automatic."
+            ),
+            // Without the model, `subrosa embed` can't help either: off blocks
+            // the download too. Name the thing that actually unblocks it.
+            false => format!(
+                "[subrosa] {pending} of {total} matching turns aren't indexed, and automatic \
+                 indexing is off — so the search model was never downloaded. Remove `semantic=off` \
+                 from {} (or set SUBROSA_SEMANTIC=on) and it sorts itself out.",
+                paths::config_path().display()
+            ),
+        }
+    } else if let Some(r) = embed::last_failure() {
+        format!(
+            "[subrosa] {pending} of {total} matching turns aren't indexed: the last indexing run \
+             didn't finish ({}). It retries on its own; subrosa embed retries right now.",
+            r.last_error
+        )
+    } else {
+        format!(
+            "[subrosa] Heads up: {pending} of {total} matching turns aren't indexed yet — the \
+             index is still building in the background and finishes on its own. Results cover \
+             what's indexed (newest first); try again in a few minutes for full coverage."
+        )
+    };
+    eprintln!("{line}");
+    // "A few minutes" has to be true even when no session started or ended in
+    // between, so the search that noticed the gap is what starts the run.
+    embed::spawn_if_due();
 }
 
 #[cfg(test)]

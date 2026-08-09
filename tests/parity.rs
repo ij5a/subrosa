@@ -39,6 +39,8 @@ fn base_cmd(env: &TestEnv) -> Command {
     }
     cmd.env("SUBROSA_DIR", &env.data)
         .env("SUBROSA_PROJECTS_DIR", &env.projects)
+        // Never let a test start the background indexer — it downloads a model.
+        .env("SUBROSA_SEMANTIC", "off")
         // Pin the clock (2027-01-12Z) so recall's age hints render deterministically.
         .env("SUBROSA_NOW", "1799712000")
         .stdin(Stdio::piped())

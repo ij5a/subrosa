@@ -57,6 +57,9 @@ fn run_env<V: AsRef<std::ffi::OsStr>>(
     cmd.args(args)
         .env("SUBROSA_DIR", &env.data)
         .env("SUBROSA_PROJECTS_DIR", &env.projects)
+        // No test may start the background indexer: it would download the
+        // model and index the throwaway archive behind the suite's back.
+        .env("SUBROSA_SEMANTIC", "off")
         .current_dir(&env.cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

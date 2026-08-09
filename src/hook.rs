@@ -11,7 +11,7 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 
-use crate::{db, generate, ingest, paths, recall, HookEvent};
+use crate::{db, embed, generate, ingest, paths, recall, HookEvent};
 
 pub fn run(event: HookEvent) -> ExitCode {
     let mut raw = String::new();
@@ -58,28 +58,40 @@ fn session_start(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", lines.join("\n"));
         log(&format!("session-start nudge: {} line(s)", lines.len()));
     }
+    // Detached, so the index keeps itself current without a hook ever waiting
+    // on it — Claude Code stops a hook at 120s and a first backfill takes far
+    // longer than that.
+    embed::spawn_if_due();
     sweep_result
 }
 
 /// Unique session ids waiting in the checkpoint queue, ordered oldest→newest
 /// enqueue (a session can fire SessionEnd more than once; the latest enqueue
-/// wins its slot). Empty when the queue file is absent or empty.
-fn queued_sessions() -> Vec<String> {
+/// wins its slot). `Ok(empty)` when the queue file is absent or empty; `Err`
+/// when it can't be read, which callers must NOT show as an empty queue — the
+/// reminder would vanish exactly when the backlog is at its largest.
+fn queued_sessions() -> Result<Vec<String>, String> {
     let mut order: Vec<String> = Vec::new();
-    if let Ok(text) = std::fs::read_to_string(paths::pending_log()) {
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let id = ingest::queue_sid(line);
-            if let Some(pos) = order.iter().position(|x| x == id) {
-                order.remove(pos);
-            }
-            order.push(id.to_string());
+    // Bounded and regular-file-only: this is read on every prompt, and a hook
+    // that blocks on a FIFO blocks the session.
+    let text = paths::read_control_file(&paths::pending_log(), paths::CONTROL_FILE_MAX)
+        .map_err(|e| {
+            log(&format!("checkpoint queue unreadable — {e}"));
+            e.to_string()
+        })?
+        .unwrap_or_default();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
         }
+        let id = ingest::queue_sid(line);
+        if let Some(pos) = order.iter().position(|x| x == id) {
+            order.remove(pos);
+        }
+        order.push(id.to_string());
     }
-    order
+    Ok(order)
 }
 
 /// Short, actionable nudge (stdout is injected into context). Stays silent
@@ -87,7 +99,17 @@ fn queued_sessions() -> Vec<String> {
 /// project MEMORY.md approaching the always-loaded byte cap.
 fn nudge_lines(input: &Value) -> Vec<String> {
     let mut out = Vec::new();
-    let order = queued_sessions();
+    let order = match queued_sessions() {
+        Ok(order) => order,
+        // Loud, not silent: an unreadable queue hides the backlog completely.
+        Err(e) => {
+            out.push(format!(
+                "[subrosa] the checkpoint queue can't be read ({e}) — sessions may be waiting \
+                 that this can't list. Fix or delete ~/.claude/subrosa/pending-checkpoint.log."
+            ));
+            Vec::new()
+        }
+    };
     let n = order.len();
     if n > 0 {
         // Every line below starts with "[subrosa]" so the whole block is
@@ -119,6 +141,18 @@ fn nudge_lines(input: &Value) -> Vec<String> {
                 ));
             }
         }
+    }
+    // Once, before the first download: a ~133 MB fetch nobody asked for needs
+    // saying out loud, with the opt-out. The model folder exists from the first
+    // byte on, and a failed attempt is recorded, so neither says it twice.
+    if !embed::auto_off() && !embed::model_dir().exists() && embed::retry_state().is_none() {
+        out.push(
+            "[subrosa] One-time setup: downloading the semantic-search model (~133 MB) and \
+             indexing your past sessions in the background. Nothing is uploaded — the model \
+             comes down, your data stays here. Search works normally meanwhile. Opt out: \
+             semantic=off in ~/.claude/subrosa/config."
+                .to_string(),
+        );
     }
     let cwd = input
         .get("cwd")
@@ -152,7 +186,9 @@ fn nudge_lines(input: &Value) -> Vec<String> {
             // Cap the nudge at the load limit: a .budget set above it would
             // otherwise go silent exactly when the index stops fitting.
             let budget = budget.min(generate::CC_LOAD_CAP);
-            let lines = std::fs::read_to_string(&mm)
+            let lines = paths::read_control_file(&mm, paths::CONTROL_FILE_MAX)
+                .ok()
+                .flatten()
                 .map(|t| t.lines().count())
                 .unwrap_or(0);
             if md.len() as i64 > budget || lines > generate::CC_LOAD_LINES {
@@ -209,6 +245,9 @@ fn session_end(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
         Ok(None) => {}
         Err(e) => log(&format!("session-end backup error: {e}")),
     }
+    // The turns this session just archived are the ones a search wants next, so
+    // the index run starts here rather than waiting for the next session.
+    embed::spawn_if_due();
     Ok(())
 }
 
@@ -263,7 +302,16 @@ fn stop(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
 /// Prefixed "[subrosa]" so ingest's NOISE_PREFIXES drops it and it never feeds
 /// back into the archive. Honors checkpoint_nudge_mode ("off" silences it).
 fn backlog_directive() -> Option<String> {
-    let n = queued_sessions().len();
+    let n = match queued_sessions() {
+        Ok(order) => order.len(),
+        // The queue is unreadable, so the backlog is unknown, not zero.
+        Err(e) => {
+            return Some(format!(
+                "[subrosa] the checkpoint queue can't be read ({e}) — sessions may be queued. \
+                 Fix or delete ~/.claude/subrosa/pending-checkpoint.log."
+            ))
+        }
+    };
     if n == 0 {
         return None;
     }
@@ -303,6 +351,12 @@ fn user_prompt_submit(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
 /// Append one line to the hook log in the data dir. Best-effort: never fails.
 pub(crate) fn log(msg: &str) {
     let path = paths::hook_log();
+    // The most hook-reachable file there is — every event writes here. A FIFO
+    // at this path would block every hook subrosa runs, so it is guarded like
+    // the rest of them.
+    if !paths::appendable(&path) {
+        return;
+    }
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
