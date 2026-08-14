@@ -207,7 +207,7 @@ enum Cmd {
         /// A project's memory/ dir (default: the current project, from cwd)
         #[arg(long)]
         memdir: Option<PathBuf>,
-        /// Filter for `list`
+        /// Filter for `list` and `search`; shows only active facts by default
         #[arg(long, value_enum, default_value = "active")]
         status: facts::StatusFilter,
     },
