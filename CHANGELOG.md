@@ -5,6 +5,12 @@ All notable changes to subrosa are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.1] - 2026-08-15
+
+### Fixed
+
+- `subrosa fact --help` described `--status` as a filter for `list` only. It has always filtered `fact search` the same way, so searching for a fact you had archived came back empty with nothing to say why. The help now names both commands and states that only active facts are shown by default.
+
 ## [0.25.0] - 2026-08-09
 
 ### Changed
@@ -268,6 +274,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
 
+[0.25.1]: https://github.com/ij5a/subrosa/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/ij5a/subrosa/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/ij5a/subrosa/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/ij5a/subrosa/compare/v0.22.0...v0.23.0
