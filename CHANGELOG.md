@@ -4,6 +4,24 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0] - 2026-08-31
+
+### Added
+
+- A plain `subrosa search` now tries semantic search after a zero-hit result when automatic indexing is on and the local model and index are ready. It shows the nearest matches without starting the one-time model download. Use `--raw` to skip this fallback. `--fuzzy`, `--any`, and explicit `--semantic` searches keep their current behavior. Automatic recall remains keyword-only.
+
+### Changed
+
+- The Rust toolchain pin moves from 1.97.1 to 1.98.0. Dependencies move to their latest compatible versions, changing 17 lockfile entries. candle stays at 0.9 so musl builds keep working.
+- The release removes 12 duplicated or unreachable code paths and about 100 lines. The hand-written `isatty` wrapper now uses `std::io::IsTerminal`, date-bound validation uses one helper, and ingest gets inserted-row counts from SQLite instead of making 2 extra queries. Behavior stays the same.
+- The documentation rewrite makes every file shorter and easier to read for people who do not work in English. The total drops from about 18,600 words to about 13,600, and the README is about half as long.
+
+### Fixed
+
+- CI's `audit` job no longer fails on every push. `cargo audit` passes, and the job now has the `checks: write` permission needed to publish its result.
+- `subrosa search -n 0` now returns immediately instead of reporting no matches when hits exist.
+- The FAQ and README now describe realistic search latency. Keyword hits take about 5 to 11 ms, while semantic fallback gets slower as the index grows.
+
 ## [0.25.1] - 2026-08-15
 
 ### Fixed
@@ -273,6 +291,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Initial release: Rust memory engine, local SQLite FTS5 transcript archive, Claude Code plugin wiring, plugin binary bootstrap, install script, release automation, and CI.
 
+[0.26.0]: https://github.com/ij5a/subrosa/compare/v0.25.1...v0.26.0
 [0.25.1]: https://github.com/ij5a/subrosa/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/ij5a/subrosa/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/ij5a/subrosa/compare/v0.23.0...v0.24.0
