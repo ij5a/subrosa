@@ -95,6 +95,9 @@ pub fn run(
             }
         },
     };
+    if limit == 0 {
+        return ExitCode::SUCCESS;
+    }
     if semantic {
         return run_semantic(
             terms,
@@ -106,6 +109,7 @@ pub fn run(
             tags,
             exclude,
             context,
+            None,
         );
     }
     let conn = match db::connect() {
@@ -282,11 +286,35 @@ pub fn run(
                 }
             }
         }
+        // An available local index gets a meaning-based second chance; never let an exact
+        // search trigger the one-time model download.
+        if !fuzzy
+            && !raw
+            && !any
+            && !embed::auto_off()
+            && embed::model_ready()
+            && model_dim(&conn, embed::MODEL_KEY).is_some()
+            && run_semantic(
+                terms,
+                limit,
+                project,
+                session,
+                after_bound.as_deref(),
+                before_bound.as_deref(),
+                tags,
+                exclude,
+                context,
+                Some("[subrosa] no exact match — semantic nearest:"),
+            ) == ExitCode::SUCCESS
+        {
+            return ExitCode::SUCCESS;
+        }
         println!("[subrosa] no matches for: {m}");
         // Nudge toward the fuzzy fallback when an exact search finds nothing.
         if !fuzzy && !raw {
             println!(
-                "[subrosa] no exact match — try fuzzy: subrosa search --fuzzy {}",
+                "[subrosa] no exact match — try fuzzy: subrosa search --fuzzy {} or semantic: subrosa search --semantic {}",
+                terms.join(" "),
                 terms.join(" ")
             );
         }
@@ -456,7 +484,7 @@ fn print_results(conn: &rusqlite::Connection, rows: &[Hit], context: i64) {
     );
 }
 
-//--- semantic search (opt-in, runs the bundled model locally) ----------------
+//--- semantic search (direct or automatic after an exact miss) ---------------
 
 /// How much of a turn is embedded. Enough for the gist, short enough that a big
 /// archive backfills in one sitting; the tokenizer cuts whatever is still over
@@ -902,6 +930,7 @@ fn run_semantic(
     tags: &[String],
     exclude: &[String],
     context: i64,
+    header: Option<&str>,
 ) -> ExitCode {
     // Rows are keyed by model AND revision; the plain name is for reading.
     let (key, model) = (embed::MODEL_KEY, embed::MODEL_NAME);
@@ -1027,6 +1056,9 @@ fn run_semantic(
     }
     let ranked = scored.len();
     if scored.is_empty() {
+        if header.is_some() {
+            return ExitCode::FAILURE;
+        }
         println!("[subrosa] no matches for: {}", terms.join(" "));
         // Still warn: filters that select only un-embedded turns give an empty
         // result that looks like "nothing here" instead of "nothing indexed".
@@ -1067,6 +1099,11 @@ fn run_semantic(
             return ExitCode::FAILURE;
         }
     };
+    // Delay the automatic label until semantic ranking succeeds, so failures
+    // fall back to the keyword hint without a misleading header.
+    if let Some(header) = header {
+        println!("{header}");
+    }
     // Stdout stays the shared result format; the how-it-ranked note is stderr.
     eprintln!("[subrosa] semantic: ranked {ranked} turns via {model}");
     print_results(&conn, &rows, context);

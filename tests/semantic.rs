@@ -1,4 +1,4 @@
-//! Opt-in semantic search, with the model NOT on disk — the half CI can run.
+//! Semantic search, with the model NOT on disk — the half CI can run.
 //! Nothing here downloads or loads the real weights: the child gets a PATH
 //! with no curl on it, so the fetch fails exactly the way it does offline.
 //! The ranking itself is covered by the `#[ignore]`d test in `src/embed.rs`,

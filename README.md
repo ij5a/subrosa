@@ -92,8 +92,8 @@ subrosa          # the dashboard
 - **Archives every session.** When one ends — quitting Claude Code, `/clear`, or logging out — its transcript is saved to a local SQLite (full-text search) database, with a catch-up sweep at the next start.
 - **Recalls on its own.** A prompt with enough distinctive terms pulls the top matching past sessions from the same project into context — silent unless the match is strong.
 - **Builds long-term memory.** Ended sessions queue up; `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog` distill them into curated facts (one per small markdown file). `subrosa generate` then renders `MEMORY.md` — a short, size-capped index Claude Code loads every session, and `subrosa fact search` finds a specific fact once a project has dozens.
-- **Makes everything searchable.** `subrosa search <terms>` runs ranked full-text search — identifiers like `my-app-prod` or `TICKET-123` stay exact. Narrow with `--project`/`--after`/`--before`/`--tag`, read around a hit with `-C/--context`, filter with `--exclude` (drop a term) and `--any` (match any term, not all), or fall back to `--fuzzy` for partial names and small typos.
-- **Ranks by meaning too.** `subrosa search --semantic 'why did checkout get slow'` finds turns that share no word with your query. The index behind it builds itself: on the first run a ~133 MB model is downloaded once, then everything happens on your machine, and later sessions are picked up as they're archived. `semantic=off` in the config turns it off.
+- **Makes everything searchable.** `subrosa search <terms>` runs ranked full-text search — identifiers like `my-app-prod` or `TICKET-123` stay exact. Narrow with `--project`/`--after`/`--before`/`--tag`, read around a hit with `-C/--context`, filter with `--exclude` (drop a term) and `--any` (match any term, not all), or use `--fuzzy` for partial names and small typos. If automatic semantic indexing is on and its local index is available, an exact miss also tries nearest matches by meaning.
+- **Ranks by meaning too.** `subrosa search --semantic 'why did checkout get slow'` finds turns that share no word with your query; a plain search uses the local index automatically after an exact miss when automatic semantic indexing is on and available. The index behind it builds itself: on the first run a ~133 MB model is downloaded once, then everything happens on your machine, and later sessions are picked up as they're archived. `semantic=off` in the config turns it off.
 - **Lists and filters sessions.** `subrosa sessions` shows past sessions newest-first, filterable by `--project`, date (`--after`/`--before`), and `--tag`. Each session carries auto-derived tags (`tool:bash`, `ext:rs`, `topic:cache-prod`) — computed locally at archive time, so they cost zero tokens and nothing to maintain.
 - **Shows what clusters together.** `subrosa related <identifier>` ranks the terms and sessions that recur alongside something like `auth.ts` or `TICKET-123` — read from the archive, not guessed. It answers "what did this work touch," which `search` can't.
 - **Follows your curated links.** Notes link to each other with `[[name]]`; `subrosa fact link <slug>` shows what a note links to and what links back, and flags dead links.
@@ -187,6 +187,10 @@ generated — never hand-edit it; update facts with `subrosa fact` + `subrosa ge
 or run `/subrosa:checkpoint`.
 ```
 
+A plain exact miss also tries nearest matches by meaning when automatic semantic
+indexing is on and its local index is available; use `--fuzzy` for partial names and
+small typos.
+
 The second has Claude clear the checkpoint backlog in the background when sessions queue up:
 
 ```markdown
@@ -254,7 +258,7 @@ A hook that runs on every prompt has to be invisible. Measured with `scripts/ben
 | Session-end backup, once per 24h, with mirror encryption on | a second or two (argon2id + sealing the whole snapshot) |
 | Session-start catch-up sweep, nothing changed | ~5 ms |
 | Live-session ingest after a turn (one transcript, flat at any session length) | ~7 ms |
-| `subrosa search` over 50,000 turns | 5–11 ms |
+| Keyword `subrosa search` hit over 50,000 turns | 5–11 ms |
 | `subrosa related <identifier>` over 50,000 turns | 0.3–0.4 s |
 | Archiving 50,000 turns from scratch (first install) | ~1.5 s |
 

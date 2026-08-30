@@ -76,7 +76,7 @@ Every operation and what it costs:
 
 ## Does it get more expensive or slower as the archive grows?
 
-No — both stay flat. Token cost doesn't scale with size: saving is always zero, and recall is capped at ~180 per prompt whether you have 100 sessions or 100,000 — the cap is a constant, not a percentage. Search is an FTS5 index, not a linear scan, so it stays fast — ~5–11 ms over a 50,000-turn archive. Disk grows only by text: a year of heavy use is a few hundred MB. Run [`scripts/bench.sh`](../scripts/bench.sh) to confirm the latency and recall-token numbers yourself.
+Recall and keyword-hit performance stay flat, but semantic misses do not. Token cost doesn't scale with size: saving is always zero, and recall is capped at ~180 per prompt whether you have 100 sessions or 100,000 — the cap is a constant, not a percentage. Keyword search is an FTS5 index, not a linear scan, so hits stay fast — ~5–11 ms over a 50,000-turn archive; a semantic fallback scans indexed turns linearly, so a miss takes longer as the number of indexed turns grows. Disk grows with archived text and semantic vectors: a year of heavy use is a few hundred MB. Run [`scripts/bench.sh`](../scripts/bench.sh) to confirm the latency and recall-token numbers yourself.
 
 ## Why don't I see subrosa's messages in the chat?
 
@@ -92,6 +92,8 @@ Yes. After each assistant turn subrosa archives the in-progress transcript (the 
 
 ## Why keyword search instead of embeddings?
 
+If automatic semantic indexing is on and its local index is available, a plain exact miss also tries nearest matches by meaning.
+
 Keyword is the default because it needs nothing — no model, no weights, no second process, no cost to save a session. subrosa matches word roots, so `deploy` finds `deployed` and `deploying`, while identifiers like `TICKET-123` and `my-app-prod` stay exact. For partial names and typos, `subrosa search --fuzzy` adds a local trigram index (built on first use); when no substring matches, it falls back to the nearest matches within one edit (a wrong, missing, extra, or swapped letter) — still no model.
 
 Meaning-based search is there when you want it, and it sets itself up. There's nothing to install and nothing to run — the model runs inside the same binary:
@@ -103,7 +105,7 @@ Nothing you typed leaves the machine. The download only pulls files down; your t
 
 The model is English-only. Non-English text still embeds and still ranks, just less well; keyword search treats every language the same, so that stays the better tool there.
 
-Automatic recall stays keyword, always. It fires on every prompt and has to be silent and instant when nothing matches — putting a model round-trip in front of every message you type is the opposite of that. Ranking by meaning only ever runs when you ask for it with `--semantic`; the index behind it is what keeps itself current.
+Automatic recall stays keyword, always. It fires on every prompt and has to be silent and instant when nothing matches — putting a model round-trip in front of every message you type is the opposite of that. A plain search may use the local index after an exact miss when automatic semantic indexing is on and available, and `--semantic` runs it directly; the index behind it is what keeps itself current.
 
 ## What are session tags?
 

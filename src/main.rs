@@ -92,7 +92,7 @@ enum Cmd {
         #[arg(long)]
         quiet: bool,
     },
-    /// Search the archived transcripts (FTS5, bm25-ranked)
+    /// Search the archive (FTS5 by default; semantic direct or after an exact miss)
     Search {
         /// Search terms (each phrase-quoted unless --raw)
         terms: Vec<String>,

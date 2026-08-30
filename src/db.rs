@@ -385,9 +385,9 @@ pub fn ensure_trigram_index(conn: &Connection) -> rusqlite::Result<bool> {
     Ok(true)
 }
 
-/// Create the opt-in embeddings store on first `subrosa embed`. Outside the
-/// versioned schema, same as the trigram index: nobody who skips semantic
-/// search pays for it, and SCHEMA_VERSION stays put. `model` is part of the key
+/// Create the lazy embeddings store on the first indexing run. Outside the
+/// versioned schema, same as the trigram index: `semantic=off` users avoid its
+/// storage cost, and SCHEMA_VERSION stays put. `model` is part of the key
 /// so switching models is a fresh backfill, never a migration. Needs a
 /// read-write connection.
 pub fn ensure_embeddings_table(conn: &Connection) -> rusqlite::Result<()> {

@@ -407,7 +407,8 @@ pub fn checkpoint_nudge_mode() -> String {
 }
 
 /// Where the embedding model's files are downloaded, one folder per model.
-/// Only `subrosa embed` and `search --semantic` ever look here.
+/// `subrosa embed` and `search --semantic` load them; plain search checks readiness
+/// before an automatic semantic retry after an exact miss.
 pub fn models_dir() -> PathBuf {
     mem_dir().join("models")
 }

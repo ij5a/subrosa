@@ -1,7 +1,8 @@
 //! The embedding model, run in-process by candle: BAAI/bge-small-en-v1.5, a
 //! BERT encoder pinned to one revision and fetched once into `<SUBROSA_DIR>/models`.
-//! Only `subrosa embed` and `search --semantic` build one — recall, ingest and
-//! every hook stay far away from it.
+//! `subrosa embed` and `search --semantic` build one directly; plain search can
+//! also build one after an eligible exact miss — recall, ingest and every hook
+//! stay far away from it.
 //!
 //! ponytail: no HTTP crate. The one-time download shells out to the system
 //! curl, which is the only thing in the tree that opens a socket. An HTTP

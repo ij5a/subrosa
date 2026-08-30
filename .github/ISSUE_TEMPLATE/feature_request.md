@@ -22,7 +22,7 @@ Anything else you thought about.
 
 subrosa is built around a few deliberate constraints. A request that fits these is much more likely to land:
 
-- **Private and local-only.** No cloud, no telemetry, no socket — everything stays on your machine. The one exception is the model download for opt-in semantic search, which only pulls files down.
+- **Private and local-only.** No cloud, no telemetry, no socket — everything stays on your machine. The one exception is the model download for semantic search, which only pulls files down.
 - **Small supply chain.** Eleven direct dependencies, one static binary. A new dependency needs a strong reason.
 - **Claude Code only.** It archives Claude Code sessions; support for other tools (Gemini, OpenCode, …) is out of scope.
 - **No server and no web dashboard.** The CLI and plugin keep everything local.
