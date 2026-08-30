@@ -1,8 +1,8 @@
 # Contributing to subrosa
 
-Thanks for thinking about contributing. subrosa is a Rust CLI and Claude Code plugin that gives Claude Code persistent, private memory — every session is archived locally and made searchable, and saving never spends tokens.
+subrosa is a Rust CLI and Claude Code plugin for private, persistent memory. It archives sessions locally, makes them searchable, and uses no tokens to save memory.
 
-This guide covers how to set up, the checks your change has to pass, and the few rules that keep the project small and stable.
+This guide covers setup, required checks, and project rules.
 
 ## Getting set up
 
@@ -14,7 +14,7 @@ git config core.hooksPath .githooks   # one-time: turns on the pre-commit checks
 cargo build --locked
 ```
 
-Always work against a throwaway data directory so you never touch your own archive. The `SUBROSA_DIR` and `SUBROSA_PROJECTS_DIR` environment variables point subrosa at test folders instead of `~/.claude/subrosa`:
+Use a throwaway data directory. `SUBROSA_DIR` and `SUBROSA_PROJECTS_DIR` point subrosa to test folders instead of `~/.claude/subrosa`:
 
 ```sh
 SUBROSA_DIR=/tmp/x SUBROSA_PROJECTS_DIR=/tmp/x/projects cargo run -- init
@@ -23,28 +23,30 @@ SUBROSA_DIR=/tmp/x SUBROSA_PROJECTS_DIR=/tmp/x/projects cargo test --locked
 
 ## The verification gate
 
-Every code change has to pass four checks before it is committed, pushed, or released. The pre-commit hook and CI run some of them for you; the rest you run by hand.
+Every code change must pass 6 gates before commit, push, or release. The pre-commit hook and CI run some checks for you. Run the rest by hand.
 
-1. **Tests** — `cargo test --locked`. Runs the unit tests and the golden tests in `tests/`. A red test blocks the commit.
-2. **Performance** — `scripts/bench.sh` (needs [`hyperfine`](https://github.com/sharkdp/hyperfine)). Measures the recall hot path, search, ingest, and startup. The latency numbers in the README are a promise, so a slowdown is a real bug. Run it before a push or release, and on any change to `recall.rs`, `search.rs`, `ingest.rs`, or the FTS schema.
-3. **Security** — `cargo audit` (also a CI job) plus a read-through of your own diff. This repo is public, so do this before every push and release.
-4. **Docs in sync** — update every markdown file your change affects (`README.md`, `docs/*.md`, `CLAUDE.md`, the skill docs). Numbers, flags, and limits in the docs must match the code. A code change that lands without its doc update is not finished.
+1. **Tests:** Run `cargo test --locked`. This runs unit tests and golden tests in `tests/`. A failure blocks the commit.
+2. **Performance:** Run `scripts/bench.sh` with [`hyperfine`](https://github.com/sharkdp/hyperfine). It measures recall, search, ingest, and startup. README latency numbers are promises. A slowdown is a bug. Run it before a push or release. Run it after changes to `recall.rs`, `search.rs`, `ingest.rs`, or the FTS schema.
+3. **Token usage:** `scripts/bench.sh` also measures recall injection. It fails above the 220-token guard behind the about-180-token promise.
+4. **Smoke:** Run `scripts/smoke.sh` with the built binary. It uses a throwaway directory and checks redaction, encrypted-mirror and restore paths, a fail-closed budget override, and hook exit 0.
+5. **Security:** Run `cargo audit` and `/security-review` over the branch diff. CI also runs the audit. Run them before every push and release.
+6. **Docs:** Update every affected Markdown file, including `README.md`, `docs/*.md`, `CLAUDE.md`, and skill docs. Make sure documented numbers, flags, and limits match the code. A code change without its doc update is not finished.
 
-The pre-commit hook (`.githooks/pre-commit`) runs `scripts/sweep.sh` (it looks for stray secrets and database files), then `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and the tests. CI runs the same set plus `cargo audit`.
+The pre-commit hook (`.githooks/pre-commit`) runs `scripts/sweep.sh`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and the tests. `scripts/sweep.sh` checks for secrets and database files. CI runs the same checks plus `cargo audit`.
 
 ## Golden tests are compatibility-critical
 
-The stored-text, session-dump, `MEMORY.md`, and recall output formats are pinned byte-for-byte by golden tests in `tests/`. Archives made by older versions have to keep working, so these formats are not free to change.
+Golden tests in `tests/` pin the stored-text, session-dump, `MEMORY.md`, and recall formats byte-for-byte. Older archives must keep working, so these formats cannot change freely.
 
-If a golden test fails, it means a format changed. Treat that as a decision, not an accident: only update the golden file when you mean to change the format, and say why in the commit message. Never edit a golden file just to make a failing test pass.
+If a golden test fails, a format changed. Update the golden file only when you intend that change. Explain why in the commit message. Never edit a golden file only to pass a test.
 
-## The 5-crate rule
+## The 11-crate rule
 
-subrosa depends on five crates: `clap`, `regex`, `rusqlite`, `serde`, `serde_json`. A single static binary with a small supply chain is part of what the project offers, so a new dependency needs a strong reason. Please open an issue to discuss before adding one.
+subrosa depends on 11 direct crates: `clap`, `regex`, `rusqlite`, `serde`, `serde_json`, `chacha20poly1305`, `argon2`, `candle-core`, `candle-nn`, `candle-transformers`, and `sha2`. A small supply chain and one static binary are part of the project. A new dependency needs a strong reason. Open an issue before adding one.
 
 ## Commits and pull requests
 
-Commit messages use the conventional-commit format — lowercase, one line, up to 120 characters. No AI footer or co-author line.
+Use the conventional-commit format for commit messages. Use lowercase, one line, and at most 120 characters. Add no AI footer or co-author line.
 
 ```
 feat(recall): add match-centered snippets
@@ -53,7 +55,7 @@ docs: refresh the performance table
 chore: bump toolchain and refresh mise.lock
 ```
 
-Pull request descriptions use three sections, in this order:
+Use these three pull request sections in this order:
 
 ```markdown
 ## Why
@@ -68,12 +70,13 @@ Pull request descriptions use three sections, in this order:
 2. Second step
 ```
 
-Use sentence case everywhere — headings, prose, and list items. Keep it short and direct.
+Use sentence case for headings, prose, and list items. Keep it short and direct.
 
 ## Pre-merge checklist
 
-- [ ] `cargo test --locked` passes (including the golden tests)
-- [ ] `scripts/bench.sh` run, if the change touches `recall.rs`, `search.rs`, `ingest.rs`, or the FTS schema
-- [ ] `cargo audit` run and the diff reviewed for security
-- [ ] Affected docs updated
-- [ ] Any golden-file change is deliberate
+- [ ] `cargo test --locked` passes, including the golden tests
+- [ ] Run `scripts/bench.sh` if the change touches `recall.rs`, `search.rs`, `ingest.rs`, or the FTS schema
+- [ ] Run `scripts/smoke.sh` with the built binary
+- [ ] Run `cargo audit` and review the diff for security
+- [ ] Update affected docs
+- [ ] Make every golden-file change deliberate

@@ -115,6 +115,28 @@ pub(crate) fn next_day(y: i64, mo: u32, d: u32) -> Option<String> {
     Some(format!("{ny:04}-{nmo:02}-{nd:02}"))
 }
 
+// Zero-padding the bounds keeps the lexical timestamp comparison correct.
+pub(crate) fn date_bounds<'a>(
+    after: Option<&'a str>,
+    before: Option<&'a str>,
+) -> Result<(Option<String>, Option<String>), &'static str> {
+    let after = after
+        .map(|s| {
+            parse_ymd(s)
+                .map(|(y, mo, d)| format!("{y:04}-{mo:02}-{d:02}"))
+                .ok_or("--after")
+        })
+        .transpose()?;
+    let before = before
+        .map(|s| {
+            parse_ymd(s)
+                .and_then(|(y, mo, d)| next_day(y, mo, d))
+                .ok_or("--before")
+        })
+        .transpose()?;
+    Ok((after, before))
+}
+
 // Howard Hinnant's days-to-civil (public domain) — the inverse of civil_to_days.
 // Shared by now_iso (db), the dashboard (stats), and search/sessions date bounds.
 pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {

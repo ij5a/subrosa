@@ -2,277 +2,276 @@
 
 All notable changes to subrosa are documented here.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.25.1] - 2026-08-15
 
 ### Fixed
 
-- `subrosa fact --help` described `--status` as a filter for `list` only. It has always filtered `fact search` the same way, so searching for a fact you had archived came back empty with nothing to say why. The help now names both commands and states that only active facts are shown by default.
+- `subrosa fact --help` now documents `--status` for both `list` and `fact search`. It says active facts show by default. Archived-fact searches no longer return an unexplained empty result.
 
 ## [0.25.0] - 2026-08-09
 
 ### Changed
 
-- Semantic search sets itself up. You never type `subrosa embed` — not the first time, not ever. A session start or end hands the work to a separate low-priority process and returns straight away (no measurable change to hook time), and that process downloads the model once, indexes your archive newest-first so recent sessions are searchable within a minute, then exits. It picks up each new session the same way. `subrosa` shows how far along it is, and a partly-built index says so instead of telling you to go and run something.
-- `semantic=off` in `~/.claude/subrosa/config` (or `SUBROSA_SEMANTIC=off`) is a real off switch: no background run, no model download, and with it every network call subrosa can make. It fails closed too — if the config can't be read at all, subrosa treats that as off rather than guessing. `subrosa embed` still indexes by hand whenever you want it.
-- A failed run — no network on a first install, say — is recorded and retried an hour later, then doubling up to a day, with the actual reason shown rather than a guess. Nothing retries on every session, and keyword search is unaffected throughout.
-- Only one indexing run happens at a time, whether a hook started it or you did: a lock keyed to the database itself, so two sessions ending together index once. The background run takes half your cores; `subrosa embed` typed by hand still uses all of them.
-- Hardening that came out of reviewing the above: subrosa now runs `curl`, `stty` and `git` from absolute paths instead of looking them up on `PATH`, and every file it uses to steer itself is read with a size cap and refuses anything that isn't a plain file, so a stray pipe or symlink can't stall a hook or send a write somewhere else. Files it replaces are written to a temporary file and renamed into place, so an interrupted write can't leave a half-file behind. If the terminal can't hide what you type, subrosa now refuses to ask for your mirror passphrase instead of showing it on screen.
-- README, FAQ and the comparison doc are corrected throughout: the model download now happens on first run for everyone, so "no background process" became "no daemon — the only background work is a finite indexing pass that exits when done", and the network section says plainly what is downloaded and what never leaves.
+- Default semantic search sets itself up. You do not need to type `subrosa embed`. Session start and end start a separate low-priority process and return immediately, with no measurable hook-time change. The process downloads the model once and indexes the archive newest-first. Recent sessions become searchable within a minute. It exits after indexing, handles each new session, and shows progress; a partial index reports its state instead of asking you to run a command.
+- `semantic=off` in `~/.claude/subrosa/config`, or `SUBROSA_SEMANTIC=off`, disables background runs, model downloads, and every network call. If config cannot be read, subrosa treats it as off. `subrosa embed` remains available for manual indexing.
+- A failed run is recorded. It retries after 1 hour, then with delays that double up to 1 day. The report shows the real reason. It does not retry every session. Keyword search remains unaffected.
+- Only one indexing run can happen at a time. A database-keyed lock covers hook and manual runs, so two ending sessions index once. Background runs use half the cores. Manual `subrosa embed` uses all cores.
+- Hardening now runs `curl`, `stty`, and `git` from absolute paths. Steering files have size caps and must be plain files. Pipes and symlinks cannot stall hooks or redirect writes. Replaced files use temp files and rename, so an interrupted write cannot leave a half-file. If the terminal cannot hide input, subrosa refuses to ask for the mirror passphrase.
+- README, FAQ, and the comparison doc now state that the model downloads on first run by default. They say there is no daemon, only a finite indexing pass that exits. They also state what the network downloads and what stays local.
 
 ## [0.24.0] - 2026-08-09
 
 ### Changed
 
-- `subrosa embed` is about 300x faster. A real 127,688-turn archive went from 47 hours to 9 minutes 21 seconds (227 turns/sec) on an M3 Max, peaking at 1.25 GB of memory. Three things did it: a smaller model, one worker thread per core sharing a single loaded model instead of one core doing everything, and embedding each repeated turn only once — a fifth of a real archive repeats itself.
-- BREAKING: the embedding model moves from bge-large-en-v1.5 to [bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) (MIT, pinned to one revision) — 133 MB to download instead of 1.3 GB, and 384-dimensional vectors instead of 1024, which also makes every semantic search about 2.7x faster to scan. Vectors are keyed by model, so old ones can no longer be ranked: `subrosa embed` deletes any vector left by a model it no longer ships, says how many, and re-indexes. The smaller vectors take about as much disk as the ones they replace, so the database barely changes size.
-- `subrosa embed` now works newest first, so recent sessions are searchable within the first minute instead of only when the whole archive finishes. It is still resumable — press Ctrl-C and the next run picks up the rest.
-- The progress line carries a rate and an estimate — `embedded 4096/127688 · 192/s · ~11m left` — instead of just a count.
-- macOS builds link Apple's Accelerate framework for the matrix work. That is a link line, not a compile step: direct dependencies stay at 11 on every platform, and Linux and musl builds are unchanged.
+- A 127,688-turn archive fell from 47 hours to 9 minutes 21 seconds, or 227 turns/sec, on an M3 Max. It peaked at 1.25 GB of memory. A smaller model and 1 worker thread per core sharing 1 loaded model caused the gain. This replaced 1 core doing everything. Embedding each repeated turn only once also helped. About 1/5 of the archive repeats a turn.
+- BREAKING: The embedding model changes from bge-large-en-v1.5 to [bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) (MIT, pinned to one revision). The download drops from 1.3 GB to 133 MB. Vectors drop from 1024 to 384 dimensions, making semantic search about 2.7x faster to scan. Vectors use model keys, so old vectors cannot be ranked. `subrosa embed` deletes old-model vectors, reports the count, and re-indexes. The database barely changes size because the new vectors use about the same disk.
+- Embedding now works newest first. Recent sessions become searchable within the first minute. It remains resumable. Press Ctrl-C and the next run continues. The progress line shows a rate and estimate, for example `embedded 4096/127688 · 192/s · ~11m left`, instead of only a count.
+- macOS builds link Apple's Accelerate framework for matrix work. This is a link step, not a compile step. Direct dependencies stay at 11 on every platform. Linux and musl builds are unchanged.
 
 ## [0.23.0] - 2026-08-08
 
 ### Added
 
-- Battery-included semantic search: `subrosa embed` and `search --semantic` now run the bge-large-en-v1.5 model inside subrosa itself via candle, CPU-only, pure Rust. No Ollama, no server, nothing else to install. On the first `subrosa embed` the model (~1.3 GB, MIT-licensed, pinned to one revision) downloads once into `~/.claude/subrosa/models/` through your system `curl` — every file sha256-pinned and size-capped, resumable if interrupted, and serialized by a lock so two runs never fight. No curl? The error names the three files and where to put them, and hand-downloaded files are checksummed too.
+- Semantic search is built into subrosa. `subrosa embed` and `search --semantic` run bge-large-en-v1.5 through candle, CPU-only and pure Rust. No Ollama, server, or extra install is needed. The first `subrosa embed` downloads the model once to `~/.claude/subrosa/models/` through system `curl`. The model is about 1.3 GB, MIT-licensed, and pinned to one revision; every file is sha256-pinned and size-capped. Downloads resume after interruption and a lock serializes them. Without curl, the error names the 3 files and their location; hand-downloaded files are also checksummed.
 
 ### Changed
 
-- BREAKING: the Ollama backend is gone, and with it `SUBROSA_OLLAMA_HOST`/`ollama_host` and `SUBROSA_EMBED_MODEL`/`embed_model`. Vectors made with v0.22.0 stay in the database under their old key and are ignored; run `subrosa embed` once after upgrading to re-index with the built-in model.
-- The binary now opens no sockets at all — the one network touch left is the model download, a visible `curl` child process. Search queries are still redacted before they reach the model, and nothing ever leaves your machine.
-- Direct dependencies 7 → 11 (candle-core, candle-nn, candle-transformers, sha2). candle is pinned to 0.9 — the last version with a pure-Rust tree — and a guard test fails the build if a bump drags C code back in. Binary ~4 → ~5.3 MB.
+- The Ollama backend is gone. So are `SUBROSA_OLLAMA_HOST`/`ollama_host` and `SUBROSA_EMBED_MODEL`/`embed_model`. v0.22.0 vectors stay under their old key and are ignored. Run `subrosa embed` once after upgrading.
+- The binary opens no sockets. The only network action is the model download through a visible `curl` child process. Search queries are redacted before the model sees them. Nothing leaves your machine.
+- Direct dependencies grow from 7 to 11: candle-core, candle-nn, candle-transformers, and sha2. candle stays pinned to 0.9, the last pure-Rust version. A guard test rejects any bump that brings back C code. The binary grows from about 4 MB to about 5.3 MB.
 
 ## [0.22.0] - 2026-08-08
 
 ### Added
 
-- `subrosa fact doctor` — a read-only integrity check over a project's memory. It flags malformed or spliced frontmatter, missing or invalid fields, dangling `[[links]]`, duplicate name slugs, and orphaned leaves or facts. It errors on your own registered facts and only warns on foreign leaves, so it never cries wolf on Claude Code's native auto-memory. The `/subrosa:checkpoint` skill now runs it after each save, so a corrupted leaf — the kind that silently stops loading — gets caught where it happens. Exit 1 on any error, so it can gate a script.
-- Opt-in semantic search. `subrosa embed` precomputes an embedding per turn via a local Ollama endpoint into a lazy `turn_embeddings` table (no schema change, zero cost until you use it), and `search --semantic` ranks the whole archive by meaning — surfacing turns that share no words with your query. Configure with `SUBROSA_OLLAMA_HOST` / `ollama_host` (default `localhost:11434`) and `SUBROSA_EMBED_MODEL` / `embed_model` (default `nomic-embed-text`); `subrosa embed --rebuild` re-embeds a model from scratch. The query is redacted before it is sent, and if the index is incomplete the search says so rather than quietly under-searching. Needs Ollama running; the one-time backfill takes minutes and roughly 150 MB on a large archive. The Ollama client is hand-rolled over `std::net` and the existing `serde_json`, so this adds zero dependencies — still 7 crates, still a single static binary with no networking crate.
+- `subrosa fact doctor` is a read-only memory integrity check. It flags malformed or spliced frontmatter, missing or invalid fields, dangling `[[links]]`, duplicate name slugs, and orphaned leaves or facts. It errors on your registered facts and warns on foreign leaves. This avoids false errors on Claude Code's native auto-memory. The `/subrosa:checkpoint` skill runs it after each save and catches corrupted leaves when they occur. It exits 1 on any error.
+- Opt-in semantic search adds a lazy `turn_embeddings` table. `subrosa embed` creates one embedding per turn through a local Ollama endpoint and adds no schema change or cost until used. `search --semantic` ranks the archive by meaning, including turns with no shared query words. Configure it with `SUBROSA_OLLAMA_HOST` / `ollama_host` (default `localhost:11434`) and `SUBROSA_EMBED_MODEL` / `embed_model` (default `nomic-embed-text`). `subrosa embed --rebuild` re-embeds a model from scratch. Queries are redacted before sending; incomplete indexes report their state instead of under-searching.
+- Ollama must run. A large-archive backfill takes minutes and about 150 MB. The client uses hand-rolled `std::net` and existing `serde_json`. This adds zero dependencies, leaving 7 crates, one static binary, and no networking crate.
 
 ### Changed
 
-- Positioning: subrosa's core — capture, recall, storage, and all non-semantic search — stays zero-network. The one exception is the opt-in `search --semantic` and `subrosa embed`, which reach a local Ollama model you run over a plain-HTTP localhost call. Recall stays keyword-only and never touches the network. README, FAQ, and the comparison doc are reworded to match.
+- Core capture, recall, storage, and non-semantic search remain zero-network. The opt-in `search --semantic` and `subrosa embed` calls use a local Ollama model over plain HTTP. Recall stays keyword-only and never uses the network. README, FAQ, and the comparison doc now match.
 
 ## [0.21.0] - 2026-08-08
 
 ### Added
 
-- Per-project `MEMORY.md` budget: a `.budget` file in a project's memory folder (one number, bytes) overrides the 23,000-byte default, so a saturated project can stop dropping good facts. An explicit `--budget` still beats the file; a bad file warns and falls back; an unreadable one stops `generate` before it rewrites anything.
-- The index now also honors Claude Code's 200-line `MEMORY.md` load cap: facts past line 200 are archive-dropped and reported exactly like byte-budget drops, and the session-start nudge and dashboard flag line overflow too.
-- Encrypted mirror snapshots: set a passphrase (`subrosa setup`, or the `mirror_passphrase` config key / `SUBROSA_MIRROR_PASSPHRASE`) and the mirror copy of each backup snapshot is sealed with XChaCha20-Poly1305, keyed by Argon2id from your passphrase, parameters stored in the file header. The live database and local snapshots stay plaintext — this protects the copy that leaves the machine. Keep the passphrase in a password manager: without it the off-machine copy is unrecoverable.
-- `subrosa restore <file.enc> [--out path]`: decrypts a sealed snapshot, verifies it is a SQLite database, refuses to write into cloud-synced folders by default, never overwrites an existing file, and never touches the live database.
-- Redaction now masks passphrase-shaped secrets whole-line (`SUBROSA_MIRROR_PASSPHRASE=...`, `mirror_passphrase: ...`) and env-var-style names the old pattern missed (`MYSQL_PASSWORD=`, `API_TOKEN=`), so the mirror passphrase can never reach the archive it seals.
+- A per-project `MEMORY.md` budget can use a `.budget` file with one number in bytes. It overrides the 23,000-byte default. An explicit `--budget` wins. A bad file warns and falls back. An unreadable file stops `generate` before rewriting.
+- The index honors Claude Code's 200-line `MEMORY.md` cap. Facts after line 200 are archive-dropped and reported like byte-budget drops. The session-start nudge and dashboard also flag line overflow.
+- Encrypted mirror snapshots use XChaCha20-Poly1305 and Argon2id. Set a passphrase with `subrosa setup`, `mirror_passphrase`, or `SUBROSA_MIRROR_PASSPHRASE`. Each mirror backup is sealed, with Argon2id parameters in the file header. The live database and local snapshots stay plaintext; this protects the copy that leaves the machine. Keep the passphrase in a password manager. Without it, the off-machine copy cannot be recovered.
+- `subrosa restore <file.enc> [--out path]` decrypts a sealed snapshot and verifies its SQLite format. It refuses cloud-synced output folders by default. It never overwrites an existing file or touches the live database.
+- Redaction now masks whole-line passphrase secrets such as `SUBROSA_MIRROR_PASSPHRASE=...` and `mirror_passphrase: ...`. It also masks names such as `MYSQL_PASSWORD=` and `API_TOKEN=`. The mirror passphrase cannot reach the archive it seals.
 
 ### Changed
 
-- `mirror=none` in the config now also switches off a `SUBROSA_MIRROR` environment override — a security opt-out must not lose to a shell profile. Delete the line or re-run `subrosa setup` to mirror again. This is a behavior change if you kept `mirror=none` in the config while mirroring purely through the env var.
-- Once encryption is intended — a passphrase resolves, or a sealed `.enc` sits in the mirror folder — the mirror never goes out in plaintext: stale readable copies (including iCloud eviction placeholders) are purged on every backup path, downgrading requires deleting the `.enc` yourself, and any failure skips the mirror instead of falling back.
-- Two new dependencies, `chacha20poly1305` and `argon2` (both pure Rust); direct crates go 5 → 7.
+- `mirror=none` in config now disables a `SUBROSA_MIRROR` environment override. Delete the line or run `subrosa setup` to mirror again. This changes behavior when config has `mirror=none` and mirroring uses only the environment.
+- When encryption is intended, the mirror never sends plaintext. This applies when a passphrase resolves or a sealed `.enc` is in the mirror folder. Every backup removes stale readable copies, including iCloud eviction placeholders. Downgrading requires deleting the `.enc` yourself. Any failure skips the mirror instead of falling back.
+- Two pure-Rust dependencies, `chacha20poly1305` and `argon2`, raise direct crates from 5 to 7.
 
 ## [0.20.1] - 2026-07-19
 
 ### Fixed
 
-- `subrosa checkpoint-mark` could stamp the wrong session when another project's transcript was modified more recently — a concurrent session or a spawned agent — so the just-checkpointed session re-queued and got drained a second time. The mark now targets the newest transcript in the current directory's own project, and accepts an optional session id or unique prefix (`subrosa checkpoint-mark <id>`) to pin it exactly.
+- `subrosa checkpoint-mark` could choose another project's newer transcript, including a concurrent session or spawned agent. The saved session then re-queued and ran twice. It now chooses the newest transcript in the current directory's project. An optional session id or unique prefix, `subrosa checkpoint-mark <id>`, pins the target.
 
 ## [0.20.0] - 2026-07-19
 
 ### Added
 
-- `subrosa search --fuzzy` now rescues small typos. When the substring pass finds nothing, it falls back to the nearest matches within one edit — a wrong, missing, extra, or swapped letter (`latecny` finds `latency`). Hits print under a new `no substring match — nearest matches (within one edit):` header. With several terms, one typo'd term is rescued while the others stay exact. Existing searches are unchanged: the fallback only runs where you previously got "no matches", and recall stays on exact keyword matching.
+- `subrosa search --fuzzy` now handles small typos. If substring search finds nothing, it prints a new `no substring match` header and finds matches within 1 edit. It handles a wrong, missing, extra, or swapped letter, such as `latecny` for `latency`. With several terms, it rescues one typo while keeping other terms exact. Existing searches stay unchanged because the fallback runs only after no matches. Recall remains exact keyword search.
 
 ### Changed
 
-- README, FAQ, and `--help` now describe `--fuzzy` as matching "partial names and small typos", with the one-edit mechanism spelled out in the FAQ.
+- README, FAQ, and `--help` now describe `--fuzzy` as matching partial names and small typos. The FAQ explains the 1-edit rule.
 
 ## [0.19.2] - 2026-07-07
 
 ### Changed
 
-- The `/subrosa:checkpoint` report's safe-to-wipe line now leads with 👍 instead of 🟢.
+- The `/subrosa:checkpoint` report safe line now starts with 👍 instead of 🟢.
 
 ## [0.19.1] - 2026-07-07
 
 ### Changed
 
-- The `/subrosa:checkpoint` skill now closes with a short glance instead of a long ledger. The report is a one-line headline (`✅ Saved X, Updated Y.` — archived and flagged counts ride the same line only when non-zero), a `📋 Recap` of what the session actually did, and the `🟢 Safe to /clear or /compact.` line. The old per-category Saved/Updated/Skipped lists, the `MEMORY.md` byte block, and the named archive/review sections no longer print. The skill still runs the full save/update/staleness/regenerate procedure — only what it prints changed; the per-leaf detail stays recoverable with `subrosa fact list` and `subrosa search`.
+- The `/subrosa:checkpoint` report now uses a short glance instead of a long ledger. It prints a one-line headline, a `📋 Recap`, and `🟢 Safe to /clear or /compact.`. The headline is `✅ Saved X, Updated Y.`. Add archived and flagged counts on that line only when non-zero.
+- The old Saved, Updated, and Skipped lists, `MEMORY.md` byte block, and named archive or review sections no longer print. The skill still runs the full save, update, staleness, and regenerate procedure. Only the printed report changed. Per-leaf detail remains available through `subrosa fact list` and `subrosa search`.
 
 ## [0.19.0] - 2026-06-21
 
 ### Added
 
-- `subrosa init --claude-md` now installs a second standing instruction, `## Memory auto-checkpoint (subrosa)`, next to the existing recall section. It tells Claude to run the `/subrosa:checkpoint-backlog` skill in the background — without blocking the task you're working on — whenever sessions are queued for checkpoint, so the backlog gets cleared on its own. The two sections are upserted independently: re-running `init --claude-md` adds whichever section is missing without duplicating or rewriting what's already there, so an existing install picks up the new section on the next run.
+- `subrosa init --claude-md` now installs `## Memory auto-checkpoint (subrosa)` beside the recall section. It tells Claude to run `/subrosa:checkpoint-backlog` in the background without blocking the task when sessions wait for checkpointing. The two sections update independently. Re-running `init --claude-md` adds only missing sections. It does not duplicate or rewrite existing sections. Existing installs get the new section on the next run.
 
 ## [0.18.0] - 2026-06-21
 
 ### Changed
 
-- The per-prompt checkpoint-backlog directive now tells Claude to run `/subrosa:checkpoint-backlog` in the background without blocking the current turn, instead of just naming the skill. The reminder that rides each prompt while sessions are queued now cues the action — kick the backlog off as a non-blocking background task and carry on — so a queued backlog gets handled without making you wait.
+- The per-prompt checkpoint-backlog directive now tells Claude to run `/subrosa:checkpoint-backlog` in the background without blocking the current turn, rather than only naming the skill. The queued-session reminder now starts that non-blocking task, so the backlog clears without making the user wait.
 
 ## [0.17.0] - 2026-06-21
 
 ### Added
 
-- The checkpoint-backlog reminder now also rides every prompt (`UserPromptSubmit`), not just the once-per-session-start nudge. While sessions are waiting to be checkpointed, subrosa injects a short `[subrosa] ACTION REQUIRED before this turn: N session(s) queued…` line ahead of recall, so the backlog stays in view even when a busy first task scrolls the session-start nudge out of sight. It repeats until the queue drains, honors `checkpoint_nudge` (`off` silences it, `quiet` is a one-liner), and stays `[subrosa]`-prefixed so it never feeds back into the archive.
+- The checkpoint-backlog reminder now runs on every `UserPromptSubmit`, not only once at session start. While sessions wait, subrosa adds `[subrosa] ACTION REQUIRED before this turn: N session(s) queued…` before recall. It stays visible when a busy first task hides the session-start nudge. The reminder repeats until the queue drains. It honors `checkpoint_nudge`: `off` silences it and `quiet` makes it one line. Every line starts with `[subrosa]`, so it never feeds back into the archive.
 
 ## [0.16.0] - 2026-06-21
 
 ### Changed
 
-- The `Stop` hook's per-turn live ingest now resumes from a saved byte offset instead of re-reading the whole transcript each turn. The cost stays flat no matter how long the session runs — a long multi-hour session ingests each turn as fast as a fresh one (~7 ms), where before the per-turn cost grew with the transcript length. The archive it produces is byte-for-byte identical to a full re-read; this is a speed change only. Schema v4 adds two `sessions` columns (`scan_offset`, `scan_seq`) for the cursor — an additive migration; existing archives re-read once on the next ingest to set it.
+- The `Stop` hook now resumes live ingest from a saved byte offset instead of rereading the transcript. Per-turn cost stays flat at about 7 ms, even in long sessions. The archive stays byte-for-byte identical to a full reread. This changes speed only. Schema v4 adds `scan_offset` and `scan_seq` to `sessions` as an additive migration. Existing archives reread once on the next ingest to set the cursor.
 
 ## [0.15.0] - 2026-06-21
 
 ### Changed
 
-- The session-start checkpoint-backlog nudge is loud by default. When sessions are waiting to be checkpointed, subrosa prints an `[subrosa] ACTION REQUIRED — N session(s) queued…` block — a short directive plus the up-to-5 newest queued session ids — instead of the old one-line note, so the backlog is harder to skip. Every line stays `[subrosa]`-prefixed, so it's still dropped on ingest and never feeds back into recall.
+- The session-start checkpoint-backlog nudge is loud by default. It prints an `[subrosa] ACTION REQUIRED` block with a short directive and up to 5 newest queued session ids. It replaces the old one-line note. Every line starts with `[subrosa]`, so ingest drops it and it never feeds back into recall.
 
 ### Added
 
-- `checkpoint_nudge` config key (and the `SUBROSA_CHECKPOINT_NUDGE` env var, which wins over the config file) to pick the nudge style: `loud` (default), `quiet` (the previous one-liner), or `off`. An unset or unknown value falls back to loud.
+- The `checkpoint_nudge` config key and `SUBROSA_CHECKPOINT_NUDGE` environment variable choose the style. The environment variable wins. Options are `loud` (default), `quiet` (previous one-line style), and `off`. An unset or unknown value uses loud.
 
 ## [0.14.1] - 2026-06-19
 
 ### Fixed
 
-- Recall now finds a past session even when an identifier was written with a different separator. The FTS5 index splits `-`, `_`, and `.` the same way, but the relevance post-filter didn't — so a stored `cache_prod` wouldn't match a prompt's `cache-prod` even though the search had already found the row. The post-filter now folds the three separators the way FTS does, and it only re-admits rows the search already returned, so recall stays exactly as quiet on weak matches as before.
-- The match-term gate no longer over-filters long pasted prompts. It scales the number of required matching terms with prompt length, but that's now capped, so a pasted error log plus a question can't demand so many matches that the genuinely relevant session is dropped. The anchor requirement is unchanged.
+- Recall now matches identifiers with different separators. FTS5 treats `-`, `_`, and `.` alike, but the old relevance filter did not. A stored `cache_prod` now matches `cache-prod` without adding weak results. The filter folds all 3 separators and only keeps rows returned by search. Recall remains quiet on weak matches.
+- The match-term gate no longer over-filters long pasted prompts. It scales required terms with prompt length and caps the result. A pasted error log plus a question cannot demand too many matches. The anchor requirement is unchanged.
 
 ## [0.14.0] - 2026-06-19
 
 ### Added
 
-- `subrosa search -C/--context N` prints the N turns on each side of every hit (same session), so you can read a match in context without opening the whole session. The default `N=0` keeps the output byte-for-byte as before.
-- `subrosa search --exclude <term>` drops hits that contain the term (repeatable). It's built on the same phrase-quoting as the positive terms, so identifiers stay hyphen-safe, and it's ignored with `--raw`.
-- `subrosa search --any` matches any term instead of all — OR instead of the default AND. It composes with `--exclude` as `(a OR b) NOT c`.
-- `subrosa fact search <terms>` runs a bm25-ranked full-text search over the curated facts (title, hook, description), scoped to the current project, with a `--status` filter (active by default). It finds one fact once a project has dozens.
+- `subrosa search -C/--context N` prints N turns on each side of each hit in the same session. The default `N=0` keeps output byte-for-byte unchanged. `subrosa search --exclude <term>` removes hits containing a term. The flag is repeatable. It uses the positive-term phrase quoting, so identifiers stay hyphen-safe. It is ignored with `--raw`.
+- `subrosa search --any` matches any term instead of all terms. It uses OR instead of AND. With `--exclude`, it behaves as `(a OR b) NOT c`.
+- `subrosa fact search <terms>` runs a bm25-ranked full-text search over title, hook, and description. It uses the current project and `--status`, active by default. It finds a fact in projects with dozens of facts.
 
 ## [0.13.0] - 2026-06-17
 
 ### Added
 
-- `subrosa search` now shows each hit's relative age after the timestamp — `[2026-05-29 13:42] (7mo old)` — using the same `(today)` / `(3d old)` / `(2w old)` form recall already prints. You can tell how fresh a result is at a glance without doing date math. Both surfaces share one helper, so they always read the same.
+- `subrosa search` now shows relative age after each timestamp, such as `[2026-05-29 13:42] (7mo old)`. It uses the same `(today)`, `(3d old)`, and `(2w old)` forms as recall. This shows freshness without date math. Both surfaces use one helper.
 
 ## [0.12.1] - 2026-06-17
 
 ### Changed
 
-- The README banner is now an animated wordmark SVG — the rings in the "o" of the mark spin. Refreshed the brand assets (banner, mark, social card) to match. No code or behavior change.
+- The README banner is now an animated wordmark SVG. The rings in the `o` spin. The banner, mark, and social card assets were refreshed. There is no code or behavior change.
 
 ## [0.12.0] - 2026-06-17
 
 ### Added
 
-- Near-real-time archiving of the in-progress session. A `Stop` hook now runs `subrosa hook stop` after each assistant turn, incrementally ingesting just the active transcript (not a full sweep), so the current session is searchable with `subrosa search` before it ends — handy when a second terminal or agent needs to see this session, or when you switch sessions fast and want the one you just left already archived. It adds ~7 ms per turn and runs after the reply is on screen. Automatic prompt recall still skips the current session on purpose, so it never echoes your own turns back.
+- A `Stop` hook now runs `subrosa hook stop` after each assistant turn. It incrementally ingests only the active transcript, so the current session is searchable before it ends. This helps a second terminal or agent and fast session switches. It adds ~7 ms per turn and runs after the reply appears. Automatic prompt recall still skips the current session, so it never echoes your own turns.
 
 ## [0.11.0] - 2026-06-16
 
 ### Added
 
-- Auto-derived session tags. When a session is archived, subrosa reads its stored (already-redacted) turns and derives three kinds of read-only tag — `tool:bash` (tools the session used), `ext:rs` (file types it touched), and `topic:cache-prod` (the distinctive terms it was about). They're computed locally with no LLM, cost zero tokens, and are recomputed (never hand-edited) on each archive. A new `session_tags` table holds them — schema v3, an additive migration with a one-time backfill for existing archives.
-- `subrosa search` filters: `--after` / `--before` (UTC `YYYY-MM-DD`, inclusive) narrow by date, and `--tag` (repeatable, ANDed) narrows by tag. The filters run before `bm25`, so ranking is unchanged.
-- `subrosa sessions`: a new verb that lists past sessions newest-first with their tags, filterable by `--project`, `--after`/`--before`, and `--tag`. It's the by-session view of the archive — find work by what it was about without remembering a keyword.
-- `subrosa session <id> --tags`: an opt-in flag that adds the session's tags to the dump header. The default output is byte-for-byte unchanged.
+- Archived sessions now get read-only tags from stored, redacted turns. Tags cover tools such as `tool:bash`, file types such as `ext:rs`, and distinctive topics such as `topic:cache-prod`. They run locally, use no LLM or tokens, and are recomputed on each archive. They are never hand-edited. The `session_tags` table uses schema v3 with an additive migration and one-time backfill.
+- `subrosa search` now supports `--after` and `--before` with inclusive UTC `YYYY-MM-DD` dates. Repeatable `--tag` filters use AND. Filters run before `bm25`, so ranking stays unchanged.
+- `subrosa sessions` lists past sessions newest-first with tags. It supports `--project`, `--after`, `--before`, and `--tag` filters. This provides a by-session view and helps find work without a keyword.
+- The opt-in `subrosa session <id> --tags` flag adds tags to the dump header. The default output stays byte-for-byte unchanged.
 
 ## [0.10.0] - 2026-06-16
 
 ### Added
 
-- Auto-recall lines now show a relative age after the session date — `(today)`, `(3d old)`, `(2w old)`, `(7mo old)`, `(2y old)` — so Claude leans on fresh hits and double-checks stale ones against current code. The per-prompt cap is unchanged (~180 tokens; `scripts/bench.sh` measures 177).
+- Auto-recall lines now show relative age after the session date: `(today)`, `(3d old)`, `(2w old)`, `(7mo old)`, or `(2y old)`. Claude can weigh fresh hits and check stale ones against current code. The per-prompt cap stays about 180 tokens. `scripts/bench.sh` measures 177.
 
 ### Changed
 
-- Raised the declared MSRV to `rust-version = "1.85"` to match the locked `clap 4.6` (which already requires it), refreshed the dependency lockfile, and adopted the `is_none_or` / `repeat_n` idioms that MSRV unlocks. Still 5 direct dependencies — none added.
+- The declared MSRV is now `rust-version = "1.85"` to match locked `clap 4.6`. The dependency lockfile was refreshed. The code now uses `is_none_or` and `repeat_n`. There are still 5 direct dependencies, with none added.
 
 ## [0.9.0] - 2026-06-15
 
 ### Added
 
-- `subrosa fact link <anchor>`: a read-only verb that shows the `[[name]]` links into and out of a curated fact. It lists what the fact links to (outbound) and which facts link back (inbound), resolves each slug to its title, and flags links that point to a fact that doesn't exist (`[dangling]`), to the fact itself (`[self]`), or to an archived fact. It's the curated counterpart to `related`: the links are written by hand, so the connections are exact rather than guessed from co-occurrence. The `/subrosa:checkpoint` skill now writes these links when saving a fact and verifies them with `subrosa fact link`.
+- `subrosa fact link <anchor>` is a read-only command for `[[name]]` links into and out of a curated fact. It lists outbound and inbound links, resolves slugs to titles, and flags missing facts as `[dangling]`, self-links as `[self]`, and archived facts. It complements `related`. Hand-written links are exact, unlike co-occurrence guesses. The `/subrosa:checkpoint` skill writes and checks them.
 
 ## [0.8.1] - 2026-06-14
 
 ### Changed
 
-- `subrosa session <id>` now accepts a unique id prefix, not just the full id — so the 8-character session id that `search` and `related` print can be pasted straight back to open the session. An ambiguous prefix lists the candidates; an exact id still resolves outright.
+- `subrosa session <id>` now accepts a unique id prefix, not only the full id. The 8-character id from `search` and `related` can open a session. An ambiguous prefix lists candidates. An exact id still resolves directly.
 
 ## [0.8.0] - 2026-06-14
 
 ### Added
 
-- `subrosa related <identifier>`: a read-only verb that surfaces what co-occurs with an identifier across the archive. It ranks the terms that keep showing up alongside the anchor — down-weighting words that are common archive-wide, so identifiers and distinctive terms rise — and then lists the past sessions those terms came from. It answers "what did this work touch", which `search` (text match) can't. Co-occurrence is computed in process over the matched sessions, so it stays sub-second even on a 50k-turn archive.
+- `subrosa related <identifier>` shows terms that co-occur with an identifier across the archive. It down-weights common archive words and ranks distinctive terms, then lists their sessions. It answers what the work touched, unlike text search. It runs in process and stays under 1 second on a 50k-turn archive.
 
 ## [0.7.0] - 2026-06-14
 
 ### Added
 
-- GitHub community health files: Code of conduct (Contributor Covenant 2.1), `CONTRIBUTING.md`, `SECURITY.md`, and issue + pull-request templates.
+- GitHub community health files now include the Code of Conduct (Contributor Covenant 2.1), `CONTRIBUTING.md`, `SECURITY.md`, and issue and pull-request templates.
 
 ### Changed
 
-- `/subrosa:checkpoint-backlog` now checkpoints a multi-project queue in parallel — one sub-agent per project, all run at once, with each project's sessions handled serially so a project's `MEMORY.md` never races itself. A single-project queue stays sequential, exactly as before. The orchestrator clears a session from the queue only after its lane reports it done, so a failed lane simply leaves its sessions queued for the next run.
+- `/subrosa:checkpoint-backlog` now handles multi-project queues in parallel. It starts one sub-agent per project and keeps each project's sessions serial. A single-project queue stays sequential. The orchestrator clears a session only after its lane reports completion. A failed lane leaves its sessions queued.
 
 ## [0.6.0] - 2026-06-14
 
 ### Changed
 
-- Auto-recall now injects a **match-centered snippet** (FTS5 `snippet()`) so the line shows *why* a past session matched, instead of the turn's first 160 characters. The ~180-token-per-prompt cap is unchanged.
-- The recall post-match gate is **stem/prefix-aware** instead of substring-based: it keeps Porter word-form matching (`deploy`↔`deployed`) while rejecting false positives like `spec` inside `respect`.
-- Recall ranking gained a relative `bm25` floor (drops weak tails) and a mild **recency tie-break** (a fresher session wins only a genuine near-tie), and the required matched-term count now scales with prompt length.
+- Auto-recall now injects an FTS5 `snippet()` centered on the match, instead of the turn's first 160 characters. The cap stays about 180 tokens per prompt.
+- The recall post-match gate is stem and prefix aware. It keeps Porter matches such as `deploy` and `deployed`. It rejects false matches such as `spec` inside `respect`.
+- Recall ranking now has a relative `bm25` floor that drops weak tails and a mild recency tie-break. A fresher session wins only a genuine near-tie. Required matched terms now scale with prompt length.
 
 ## [0.5.0] - 2026-06-14
 
 ### Added
 
-- `subrosa search --fuzzy`: substring and typo matching via a trigram index, built on first use. Exact search and auto-recall stay on the Porter index.
+- `subrosa search --fuzzy` adds substring and typo matching through a trigram index built on first use. Exact search and auto-recall still use the Porter index.
 
 ## [0.4.2] - 2026-06-13
 
 ### Added
 
-- `subrosa init --claude-md`: opt-in, idempotent command that appends the memory-recall block to your `CLAUDE.md` so Claude searches the archive on its own.
+- `subrosa init --claude-md` is an opt-in, idempotent command. It appends the memory-recall block to `CLAUDE.md`, so Claude searches the archive automatically.
 
 ## [0.4.1] - 2026-06-12
 
 ### Changed
 
-- Performance: fork-free hook wrapper, SQLite `mmap` + in-memory temp store, zero-copy redaction, and a capped recall FTS union bring the per-prompt hook fire to well under 10 ms. Added `scripts/bench.sh`.
+- Performance work adds a fork-free hook wrapper, SQLite `mmap` and in-memory temp storage, zero-copy redaction, and a capped recall FTS union. The per-prompt hook runs well under 10 ms. Added `scripts/bench.sh`.
 
 ## [0.4.0] - 2026-06-12
 
 ### Added
 
-- PreCompact hook: archives the conversation before compaction summarizes it away, and resets recall dedup so post-compact prompts can re-surface relevant sessions.
+- The PreCompact hook archives the conversation before compaction summarizes it. It also resets recall dedup so post-compact prompts can resurface relevant sessions.
 
 ### Changed
 
-- FTS now uses the Porter stemmer (schema v2) so recall matches word forms (`deploy` / `deployed` / `deploying`); identifiers still match exactly. The index rebuilds from the source tables on upgrade.
+- FTS now uses the Porter stemmer in schema v2. Recall matches word forms such as `deploy`, `deployed`, and `deploying`. Identifiers still match exactly. Upgrades rebuild the index from source tables.
 
 ## [0.3.0] - 2026-06-12
 
 ### Changed
 
-- Token-economy hardening: recall requires an anchor-grade term and dedups per session, index hook lines are capped, and the session-start nudge is filtered out of the archive. Added a `SIGPIPE` guard so `subrosa search | head` exits cleanly.
+- Recall now requires an anchor-grade term and deduplicates per session. Index hook lines are capped. The session-start nudge is filtered from the archive. A `SIGPIPE` guard makes `subrosa search | head` exit cleanly.
 
 ## [0.2.1] - 2026-06-12
 
 ### Fixed
 
-- Eliminated SQLite lock errors from concurrent hooks: immediate transactions, read-only connects, and atomic retrying backups.
+- Concurrent hooks no longer cause SQLite lock errors. Immediate transactions, read-only connections, and atomic retrying backups fix this.
 
 ## [0.2.0] - 2026-06-12
 
 ### Added
 
-- Auto-recall on prompts, curated facts with byte-budgeted `MEMORY.md` generation, the `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog` skills, the `subrosa` dashboard, `subrosa import`, and a pre-commit gate.
+- Added prompt auto-recall, curated facts with byte-budgeted `MEMORY.md` generation, the `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog` skills, the `subrosa` dashboard, `subrosa import`, and a pre-commit gate.
 
 ## [0.1.0] - 2026-06-12
 
 ### Added
 
-- Initial release: the Rust memory engine (archives Claude Code transcripts into a local SQLite FTS5 database), Claude Code plugin wiring, the plugin binary bootstrap, the install script, release automation, and CI.
+- Initial release: Rust memory engine, local SQLite FTS5 transcript archive, Claude Code plugin wiring, plugin binary bootstrap, install script, release automation, and CI.
 
 [0.25.1]: https://github.com/ij5a/subrosa/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/ij5a/subrosa/compare/v0.24.0...v0.25.0

@@ -33,25 +33,9 @@ fn copy_tree(src: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Derive the compact UTC timestamp used in the backup dir name from
-/// `now_iso()` — consistent with every other timestamp in the crate.
-fn compact_ts_from_iso(iso: &str) -> String {
-    // Keep only ASCII digits, take first 14 (YYYYmmddHHMMSS).
-    let digits: String = iso
-        .chars()
-        .filter(|c| c.is_ascii_digit())
-        .take(14)
-        .collect();
-    if digits.len() == 14 {
-        format!("{}-{}", &digits[..8], &digits[8..])
-    } else {
-        digits
-    }
-}
-
 /// Back up the memdir tree to `paths::mem_dir()/memory-backups/<parent>-<timestamp>`.
 fn backup(memdir: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let ts = compact_ts_from_iso(&db::now_iso());
+    let ts = crate::backup::compact_ts();
     let parent_name = memdir
         .parent()
         .and_then(|p| p.file_name())
@@ -110,13 +94,7 @@ pub fn run(memdir: Option<PathBuf>, no_backup: bool, project: Option<String>) ->
     // The project name is the parent dir name unless overridden.
     // Don't resolve() — the memory/ dir may be a symlink and resolving it would change
     // the project name to the backing store path instead of the canonical projects-dir name.
-    let project: String = project.unwrap_or_else(|| {
-        memdir
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    });
+    let project: String = project.unwrap_or_else(|| facts::project_of(&memdir));
 
     if !no_backup {
         match backup(&memdir) {

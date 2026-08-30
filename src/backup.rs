@@ -19,7 +19,7 @@ const THROTTLE_SECONDS: u64 = 24 * 3600;
 const STALE_TMP_SECONDS: u64 = 3600;
 pub const DEFAULT_KEEP: usize = 7;
 
-fn snapshots() -> Vec<std::path::PathBuf> {
+pub(crate) fn snapshots() -> Vec<std::path::PathBuf> {
     let mut v: Vec<_> = fs::read_dir(paths::backups_dir())
         .map(|rd| {
             rd.flatten()
@@ -35,6 +35,16 @@ fn snapshots() -> Vec<std::path::PathBuf> {
         .unwrap_or_default();
     v.sort();
     v
+}
+
+/// Derive the compact UTC timestamp used in filenames from `now_iso()`.
+pub(crate) fn compact_ts() -> String {
+    let digits: String = db::now_iso()
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .take(14)
+        .collect();
+    format!("{}-{}", &digits[..8], &digits[8..])
 }
 
 fn newest_age_secs() -> Option<u64> {
@@ -72,13 +82,7 @@ pub fn snapshot(
             }
         }
     }
-    // Filename timestamp from the ISO clock: 2026-06-12T06:20:02+00:00 → 20260612-062002
-    let ts: String = db::now_iso()
-        .chars()
-        .filter(|c| c.is_ascii_digit())
-        .take(14)
-        .collect();
-    let dest = dir.join(format!("snapshot-{}-{}.db", &ts[..8], &ts[8..]));
+    let dest = dir.join(format!("snapshot-{}.db", compact_ts()));
     // Page-by-page copy into a per-process temp file, then an atomic rename:
     // hooks racing an expired throttle can't clobber a finished snapshot, and a
     // failed copy never leaves a partial one. Busy/Locked steps retry (bounded).

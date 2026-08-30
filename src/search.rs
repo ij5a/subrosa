@@ -72,28 +72,17 @@ pub fn run(
         );
         return ExitCode::from(2);
     }
-    // Validate + normalize the date bounds up front (mirrors the empty-terms guard).
-    // Normalizing to zero-padded YYYY-MM-DD keeps the lexical ts comparison correct.
-    let after_bound = match after {
-        None => None,
-        Some(s) => match timeutil::parse_ymd(s) {
-            Some((y, mo, d)) => Some(format!("{y:04}-{mo:02}-{d:02}")),
-            None => {
-                eprintln!("[subrosa] bad --after date (want YYYY-MM-DD): {s}");
-                return ExitCode::from(2);
-            }
-        },
-    };
-    let before_bound = match before {
-        None => None,
-        Some(s) => match timeutil::parse_ymd(s).and_then(|(y, mo, d)| timeutil::next_day(y, mo, d))
-        {
-            Some(nd) => Some(nd),
-            None => {
-                eprintln!("[subrosa] bad --before date (want YYYY-MM-DD): {s}");
-                return ExitCode::from(2);
-            }
-        },
+    let (after_bound, before_bound) = match timeutil::date_bounds(after, before) {
+        Ok(bounds) => bounds,
+        Err(flag) => {
+            let s = if flag == "--after" {
+                after.unwrap_or("")
+            } else {
+                before.unwrap_or("")
+            };
+            eprintln!("[subrosa] bad {flag} date (want YYYY-MM-DD): {s}");
+            return ExitCode::from(2);
+        }
     };
     if limit == 0 {
         return ExitCode::SUCCESS;
@@ -431,12 +420,7 @@ fn print_results(conn: &rusqlite::Connection, rows: &[Hit], context: i64) {
 
     let now = timeutil::now_unix();
     for (i, (sid, ts, role, project, snip, seq)) in rows.iter().enumerate() {
-        let snip = snip
-            .as_deref()
-            .unwrap_or("")
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let snip = crate::text::collapse_ws(snip.as_deref().unwrap_or(""));
         let sid8 = crate::text::sid8(sid);
         // Relative age after the timestamp, shared with recall (`(7mo old)` etc.);
         // empty when the timestamp is missing or unparseable.

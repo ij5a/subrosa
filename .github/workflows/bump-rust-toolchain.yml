@@ -25,7 +25,7 @@ jobs:
       # ponytail: gate inline via `mise exec` so the NEW pin is on PATH, and
       # because GITHUB_TOKEN-opened PRs don't retrigger ci.yml. Swap to a PAT and
       # drop this if you'd rather the PR run the full matrix.
-      - run: mise exec -- cargo build --locked && mise exec -- cargo test --locked
+      - run: mise exec -- cargo test --locked
       - uses: peter-evans/create-pull-request@v8
         with:
           branch: chore/bump-rust-toolchain
@@ -42,4 +42,4 @@ jobs:
 
             ## How to test?
 
-            1. `cargo build --locked && cargo test --locked` ran in-job (PRs opened with `GITHUB_TOKEN` don't retrigger `ci.yml`, so the gate runs here).
+            1. `cargo test --locked` ran in-job (PRs opened with `GITHUB_TOKEN` don't retrigger `ci.yml`, so the gate runs here).

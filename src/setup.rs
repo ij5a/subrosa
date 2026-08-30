@@ -4,7 +4,7 @@
 //! corrupt live SQLite WAL files — so the mirror only ever receives a single
 //! static snapshot file.
 
-use std::io::{BufRead, IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -283,30 +283,23 @@ the queue as it finishes. Skip it silently when nothing is queued.
     },
 ];
 
-enum ClaudeMd {
-    /// Markers of the sections newly appended this run.
-    Written(Vec<&'static str>),
-    /// Every section was already present.
-    AlreadyPresent,
-}
-
 pub fn append_claude_md() -> ExitCode {
     let path = paths::claude_md();
     match upsert_claude_md(&path) {
-        Ok(ClaudeMd::Written(markers)) => {
-            for m in &markers {
-                println!("[subrosa] appended \"{m}\" to {}", path.display());
+        Ok(markers) => {
+            if markers.is_empty() {
+                println!(
+                    "[subrosa] {} already has subrosa's CLAUDE.md sections — nothing to do",
+                    path.display()
+                );
+            } else {
+                for m in &markers {
+                    println!("[subrosa] appended \"{m}\" to {}", path.display());
+                }
+                println!(
+                    "[subrosa] subrosa's CLAUDE.md sections cost ~250 tokens of always-loaded context in total; delete a section to undo"
+                );
             }
-            println!(
-                "[subrosa] subrosa's CLAUDE.md sections cost ~250 tokens of always-loaded context in total; delete a section to undo"
-            );
-            ExitCode::SUCCESS
-        }
-        Ok(ClaudeMd::AlreadyPresent) => {
-            println!(
-                "[subrosa] {} already has subrosa's CLAUDE.md sections — nothing to do",
-                path.display()
-            );
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -319,7 +312,7 @@ pub fn append_claude_md() -> ExitCode {
 /// Append-only: existing bytes are never rewritten; a missing file (and parent
 /// dir) is created. Appends each section whose marker is absent, separated by a
 /// blank line. NotFound reads count as empty; other read errors abort.
-fn upsert_claude_md(path: &std::path::Path) -> std::io::Result<ClaudeMd> {
+fn upsert_claude_md(path: &std::path::Path) -> io::Result<Vec<&'static str>> {
     let existing = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -346,7 +339,7 @@ fn upsert_claude_md(path: &std::path::Path) -> std::io::Result<ClaudeMd> {
         appended.push(s.marker);
     }
     if appended.is_empty() {
-        return Ok(ClaudeMd::AlreadyPresent);
+        return Ok(Vec::new());
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -356,7 +349,7 @@ fn upsert_claude_md(path: &std::path::Path) -> std::io::Result<ClaudeMd> {
         .append(true)
         .open(path)?;
     f.write_all(additions.as_bytes())?;
-    Ok(ClaudeMd::Written(appended))
+    Ok(appended)
 }
 
 #[cfg(test)]
@@ -373,21 +366,18 @@ mod claude_md_tests {
     /// All sections in order, joined the way upsert writes them into an empty file
     /// (each body ends in "\n", so one blank line falls between them).
     fn all_sections_joined() -> String {
-        let mut out = String::new();
-        for (i, s) in SECTIONS.iter().enumerate() {
-            if i > 0 {
-                out.push('\n');
-            }
-            out.push_str(s.body);
-        }
-        out
+        SECTIONS
+            .iter()
+            .map(|s| s.body)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
     fn creates_file_and_parent_dir() {
         let p = tmp("create");
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
-        assert!(matches!(upsert_claude_md(&p), Ok(ClaudeMd::Written(_))));
+        assert!(!upsert_claude_md(&p).unwrap().is_empty());
         assert_eq!(std::fs::read_to_string(&p).unwrap(), all_sections_joined());
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
@@ -398,7 +388,7 @@ mod claude_md_tests {
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, "# my rules").unwrap(); // no trailing newline
-        assert!(matches!(upsert_claude_md(&p), Ok(ClaudeMd::Written(_))));
+        assert!(!upsert_claude_md(&p).unwrap().is_empty());
         let got = std::fs::read_to_string(&p).unwrap();
         assert_eq!(got, format!("# my rules\n\n{}", all_sections_joined()));
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
@@ -408,9 +398,9 @@ mod claude_md_tests {
     fn second_run_is_a_no_op() {
         let p = tmp("noop");
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
-        assert!(matches!(upsert_claude_md(&p), Ok(ClaudeMd::Written(_))));
+        assert!(!upsert_claude_md(&p).unwrap().is_empty());
         let before = std::fs::read_to_string(&p).unwrap();
-        assert!(matches!(upsert_claude_md(&p), Ok(ClaudeMd::AlreadyPresent)));
+        assert!(upsert_claude_md(&p).unwrap().is_empty());
         assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
@@ -423,10 +413,7 @@ mod claude_md_tests {
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, SECTIONS[0].body).unwrap();
-        let appended = match upsert_claude_md(&p).unwrap() {
-            ClaudeMd::Written(m) => m,
-            ClaudeMd::AlreadyPresent => panic!("expected Written, got AlreadyPresent"),
-        };
+        let appended = upsert_claude_md(&p).unwrap();
         let want: Vec<_> = SECTIONS[1..].iter().map(|s| s.marker).collect();
         assert_eq!(appended, want);
         let got = std::fs::read_to_string(&p).unwrap();

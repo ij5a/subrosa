@@ -1,36 +1,36 @@
 # How subrosa compares
 
-Persistent-memory options for Claude Code, as of 2026-06-13. This compares what each project **documents** — its own docs, README, or issue tracker, all linked so you can check — not hands-on testing. If a claim is wrong or out of date, [open an issue](https://github.com/ij5a/subrosa/issues) and I'll fix it.
+This table summarizes public documentation as of 2026-06-13. It describes each design and is not a runtime test. The links support the claims.
 
 | | subrosa | claude-mem | Remember (Anthropic) | memsearch | claude-supermemory |
 |---|---|---|---|---|---|
-| What it is | Saves every session locally + selective recall | Memory compression, meaning-based search, web UI | Official plugin: tiered daily logs | Markdown memory + local vector search | Bridge to the Supermemory cloud |
-| Runtime | One 5 MB static binary, no daemon | TypeScript + Bun worker on port 37777 [^cm-readme] | Plugin (uses Claude Haiku to process saves) | Python + Milvus Lite | Node plugin + cloud API |
-| Storage | Local SQLite (full-text search) | Local SQLite + vector store | Local logs | Local Markdown + Milvus Lite (cloud opt-in) | Supermemory cloud [^sm-docs] |
-| Cost to save a session | Zero — mechanical parsing, no LLM call | Runs each session through Claude (Agent SDK) [^cm-arch] | "Typical cost is less than $0.01 per session save." [^rem] | Builds embeddings locally, no LLM call | Cloud processing; plugin requires Supermemory Pro ($19/mo+) [^sm-price] |
-| Context injected | ~180 tokens per prompt, usually 0; index capped at 23 KB by default | Some users report heavy token use at session start [^cm-618] [^cm-1848] | Reloads tiered logs at session start | "Automatic Context Injection Costs Zero Extra Tokens" [^ms-blog] | Injects saved memories at session start [^sm-docs] |
-| Recall | Keyword search, word-root matching, hyphen-safe identifiers, match-centered snippets, recency tie-break, + opt-in fuzzy (trigram), plus meaning-based (direct with `--semantic` or automatic after an exact miss, model runs in the binary, index keeps itself current), project-scoped, deduped per session | Keyword + meaning-based | Log reload | Meaning-based (vector) | Cloud, meaning-based |
-| Secret redaction before storage | Yes — keys, tokens, `password=` values masked at write | Manual `<private>` tags | Not documented | Not documented | Not documented either way [^sm-redact] |
-| Network calls | None; the search model comes down once on the first run, then everything runs locally (`semantic=off` skips even that) | Local worker; SDK calls for summarization | Anthropic API (Haiku) | Local by default | Required, every session |
-| Price / license | Free, MIT | Free, Apache-2.0 | Free plugin, pay per save | Free, MIT | Plugin free, service $19/mo+ |
-| State (2026-06-13) | Active | v13.5.6, 82k stars, very active | Official, active | Active (Zilliz) | Last release 2026-02-09 [^sm-repo] |
+| What it is | Local session archive with selective recall | Memory compression, semantic search, and web UI | Official plugin with tiered daily logs | Markdown memory with local vector search | Plugin for Supermemory cloud |
+| Runtime | One static 5 MB binary with no daemon | TypeScript and Bun worker on port 37777 [^cm-readme] | Plugin using Claude Haiku to process saves | Python and Milvus Lite | Node plugin and cloud API |
+| Storage | Local SQLite database | Local SQLite and vector store | Local logs | Local Markdown and Milvus Lite, with cloud opt-in | Supermemory cloud [^sm-docs] |
+| Save cost | `0`, mechanical parsing, no LLM call | Claude Agent SDK processes each session [^cm-arch] | Usually less than $0.01 per save [^rem] | Local embeddings, no LLM call | Cloud processing and Supermemory Pro at $19 per month or more [^sm-price] |
+| Context | About 180 tokens per prompt, usually 0. `MEMORY.md` is capped at 23 KB by default. | Worker-managed context | Tiered logs at session start | Documents zero extra tokens for automatic injection [^ms-blog] | Saved memories at session start [^sm-docs] |
+| Recall | Keyword-only automatic recall with word roots, exact hyphenated IDs, centered snippets, recency ties, project scope, and per-session deduplication. `--fuzzy` adds trigrams. Semantic search is direct with `--semantic` or automatic after a zero-hit plain search when the local model and index exist. `--raw` skips that retry. | Keyword and semantic search | Log reload | Semantic vector search | Cloud semantic search |
+| Redaction | Keys, tokens, and labeled secret values are masked before storage | Manual `<private>` tags | Not documented | Not documented | Not documented in the cited public sources [^sm-redact] |
+| Network | The binary opens no sockets except the one-time model download through a system `curl` child. No text is uploaded. | Local worker and SDK calls for summarization | Anthropic API through Haiku | Local by default | Required for each session |
+| Price and license | Free, MIT | Free, Apache-2.0 | Free plugin, pay per save | Free, MIT | Free plugin, service at $19 per month or more |
+| State on 2026-06-13 | Active | v13.5.6, 82,000 stars, active | Official, active | Active with Zilliz | Last release 2026-02-09 [^sm-repo] |
 
-## When something else is the better choice
+## Other documented designs
 
-- **claude-mem** for meaning-based search with nothing of your own to install, a web timeline, or capture across Gemini CLI and OpenCode — if you're fine with a background worker summarizing each session through Claude. It's popular for a reason.
-- **memsearch** for local meaning-based search over Markdown files you can read directly.
-- **Remember** for the official Anthropic option with zero setup, if you accept the per-save cost.
-- **claude-supermemory** if team-shared memory is the point — a cloud feature subrosa deliberately doesn't have.
+- claude-mem provides semantic search, a web timeline, and capture across Gemini CLI and OpenCode through its worker and Claude summarization flow.
+- memsearch stores readable Markdown and local vectors. It also supports a cloud option.
+- Remember is the official Anthropic option. It uses tiered logs and charges for session saves.
+- claude-supermemory provides shared memory through a cloud service. Its plugin requires Supermemory Pro.
 
-What subrosa won't do: multi-user memory, or anything that needs your transcripts to leave your machine. Meaning-based search exists, but it stays local — the model comes down once and then runs on your machine. When automatic indexing is on and the semantic index is available, it can help a plain search after an exact miss; `--semantic` still asks for it directly. Keyword remains the default and the only thing automatic recall ever uses.
+## What subrosa is not
 
-[^cm-readme]: claude-mem README — "Worker Service - HTTP API on port 37777 … managed by Bun": <https://github.com/thedotmack/claude-mem>
-[^cm-arch]: claude-mem hooks architecture — "Sends to Claude Agent SDK for summarization": <https://docs.claude-mem.ai/hooks-architecture>
-[^cm-618]: claude-mem issue #618 "Uses too much tokens" — "claude code consumes all my tokens in <10 messages": <https://github.com/thedotmack/claude-mem/issues/618>
-[^cm-1848]: claude-mem issue #1848 "token consumption" — "The moment I start the session, 40% of my tokens disappear instantly": <https://github.com/thedotmack/claude-mem/issues/1848>
+subrosa does not provide multi-user memory. It does not send transcripts to a cloud service. Semantic search stays local after the model download. A plain search can use the local index after a zero-hit exact search, while automatic prompt recall remains keyword-only.
+
+[^cm-readme]: claude-mem README: worker service with an HTTP API on port 37777, managed by Bun: <https://github.com/thedotmack/claude-mem>
+[^cm-arch]: claude-mem hooks architecture: Claude Agent SDK summarization: <https://docs.claude-mem.ai/hooks-architecture>
 [^rem]: Remember plugin listing: <https://claude.com/plugins/remember>
 [^ms-blog]: Milvus blog on memsearch: <https://milvus.io/blog/adding-persistent-memory-to-claude-code-with-the-lightweight-memsearch-plugin.md>
 [^sm-docs]: Supermemory Claude Code integration: <https://supermemory.ai/docs/integrations/claude-code>
-[^sm-price]: claude-supermemory README — "Requires Supermemory Pro or above"; pricing: <https://supermemory.ai/pricing>
-[^sm-redact]: We could not find any public documentation on transcript redaction for the Supermemory plugin — listed as undocumented, not as absent.
+[^sm-price]: claude-supermemory README and Supermemory pricing: <https://supermemory.ai/pricing>
+[^sm-redact]: No public transcript-redaction documentation was found for the cited Supermemory plugin.
 [^sm-repo]: <https://github.com/supermemoryai/claude-supermemory>

@@ -8,23 +8,23 @@ assignees: ''
 
 ## The problem
 
-What is missing or awkward today? What are you trying to do?
+What is missing or hard to use? What are you trying to do?
 
 ## Proposed solution
 
-How would you like it to work?
+How should it work?
 
 ## Alternatives considered
 
-Anything else you thought about.
+What other options did you consider?
 
 ## Does it fit subrosa's scope?
 
-subrosa is built around a few deliberate constraints. A request that fits these is much more likely to land:
+subrosa has these constraints. Requests that fit them are more likely to land:
 
-- **Private and local-only.** No cloud, no telemetry, no socket — everything stays on your machine. The one exception is the model download for semantic search, which only pulls files down.
-- **Small supply chain.** Eleven direct dependencies, one static binary. A new dependency needs a strong reason.
-- **Claude Code only.** It archives Claude Code sessions; support for other tools (Gemini, OpenCode, …) is out of scope.
-- **No server and no web dashboard.** The CLI and plugin keep everything local.
+- **Private and local-only.** No cloud, telemetry, or socket. Everything stays on your machine. The only exception is the semantic-search model download, which only pulls files down.
+- **Small supply chain.** Eleven direct dependencies and one static binary. A new dependency needs a strong reason.
+- **Claude Code only.** It archives Claude Code sessions. Other tools (Gemini, OpenCode, …) are out of scope.
+- **No server or web dashboard.** The CLI and plugin stay local.
 
-If your idea needs a server, a service to call, or cross-tool support, it is probably out of scope — but feel free to open it for discussion.
+If your idea needs a server, a service to call, or cross-tool support, it is probably out of scope. You may still open it for discussion.

@@ -212,14 +212,6 @@ pub fn flatten_record(o: &Value) -> Option<(String, String)> {
     Some((role.to_string(), cap(&redact(text), RECORD_CAP)))
 }
 
-fn session_count(conn: &Connection, sid: &str) -> rusqlite::Result<i64> {
-    conn.query_row(
-        "SELECT count(*) FROM turns WHERE session_id=?",
-        [sid],
-        |r| r.get(0),
-    )
-}
-
 struct Row {
     seq: i64,
     uuid: Option<String>,
@@ -340,7 +332,7 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
         });
     }
 
-    let before = session_count(conn, &sid)?;
+    let mut inserted = 0;
     if !rows.is_empty() {
         // Immediate: take the write lock at BEGIN (where busy_timeout applies)
         // instead of risking a mid-transaction SQLITE_BUSY that bypasses it.
@@ -352,7 +344,7 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
                  VALUES (?,?,?,?,?,?,?,?,?,?)",
             )?;
             for r in &rows {
-                stmt.execute(params![
+                inserted += stmt.execute(params![
                     sid,
                     r.seq,
                     r.uuid,
@@ -363,12 +355,11 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
                     r.is_sidechain,
                     project,
                     r.cwd
-                ])?;
+                ])? as i64;
             }
         }
         tx.commit()?;
     }
-    let inserted = session_count(conn, &sid)? - before;
 
     let (num_turns, last_seq): (i64, i64) = conn.query_row(
         "SELECT count(*), COALESCE(max(seq), -1) FROM turns WHERE session_id=?",

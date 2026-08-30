@@ -2,13 +2,14 @@
 //! by-project share table. Also the default view for a bare `subrosa`.
 
 use std::collections::{HashMap, HashSet};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use rusqlite::Connection;
 
 use crate::timeutil::{civil_from_days, civil_to_days, fmt_ts, now_unix, parse_ts, parse_ymd};
-use crate::{db, embed, generate, ingest, paths};
+use crate::{backup, db, embed, generate, ingest, paths};
 
 // Path segments that name containers, not the project itself — dropped when shortening a label.
 const CONTAINER_TOKENS: &[&str] = &[
@@ -68,19 +69,14 @@ fn use_color() -> bool {
 // ANSI code lookup.
 fn ansi(code: &str) -> &'static str {
     match code {
-        "reset" => "0",
         "bold" => "1",
         "dim" => "2",
         "red" => "31",
         "green" => "32",
         "yellow" => "33",
-        "blue" => "34",
-        "magenta" => "35",
         "cyan" => "36",
         "white" => "37",
         "gray" => "90",
-        "bgreen" => "92",
-        "byellow" => "93",
         "bred" => "91",
         "bcyan" => "96",
         _ => "0",
@@ -493,19 +489,9 @@ fn git_root(cwd: &str) -> Option<String> {
 // ---- data helpers -----------------------------------------------------------
 
 fn last_backup_age_secs() -> Option<u64> {
-    let bdir = paths::backups_dir();
-    if !bdir.exists() {
-        return None;
-    }
-    let newest = std::fs::read_dir(&bdir)
-        .ok()?
-        .flatten()
-        .filter(|e| {
-            let name = e.file_name();
-            let n = name.to_string_lossy();
-            n.starts_with("snapshot-") && n.ends_with(".db")
-        })
-        .filter_map(|e| e.metadata().ok()?.modified().ok())
+    let newest = backup::snapshots()
+        .into_iter()
+        .filter_map(|p| std::fs::metadata(p).ok()?.modified().ok())
         .max()?;
     newest.elapsed().ok().map(|d| d.as_secs())
 }
@@ -902,23 +888,6 @@ extern "C" {
 #[cfg(unix)]
 unsafe fn call_ioctl(fd: i32, req: IoctlReqT, arg: *mut std::ffi::c_void) -> i32 {
     ioctl(fd, req, arg)
-}
-
-// ---- stdout TTY check -------------------------------------------------------
-
-fn stdout_is_tty() -> bool {
-    #[cfg(unix)]
-    {
-        extern "C" {
-            fn isatty(fd: i32) -> i32;
-        }
-        // SAFETY: isatty(1) is a pure query with no side effects.
-        unsafe { isatty(1) == 1 }
-    }
-    #[cfg(not(unix))]
-    {
-        false
-    }
 }
 
 // ---- render -----------------------------------------------------------------
@@ -1388,24 +1357,18 @@ fn render(conn: &Connection, stats: &Stats, ctx: &CurrentContext, detail: bool) 
     println!();
 }
 
-// ---- DB connection (read-only) ----------------------------------------------
-
-fn connect_readonly() -> Result<Connection, rusqlite::Error> {
-    let p = paths::db_path();
-    Connection::open_with_flags(
-        &p,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
-    )
-}
-
 // ---- entry point ------------------------------------------------------------
 
 pub fn run(args: &Args) -> ExitCode {
-    if stdout_is_tty() && !args.no_color && std::env::var("NO_COLOR").is_err() {
+    if cfg!(unix)
+        && std::io::stdout().is_terminal()
+        && !args.no_color
+        && std::env::var("NO_COLOR").is_err()
+    {
         color_on();
     }
 
-    let conn = match connect_readonly() {
+    let conn = match db::connect_readonly() {
         Ok(c) => c,
         Err(_) => {
             // Friendly message when the DB doesn't exist yet.

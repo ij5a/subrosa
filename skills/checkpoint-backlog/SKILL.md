@@ -3,123 +3,101 @@ name: checkpoint-backlog
 description: Checkpoint the ended Claude Code sessions waiting in subrosa's queue. Reads the pending-checkpoint queue and, for each queued past session, extracts durable facts into that project's memory (leaf files + facts database + regenerated MEMORY.md), then clears it from the queue. Run it at session start when there's a backlog; it's also fine to invoke by hand.
 ---
 
-# checkpoint-backlog — checkpoint the queued (ended) sessions
+# checkpoint-backlog: checkpoint queued sessions
 
-When a session ends, subrosa's `SessionEnd` hook queues it in `pending-checkpoint.log` (in the subrosa data dir, `~/.claude/subrosa/` by default) for checkpointing. This skill processes that backlog now, **in-session** — no background daemon, no headless `claude` run. It's the same memory procedure as the checkpoint skill, applied to each *past* session instead of the current conversation.
+When a session ends, subrosa's `SessionEnd` hook adds it to `pending-checkpoint.log` in `~/.claude/subrosa/` by default. This skill processes the queue **in-session**. It uses no background daemon or headless `claude` run. It applies the checkpoint skill to each *past* session.
 
-Follow the checkpoint skill's rules (the four memory types — user / feedback / project / reference — the exclusion list, and the leaf → `subrosa fact upsert` → `subrosa generate` flow). Read `${CLAUDE_PLUGIN_ROOT}/skills/checkpoint/SKILL.md` if you need the detail. Apply these overrides.
+Follow the checkpoint skill's 4 types, user, feedback, project, and reference rules. Follow its exclusion list and leaf to `subrosa fact upsert` to `subrosa generate` flow. Read `${CLAUDE_PLUGIN_ROOT}/skills/checkpoint/SKILL.md` for details. Apply these overrides.
 
-When the queue spans **more than one project**, the slow part — reading each session dump to judge what's durable — runs in parallel, one sub-agent per project. A single-project queue stays sequential and behaves exactly as it always has. The split is safe because each project has its own `MEMORY.md`: separate projects never race, but two sessions in the *same* project would race the regenerate and the dedup, so same-project work always stays serial.
+When the queue spans **more than one project**, read each session dump in parallel, with one sub-agent per project. Keep a single-project queue sequential. Separate projects have separate `MEMORY.md` files and do not race. Sessions in the same project would race regeneration and deduplication, so keep them serial.
 
 ## Procedure
 
-1. **List the backlog:** `subrosa pending`. Each line is `<timestamp>\t<session-id>`, oldest first. Collect the unique ids.
-   If it's empty, say "no backlog" and stop.
+1. **List the backlog:** Run `subrosa pending`. Each line is `<timestamp>\t<session-id>`, oldest first. Collect unique ids. If it is empty, say "no backlog" and stop.
 
-2. **Cap the work** at the 5 most recent queued sessions (newest is last in the file). If there are more,
-   process those 5 and tell the user to run `/subrosa:checkpoint-backlog` again for the rest. This keeps session startup from stalling.
+2. **Cap the work** at the 5 most recent queued sessions. The newest is last in the file. If more remain, process those 5. Tell the user to run `/subrosa:checkpoint-backlog` again for the rest. This prevents session startup from stalling.
 
-3. **Find each session's project (cheap probe).** For each id, run `subrosa session <id> | head -2`. The pipe stops the
-   command after the two header lines, so this never dumps the whole session — it works on any recent binary:
-   - line 1 — `# session <id>  project=<project>  cwd=<cwd>  <first>..<last>` → take the `project=` value.
-   - line 2 — `# memdir: <path>` → take the memdir path.
+3. **Find each session's project.** For each id, run `subrosa session <id> | head -2`. The pipe stops after 2 header lines. It avoids dumping the whole session and works with any recent binary:
+   - Line 1 is `# session <id>  project=<project>  cwd=<cwd>  <first>..<last>`. Take the `project=` value.
+   - Line 2 is `# memdir: <path>`. Take the memdir path.
 
-   If instead it prints `[subrosa] no archived turns for session <id>` (the session was never ingested), there is nothing
-   to extract: run `subrosa checkpoint-drop <id>` now and count it as a skip. Don't pass it to a lane.
+   If it prints `[subrosa] no archived turns for session <id>`, the session was never ingested. There is nothing to extract. Run `subrosa checkpoint-drop <id>`. Count it as a skip. Do not pass it to a lane.
 
-4. **Group the surviving ids by project, then pick a branch.** If none survive, skip to the report.
+4. **Group surviving ids by project, then choose a branch.** If none survive, skip to the report.
 
-   ### Branch A — one project (the common case)
-   Process the sessions one at a time, inline in this conversation — byte-identical to the old behavior. For each id, oldest first:
-   - `subrosa session <id>` — read the flattened turns.
-   - Pull durable facts per the checkpoint skill's rules (four types, exclusion list, be conservative — a borderline
-     candidate is a skip, because `MEMORY.md` is byte-budgeted and low-signal facts crowd out good ones).
-   - Check existing memory first: `subrosa fact list --memdir "<memdir>"` and `subrosa search "<keyword>"`. Update a fact
-     in place rather than create a near-duplicate.
-   - Write each leaf into the `<memdir>` from the probe, then register it:
-     `subrosa fact upsert --memdir "<memdir>" --leaf <name>.md --hook "<one-line hook>" --origin-session <id>`
-   - Rebuild that project's index: `subrosa generate --memdir "<memdir>"`
-   - Clear it from the queue: `subrosa checkpoint-drop <id>`
+   ### Branch A: one project
 
-   ### Branch B — more than one project (parallel)
-   Fan out **one sub-agent per project**, launched in a single batch with the Agent tool (general-purpose type) so they
-   run at the same time. Parallelize *across* projects; keep each project's sessions *serial* inside its own lane.
-   - For each project group, launch one sub-agent with the **sub-agent prompt** below, filling in `{{PROJECT}}`,
-     `{{MEMDIR}}`, `{{SESSION_IDS}}` (that project's ids, oldest first, space-separated), and `{{PLUGIN_ROOT}}`
-     (the real value of `${CLAUDE_PLUGIN_ROOT}`).
-   - The sub-agents read, extract, and write facts for their own project only. They do **not** drop anything from the
-     queue and never touch another project's memdir.
+   Process sessions one at a time in this conversation. This matches the old byte behavior. Process ids oldest first:
+   - Run `subrosa session <id>` and read the flattened turns.
+   - Pull durable facts using the checkpoint rules. Use the 4 types and exclusion list. Skip borderline candidates because `MEMORY.md` is byte-budgeted and low-signal facts can hide good ones.
+   - Check memory first with `subrosa fact list --memdir "<memdir>"` and `subrosa search "<keyword>"`. Update a similar stale fact instead of creating a duplicate.
+   - Write each leaf in the probed `<memdir>`. Register it with `subrosa fact upsert --memdir "<memdir>" --leaf <name>.md --hook "<one-line hook>" --origin-session <id>`.
+   - Rebuild the project index with `subrosa generate --memdir "<memdir>"`.
+   - Remove it from the queue with `subrosa checkpoint-drop <id>`.
 
-5. **Drop the queue entries yourself — Branch B only, after every sub-agent has returned.** Each sub-agent reports the
-   ids it finished (`FINISHED_IDS:`). For every finished id, run `subrosa checkpoint-drop <id>` one at a time, here in the
-   orchestrator — never inside a sub-agent — so the shared `pending-checkpoint.log` has a single writer. Any id a sub-agent
-   did **not** report (it failed, or found nothing it could finish) stays in the queue and is retried on the next backlog.
-   That is safe and self-healing: `checkpointed_seq` in the database is the real done-marker, the log is just a to-do list.
+   ### Branch B: more than one project
 
-6. **Do NOT** run `subrosa checkpoint-clear` (it wipes the whole queue, including sessions you didn't reach), and
-   do NOT run the staleness archive pass — both stay with the interactive checkpoint skill.
+   Launch **one sub-agent per project** in one batch with the Agent tool (general-purpose type). Run project lanes at the same time. Keep each project's sessions *serial* inside its lane.
+   - Use the **sub-agent prompt** below for each group. Fill `{{PROJECT}}`, `{{MEMDIR}}`, `{{SESSION_IDS}}` (oldest first, space-separated), and `{{PLUGIN_ROOT}}` (the real `${CLAUDE_PLUGIN_ROOT}`).
+   - Each sub-agent reads, extracts, and writes only its project's facts. It must not drop queue entries or touch another project's memdir.
+
+5. **Drop queue entries yourself, Branch B only, after every sub-agent returns.** Each sub-agent reports finished ids with `FINISHED_IDS:`. Run `subrosa checkpoint-drop <id>` once per finished id, one at a time, in the orchestrator. Never run it inside a sub-agent. This gives shared `pending-checkpoint.log` one writer.
+
+   A failed or unreported id stays queued for the next backlog. This is safe and self-healing. `checkpointed_seq` in the database is the real done-marker. The log is only a to-do list.
+
+6. **Do NOT** run `subrosa checkpoint-clear`. It wipes the whole queue, including unreached sessions. Do **not** run the staleness archive pass. Both actions stay with the interactive checkpoint skill.
 
 ## Sub-agent prompt (Branch B)
 
-Launch one sub-agent per project, all in one batch. Use this exact prompt, with the four placeholders filled in:
+Launch one sub-agent per project in one batch. Use this prompt with the four placeholders filled in:
 
 ```
-You are saving durable memory from one or more ended Claude Code sessions that all belong to ONE project. This is the
-same memory procedure as subrosa's `checkpoint` skill, applied to past sessions. Read
-{{PLUGIN_ROOT}}/skills/checkpoint/SKILL.md if you want the full detail — the load-bearing rules are inlined below.
+You are saving durable memory from ended Claude Code sessions in ONE project. Use the `checkpoint` skill procedure for past sessions. Read
+{{PLUGIN_ROOT}}/skills/checkpoint/SKILL.md for details. The key rules are below.
 
 Project: {{PROJECT}}
 Memory directory (memdir): {{MEMDIR}}
 Session ids, oldest first: {{SESSION_IDS}}
 
-Process the ids IN ORDER, one at a time. Do not parallelize within this lane — these sessions share one MEMORY.md and
-would race each other. For each id:
+Process ids IN ORDER, one at a time. Do not parallelize this lane. Sessions share one MEMORY.md and would race. For each id:
 
-1. `subrosa session <id>` — read the flattened turns.
-2. Pull out durable facts. Match each to one of four types:
-   - user — role, preferences, knowledge, working context
-   - feedback — corrections ("don't do X") and confirmed-good approaches; always include the why
-   - project — ongoing work, deadlines, motivations, who is doing what and why
-   - reference — pointers to external systems, dashboards, ticket projects
-3. Apply the exclusion list strictly. Do NOT save: code patterns, conventions, file paths, architecture; git history,
-   commit hashes, blame, PR numbers; debugging recipes (the fix is in the code, the why is in the commit message);
-   anything already in CLAUDE.md; ephemeral state (in-progress task details, the current investigation chain, bare
-   ticket numbers without context); routine activity logs. Only save what was surprising or non-obvious.
-4. Be conservative. This writes straight into the always-loaded MEMORY.md with no human review, so when a candidate is
-   borderline, skip it — the index is byte-budgeted and low-signal facts crowd out good ones.
+1. `subrosa session <id>` Read the flattened turns.
+2. Pull out durable facts. Match each to one type:
+   - user: role, preferences, knowledge, working context
+   - feedback: corrections ("don't do X") and confirmed-good approaches; always include the why
+   - project: ongoing work, deadlines, motivations, who is doing what and why
+   - reference: pointers to external systems, dashboards, ticket projects
+3. Apply the exclusion list strictly. Do NOT save code patterns, conventions, file paths, architecture, git history, commit hashes, blame, PR numbers, or debugging recipes. The fix is in code. The reason is in the commit message. Do not save anything in CLAUDE.md, ephemeral state, bare ticket numbers without context, or routine activity logs. Only save what was surprising or non-obvious.
+4. Be conservative. This writes directly to always-loaded MEMORY.md without human review. Skip borderline candidates because the index is byte-budgeted.
 5. Convert relative dates ("yesterday", "last week", "next sprint") to absolute dates before writing.
-6. Check existing memory first so you update instead of duplicating: `subrosa fact list --memdir "{{MEMDIR}}"` and
-   `subrosa search "<keyword>"`. Similar fact exists and is correct → skip; exists but stale → update in place; none → new.
-7. Write each leaf file into {{MEMDIR}} with frontmatter (name, description, type). For feedback and project facts, use
-   the **Why:** / **How to apply:** structure in the body — the why is what lets a future reader judge edge cases. Link
-   related leaves with [[their-name]].
+6. Check existing memory first: `subrosa fact list --memdir "{{MEMDIR}}"` and `subrosa search "<keyword>"`. Skip a correct similar fact. Update a stale one in place. Create a new one only when needed.
+7. Write each leaf into {{MEMDIR}} with frontmatter (name, description, type). For feedback and project facts, use **Why:** and **How to apply:**. Include why for edge cases. Link related leaves with [[their-name]].
 8. Register the fact:
    `subrosa fact upsert --memdir "{{MEMDIR}}" --leaf <name>.md --hook "<one-line hook, under ~150 chars>" --origin-session <id>`
-9. Rebuild this project's index after EACH session: `subrosa generate --memdir "{{MEMDIR}}"`. Regenerating per session
-   (not once at the end) means a failure partway through still leaves the earlier sessions saved.
+9. Rebuild this project's index after EACH session with `subrosa generate --memdir "{{MEMDIR}}"`. Regenerate per session, not once at the end. A partial failure must leave earlier sessions saved.
 
 Hard rules:
 - Use ONLY these commands: `subrosa session`, `subrosa fact list`, `subrosa fact upsert`, `subrosa search`, `subrosa generate`.
-- NEVER run `subrosa checkpoint-drop` or `subrosa checkpoint-clear` — the orchestrator owns the queue.
+- NEVER run `subrosa checkpoint-drop` or `subrosa checkpoint-clear`. The orchestrator owns the queue.
 - NEVER write to any memdir other than {{MEMDIR}}.
-- If `subrosa session <id>` prints "no archived turns", there is nothing to extract — count that id finished and move on.
+- If `subrosa session <id>` prints "no archived turns", extract nothing. Count that id finished and move on.
 
 When done, return EXACTLY this and nothing else:
 
 FINISHED_IDS: <space-separated ids you fully handled: saved, updated, or confirmed nothing-to-save>
 PER_SESSION:
-<id>: saved <n>, updated <n>, skipped <n> — <very short note>
+<id>: saved <n>, updated <n>, skipped <n>; <very short note>
 TOTALS: saved <X>, updated <Y>, skipped <Z>
 ```
 
 ## Report
 
-Add up the work across both branches (the inline Branch A sessions, every sub-agent's `TOTALS`, and the no-turns skips
-from step 3). Then re-run `subrosa pending` and count the unique ids left — that is the authoritative `M`, not a guess.
-Keep it short so it doesn't bury the user's actual task:
+Add the work from inline Branch A sessions, each sub-agent's `TOTALS`, and no-turns skips from step 3. Re-run `subrosa pending`. Count unique ids left. That is the authoritative `M`.
+
+Keep the report short:
 
 ```
 [checkpoint-backlog] N sessions → saved X, updated Y, skipped Z. Queue: M left.
 ```
 
-If you ran this at session start, finish it, then turn straight to whatever the user asked for.
+If you ran this at session start, finish it, then return to the user's task.

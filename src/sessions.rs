@@ -28,27 +28,17 @@ pub fn run(
     tag: &[String],
     limit: i64,
 ) -> ExitCode {
-    // Validate + normalize date bounds (same rules as search): bad date → exit 2.
-    let after_bound = match after {
-        None => None,
-        Some(s) => match timeutil::parse_ymd(s) {
-            Some((y, mo, d)) => Some(format!("{y:04}-{mo:02}-{d:02}")),
-            None => {
-                eprintln!("[subrosa] bad --after date (want YYYY-MM-DD): {s}");
-                return ExitCode::from(2);
-            }
-        },
-    };
-    let before_bound = match before {
-        None => None,
-        Some(s) => match timeutil::parse_ymd(s).and_then(|(y, mo, d)| timeutil::next_day(y, mo, d))
-        {
-            Some(nd) => Some(nd),
-            None => {
-                eprintln!("[subrosa] bad --before date (want YYYY-MM-DD): {s}");
-                return ExitCode::from(2);
-            }
-        },
+    let (after_bound, before_bound) = match timeutil::date_bounds(after, before) {
+        Ok(bounds) => bounds,
+        Err(flag) => {
+            let s = if flag == "--after" {
+                after.unwrap_or("")
+            } else {
+                before.unwrap_or("")
+            };
+            eprintln!("[subrosa] bad {flag} date (want YYYY-MM-DD): {s}");
+            return ExitCode::from(2);
+        }
     };
 
     let conn = match db::connect() {
@@ -129,7 +119,6 @@ pub fn run(
         .collect();
 
     for (i, r) in rows.iter().enumerate() {
-        let sid8: String = r.sid.chars().take(8).collect();
         println!(
             "{:>2}. [{}] {} · {} · {} turns",
             i + 1,
@@ -139,7 +128,7 @@ pub fn run(
             } else {
                 &r.project
             },
-            sid8,
+            crate::text::sid8(&r.sid),
             r.num_turns
         );
         if r.tags.is_empty() {

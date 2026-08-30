@@ -8,11 +8,11 @@ assignees: ''
 
 ## What happened?
 
-A clear description of what you did and what went wrong.
+Describe what you did and what went wrong.
 
 ## What did you expect?
 
-What you expected to happen instead.
+Describe what you expected instead.
 
 ## Steps to reproduce
 
@@ -28,10 +28,10 @@ What you expected to happen instead.
 
 ## Relevant logs
 
-Lines from `~/.claude/subrosa/hook.log` that look related:
+Paste related lines from `~/.claude/subrosa/hook.log`:
 
 ```
 (paste here)
 ```
 
-> Please remove any secrets, tokens, private file paths, or project names before posting — issues are public.
+> Remove secrets, tokens, private file paths, and project names before posting. Issues are public.

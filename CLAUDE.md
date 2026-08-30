@@ -1,77 +1,118 @@
-# CLAUDE.md — subrosa
+# CLAUDE.md: subrosa
 
-Rust CLI + Claude Code plugin: persistent local memory for Claude Code. Read this first when working here.
+Rust CLI and Claude Code plugin for persistent local memory. Read this file before changing code.
 
 ## How it fits together
 
-One binary, `subrosa`. The plugin (`.claude-plugin/`, `hooks/hooks.json`) wires Claude Code's SessionStart/SessionEnd/UserPromptSubmit/PreCompact/Stop events to `hooks/run.sh`, which finds (or bootstraps) the binary and runs `subrosa hook <event>`. SessionStart catch-up-ingests changed transcripts and prints the checkpoint nudge; SessionEnd archives the ended session, queues it for checkpointing, and takes a throttled backup; both then spawn the detached semantic indexer (`embed --auto`) and return without waiting on it; UserPromptSubmit injects relevant past-session hits into context (and, while sessions are queued for checkpoint, a per-prompt directive to run the backlog — the one-shot SessionStart nudge gets scrolled past once the first task lands); PreCompact archives the conversation before compaction summarizes it away and resets recall dedup so post-compact prompts can re-inject; Stop incrementally ingests just the in-progress transcript after each assistant turn — resuming from a saved byte offset so per-turn cost stays flat as the session grows — so the live session is searchable before it ends (no checkpoint enqueue or backup — those stay on SessionEnd). On top of the archive sit curated facts: `subrosa fact` mutates them, `subrosa generate` renders a byte-budgeted MEMORY.md, and the bundled `/subrosa:checkpoint` + `/subrosa:checkpoint-backlog` skills (in `skills/`) drive the distillation workflow. `subrosa search` queries the archive; bare `subrosa` is the dashboard.
+`subrosa` is one binary. `.claude-plugin/` and `hooks/hooks.json` connect SessionStart, SessionEnd, UserPromptSubmit, PreCompact, and Stop to `hooks/run.sh`.
+
+`hooks/run.sh` finds or bootstraps the binary. It runs `subrosa hook <event>`.
+
+- SessionStart catch-up-ingests changed transcripts and prints the checkpoint nudge.
+- SessionEnd archives the ended session, queues it, and takes a throttled backup.
+- SessionStart and SessionEnd start detached `embed --auto` and do not wait for it.
+- UserPromptSubmit injects relevant past-session hits into context.
+- UserPromptSubmit also adds a per-prompt backlog directive while sessions wait for checkpoint. This repeats after the one-time SessionStart nudge scrolls away.
+- PreCompact archives the conversation before compaction and resets recall deduplication.
+- Stop incrementally ingests the live transcript after each assistant turn. It resumes from a saved byte offset, so cost stays flat as the session grows. It does not enqueue a checkpoint or take a backup.
+- The live session is searchable before it ends. `subrosa fact` changes curated facts, and `subrosa generate` writes a byte-budgeted `MEMORY.md`.
+- `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog` drive fact distillation. `subrosa search` queries the archive, and bare `subrosa` shows the dashboard.
 
 ## Module map (src/)
 
 | File | Job |
 |---|---|
-| main.rs | clap dispatch + small command runners |
-| paths.rs | data locations, env overrides, KEY=VALUE config file (incl. `semantic` on/off and the indexer's `embed.state`) |
-| db.rs | schema (compatibility-critical, incl. `session_tags`), connect/connect_readonly, migrate, now_iso, encode_cwd, current_memdir, lazy tables (trigram index, `turn_embeddings`) |
-| redact.rs | secret masking before storage |
-| ingest.rs | JSONL flatten → turns rows, incremental seek-resume ingest (`scan_offset`/`scan_seq` cursor), sweep, checkpoint queue, tag derivation hook |
-| search.rs | FTS5 query building + result output (incl. `--after`/`--before`/`--tag` filters), plus `--semantic` ranking and the `subrosa embed` backfill (newest-first slabs, deduped, one thread per core — half of them for `--auto`, floored at 2 and capped at the core count, so a 2-core box uses both and a 1-core box uses its one — over a shared `Embedder`, main thread the only DB writer) |
-| sessions.rs | `sessions` verb: list past sessions newest-first, filter by project/date/tag |
-| related.rs | `related` verb: co-occurrence over the archive (anchor → terms + sessions; FTS-count idf down-weight) |
-| recall.rs | UserPromptSubmit relevance gate + context injection |
-| text.rs | shared tokenizer/term-quality helpers (STOPWORDS, extract_terms, is_anchor, turn_tokens, token_matches); used by recall + related + tags |
-| tags.rs | auto-derived read-only session tags (`tool:`/`ext:`/`topic:`): `derive_tags` at ingest, `backfill` at schema v3; fully deterministic |
-| facts.rs | curated facts CRUD, frontmatter parsing, type weights, `fact link` ([[name]] graph reader), `fact doctor` (read-only leaf+row integrity lint) |
-| generate.rs | byte-budgeted MEMORY.md from the facts table; per-project `<memdir>/.budget` override, and selection also stops at Claude Code's 200-line load limit |
-| import_existing.rs | one-time import of a MEMORY.md + leaves into the facts table |
-| session.rs | session dump (full id or unique prefix, opt-in `--tags`) + checkpoint queue ops (drop/enqueue/mark-current) |
-| stats.rs | dashboard (also the bare `subrosa` default), incl. the semantic-index progress line |
-| timeutil.rs | ISO-8601 ↔ Unix-epoch helpers (no chrono): parse/now/civil_to_days/civil_from_days/parse_ymd/next_day; shared by stats + recall + search/sessions |
-| backup.rs | throttled snapshots via SQLite backup API + mirror copy (plain or encrypted) |
-| crypt.rs | encrypted mirror snapshots: XChaCha20-Poly1305 + argon2id, 60-byte header as AAD, `subrosa restore` |
-| setup.rs | interactive first-run config (mirror folder + optional mirror passphrase) |
-| embed.rs | the bundled model (bge-small-en-v1.5 on candle, CPU): pinned revision, one-time download via a system curl child, per-file sha256 checked on download only (later runs just stat the pinned sizes — rehashing the weights per search cost more than it bought), CLS pooling, cosine/normalize; `embed(&self)` is Send+Sync so one loaded model serves every backfill worker. Also the automatic indexer's plumbing: `spawn_if_due` (gate + detached spawn), the `embed.lock` run lock, and the `embed.state` retry backoff |
-| wordpiece.rs | hand-rolled BERT WordPiece tokenizer over vocab.txt (the `tokenizers` crate is deliberately out — it builds C oniguruma) |
-| hook.rs | hook entrypoints: stdin JSON in, log to file, always exit 0; SessionStart/SessionEnd also spawn the detached indexer |
+| `main.rs` | clap dispatch and small command runners |
+| `paths.rs` | Data paths, environment overrides, and the `KEY=VALUE` config. It handles `semantic` and `embed.state`. |
+| `db.rs` | Compatibility-critical schema, `connect`, `connect_readonly`, `migrate()`, `now_iso`, `encode_cwd`, `current_memdir`, and lazy trigram and `turn_embeddings` tables. The schema includes `session_tags`. |
+| `redact.rs` | Secret masking before storage |
+| `ingest.rs` | JSONL to turn rows, seek-resume ingest with `scan_offset` and `scan_seq`, sweep, checkpoint queue, and tag derivation hook |
+| `search.rs` | FTS5 queries and output with `--after`, `--before`, and `--tag`; semantic ranking; and `subrosa embed` backfill. Backfill uses newest-first slabs, one thread per core, deduplication, one shared `Embedder`, and one DB writer. `--auto` uses half the cores, with a floor of 2 and a cap at the core count. A 2 or 3 core machine uses 2 cores. A 1 core machine uses 1. |
+| `sessions.rs` | `sessions`: list sessions newest-first and filter by project, date, or tag |
+| `related.rs` | `related`: co-occurrence from an anchor to terms and sessions, with FTS-count IDF down-weighting |
+| `recall.rs` | UserPromptSubmit relevance gate and context injection |
+| `text.rs` | Shared tokenizer and term-quality helpers: `STOPWORDS`, `extract_terms`, `is_anchor`, `turn_tokens`, and `token_matches`. Recall, related, and tags use them. |
+| `tags.rs` | Deterministic, read-only `tool:`, `ext:`, and `topic:` tags. `derive_tags` runs at ingest, and `backfill` runs at schema v3. |
+| `facts.rs` | Curated facts CRUD, frontmatter parsing, type weights, `fact link` `[[name]]` graph reads, and read-only `fact doctor` leaf and row checks |
+| `generate.rs` | Byte-budgeted `MEMORY.md`. It supports `<memdir>/.budget` and stops at Claude Code's 200-line load limit. |
+| `import_existing.rs` | One-time import of a `MEMORY.md` and its leaves into the facts table |
+| `session.rs` | Session dump by full ID or unique prefix, optional `--tags`, and checkpoint queue operations: drop, enqueue, and mark-current |
+| `stats.rs` | Dashboard, including the semantic-index progress line. It is also the bare `subrosa` command. |
+| `timeutil.rs` | ISO-8601 and Unix-epoch helpers without chrono: `parse`, `now`, `civil_to_days`, `civil_from_days`, `parse_ymd`, and `next_day`. Stats, recall, search, and sessions use them. |
+| `backup.rs` | Throttled snapshots through the SQLite backup API and plain or encrypted mirror copies |
+| `crypt.rs` | Encrypted mirror snapshots with XChaCha20-Poly1305 and argon2id. It also implements `subrosa restore`. |
+| `setup.rs` | Interactive first-run config for a mirror folder and optional mirror passphrase |
+| `embed.rs` | CPU `bge-small-en-v1.5` model, pinned revision, one-time system-`curl` download, per-file sha256 checks on download, pinned-size checks later, CLS pooling, cosine normalization, and shared `Embedder`. `embed(&self)` is Send+Sync, so workers share one loaded model. It also owns `spawn_if_due`, `embed.lock`, and `embed.state`. |
+| `wordpiece.rs` | Hand-rolled BERT WordPiece tokenizer over `vocab.txt`. The project leaves out `tokenizers` because it builds C oniguruma. |
+| `hook.rs` | Hook entrypoints. They read JSON from stdin, log to a file, always exit 0, and start the detached indexer at SessionStart and SessionEnd. |
 
-## Invariants (the load-bearing decisions)
+## Invariants
 
-- **Schema and output formats are compatibility-critical.** Existing archives must keep working across versions. The stored-text, session-dump, MEMORY.md, recall, related, fact-link, and sessions-listing formats are pinned byte-for-byte by the golden tests in `tests/` — a failing golden test means a format change that needs a deliberate decision, never a quick golden-file update. Schema changes are additive only, through `migrate()` (v3 added `session_tags` + backfill; v4 added the `scan_offset`/`scan_seq` ingest resume cursor).
-- **Hooks never fail, never block.** They log to `$SUBROSA_DIR/hook.log` and exit 0 no matter what. Stdout is reserved for intentional context injection (the session-start nudge, the per-prompt checkpoint-backlog directive, recall hits) — never error noise. They never spawn `claude` (recursion).
-- **The live DB never goes in a synced folder.** iCloud/Dropbox-style sync corrupts live SQLite WAL/SHM sidecars mid-write. Only static snapshot files mirror out (backup.rs). Don't add anything that moves the live DB.
-- **Once encryption is intended, the mirror never goes out plaintext.** Intent means a passphrase resolves (even to an error) or a `subrosa-latest.db.enc` is already there. Any failure after that skips the mirror and leaves it stale — it never falls back to a readable copy — and the plaintext twin is cleared before any bailout. Turning encryption off is a manual delete of the `.enc`, never something a missing config does on its own.
-- **The binary opens no sockets.** The one-time model download runs through a system curl child (`embed.rs`), pinned to one revision and sha256-verified as it lands — nothing else in the tree reaches the network, and no text of yours is ever uploaded. A hook never downloads or embeds anything itself: SessionStart/SessionEnd spawn `embed --auto` detached (own process group, stdio null, no wait — Claude Code kills a hook at 120s, and a first backfill takes minutes), and that process is the only downloader. `semantic=off` (config or `SUBROSA_SEMANTIC`) stops the spawn AND the download itself — `ensure_model` refuses before curl, so a typed `subrosa embed` can't fetch either; loading a model already on disk stays allowed. A config that can't be read counts as off (fail closed), so an unreadable file never defaults to downloading. A failed run writes `embed.state` and the next spawn is skipped until its retry window passes, so an offline machine never re-downloads every session. Embedding runs in-process on the CPU. `subrosa embed` and `search --semantic` construct an `Embedder` directly; plain search can construct one after an eligible exact miss, all lazily, so recall, hooks and ingest keep their startup cost; `--semantic` fails loudly rather than falling back to keyword. Text is redacted before it reaches the model (turns at ingest, the query through `redact::redact`). Its store (`turn_embeddings`) is a lazy table like the trigram index — created on first use, outside `migrate()`, so SCHEMA_VERSION stays put; vectors under any other model key are deleted at the start of a backfill, since nothing can rank or resume from them.
-- **System tools are absolute, never PATH.** `curl` (the model download), `stty` (the passphrase prompt) and `git` (the dashboard's repo label) resolve through `paths::system_tool` against fixed absolute paths — hooks run with whatever PATH the session had. `SUBROSA_CURL` is the deliberate override for a curl that lives elsewhere. Missing means the feature degrades (no download / echoing prompt / no repo label), never a PATH lookup.
-- **Small control files get `paths::read_control_file`.** config, `embed.state`, the checkpoint queue, `.budget`, the recall dedup log, MEMORY.md: regular files only, symlinks resolved by hand, size-capped. Most are read inside a hook, where a FIFO blocks the session forever and a dangling symlink reads as ENOENT — which is how an evicted cloud-synced `semantic=off` used to come back on. `Ok(None)` is "nothing there", `Err` is "something is there and it's unusable", and callers must never collapse the two.
-- **Redact before write.** Any new path that stores transcript text must go through `redact::redact`.
-- **Recall must stay quiet and read-only.** It opens the DB read-only, gates on distinctive terms, and injects nothing on a weak match. Its `[subrosa recall]` header is filtered on ingest (NOISE_PREFIXES) so injections never feed back into the archive.
-- **Phrase-quote FTS queries.** Hyphenated identifiers (`my-app-prod`, `TICKET-123`) trip FTS5's column/NOT syntax unless each term is quoted — `build_match` handles it; `--raw` is the opt-out.
-- **The `project` column stores Claude Code's own directory encoding as-is** (the transcript's parent dir name). Don't normalize or decode it — it has to match what Claude Code writes.
-- **Stay at 11 direct crates on every platform** (clap, regex, rusqlite, serde, serde_json; chacha20poly1305 + argon2 for mirror encryption; candle-core/candle-nn/candle-transformers + sha2 for the bundled embedder — jp approved each batch, and rolling our own AEAD, KDF or transformer was the only alternative). macOS links Apple's Accelerate framework on top of that, through candle-core's `accelerate` feature: the macOS stanza only re-declares candle-core with the feature on, so the link-only `accelerate-src` arrives transitively and is not a 12th direct crate. Single static binary with a small supply chain is part of the product; a new dependency needs a strong reason. Apart from rusqlite's bundled SQLite, nothing in the tree compiles C: Linux/musl builds carry no platform libs at all, and macOS builds only link Apple's built-in Accelerate framework (`accelerate-src`'s build script is one `rustc-link-lib` line). The release builds 4 targets including musl, so **candle stays pinned at 0.9**: 0.10+ hard-depends on `tokenizers` → `onig_sys` (bundled C oniguruma). A guard test in `embed.rs` reads `Cargo.lock` and fails if either name comes back.
+- **Schema and output formats are compatibility-critical.** Existing archives must work across versions. Golden tests pin stored text, session dumps, `MEMORY.md`, recall, related, fact links, and session listings byte for byte. A failing golden test needs a deliberate format decision. Never update a golden file only to silence a failure.
+  - Schema changes are additive through `migrate()`. v3 added `session_tags` and its backfill. v4 added the `scan_offset` and `scan_seq` ingest cursor.
+- **Hooks never fail or block.** They log to `$SUBROSA_DIR/hook.log` and always exit 0. Stdout is only for intentional context injection: the session-start nudge, the per-prompt backlog directive, and recall hits. Never print error noise there. Never spawn `claude`, because that would recurse.
+- **The live database never goes in a synced folder.** iCloud and Dropbox-style sync can corrupt SQLite WAL and SHM sidecars during a write. Only static snapshot files may mirror. Do not move the live database.
+- **An intended encrypted mirror never becomes plaintext.** Intent starts when a passphrase resolves, even to an error, or when `subrosa-latest.db.enc` already exists. Any later failure skips the mirror and leaves it stale. It never falls back to a readable copy. Clear the plaintext twin before any bailout. Turning encryption off requires manually deleting `.enc`; missing config must not do it.
+- **The binary has no network path except the model download child.** The one-time download uses a system `curl` child, a pinned revision, and sha256 checks. Nothing else in the tree reaches the network, and no text is uploaded. Hooks never download or embed. SessionStart and SessionEnd spawn `embed --auto` in a detached process group with null stdio and no wait. Claude Code kills hooks at 120 seconds, while a first backfill takes minutes.
+  - `semantic=off` in config or `SUBROSA_SEMANTIC` stops the spawn and the download. `ensure_model` refuses before `curl`. A model already on disk may still load. An unreadable config counts as off, so it fails closed.
+  - A failed run writes `embed.state`. The next spawn waits for its retry window, so an offline machine does not retry every session.
+  - Embedding runs in-process on the CPU. `subrosa embed` and `search --semantic` construct `Embedder` directly. Plain search constructs it lazily only after an eligible exact miss. Recall, hooks, and ingest keep their startup cost. `--semantic` fails loudly instead of falling back to keyword.
+  - Redact turns before embedding at ingest. Redact the query through `redact::redact` too.
+  - `turn_embeddings` is a lazy table like the trigram index. Create it outside `migrate()`, so `SCHEMA_VERSION` stays unchanged. Delete vectors for another model key before backfill, because they cannot rank or resume.
+- **System tools use absolute paths, never `PATH`.** `curl`, `stty`, and `git` resolve through `paths::system_tool` and fixed absolute paths. `SUBROSA_CURL` is the deliberate override. A missing tool degrades the feature: no download, an echoing passphrase prompt, or no repository label. Never look up these tools through `PATH`.
+- **Small control files use `paths::read_control_file`.** This includes config, `embed.state`, the checkpoint queue, `.budget`, the recall dedup log, and `MEMORY.md`. The helper accepts regular files only, resolves symlinks by hand, and caps size. A FIFO could block a hook forever. A dangling symlink returns `ENOENT`, which prevents an evicted cloud-synced `semantic=off` from becoming on again.
+  - `Ok(None)` means nothing exists. `Err` means an existing file is unusable. Callers must keep those cases separate.
+- **Redact before writing.** Every new path that stores transcript text must call `redact::redact`.
+- **Recall stays quiet and read-only.** It opens the database read-only, requires distinctive terms, and injects nothing for a weak match. Ingest filters the `[subrosa recall]` header with `NOISE_PREFIXES`, so injected text cannot feed back into the archive.
+- **Quote every FTS phrase.** Hyphenated identifiers such as `my-app-prod` and `TICKET-123` can trigger FTS5 column or `NOT` syntax. `build_match` quotes each term. `--raw` is the opt-out.
+- **Keep the `project` column unchanged.** It stores Claude Code's directory encoding from the transcript parent directory. Do not normalize or decode it, because it must match Claude Code's value.
+- **Stay at 11 direct crates on every platform.** They are clap, regex, rusqlite, serde, serde_json, chacha20poly1305, argon2, candle-core, candle-nn, candle-transformers, and sha2. jp approved each batch. Rolling our own AEAD, KDF, or transformer was the only alternative. macOS re-declares candle-core with its `accelerate` feature. `accelerate-src` arrives transitively and is not a 12th direct crate. The single static binary and small supply chain are product requirements, so a new dependency needs a strong reason.
+  - Apart from rusqlite's bundled SQLite, nothing compiles C. Linux and musl builds use no platform libraries. macOS links only Apple's built-in Accelerate framework. The `accelerate-src` build script has one `rustc-link-lib` line.
+  - Releases build 4 targets, including musl. Keep candle at 0.9 because 0.10 and later hard-depend on `tokenizers`, which pulls `onig_sys` and bundled C oniguruma. A guard test in `embed.rs` reads `Cargo.lock` and fails if either name returns.
 
 ## Working on it
 
-- `mise install` pins the toolchain. Keep it latest stable; bump deliberately and commit `mise.lock` with it. `Cargo.lock` is committed too — CI builds `--locked`.
-- `git config core.hooksPath .githooks` once per clone. The pre-commit hook runs `scripts/sweep.sh` (secret shapes, database files, stray legacy naming), then fmt/clippy/tests.
-- Checks CI runs: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build --locked`, `cargo test --locked`, `scripts/sweep.sh`, and a cargo-audit job.
-- Always test against a throwaway dir, never live data: `SUBROSA_DIR=/tmp/x SUBROSA_PROJECTS_DIR=/tmp/x/projects cargo run -- init`.
-- Smoke recipe: write a synthetic transcript `.jsonl` under `/tmp/x/projects/-tmp-demo/`, then `init` → `ingest` → `search` (try `--after`/`--before`/`--tag`) → `sessions --tag tool:bash` → `session <id> --tags` → `fact upsert --memdir /tmp/x/memdir --leaf note.md` → `fact doctor --memdir /tmp/x/memdir` → `generate --memdir /tmp/x/memdir --dry-run` → pipe `{"prompt":"...","cwd":"...","session_id":"..."}` into `hook user-prompt-submit` → pipe `{"transcript_path":"…","session_id":"…"}` into `hook stop` (mid-session live ingest) then `hook session-end` (export `SUBROSA_SEMANTIC=off` unless you mean to test the indexer — otherwise the hooks start a real model download) → check `hook.log`, `pending`, the nudge from `hook session-start`, that secrets in the stored turns are redacted, and that tags were derived.
+- `mise install` pins the toolchain. Keep it on the latest stable release. Bump it deliberately and commit `mise.lock`. Commit `Cargo.lock` too, because CI uses `--locked`.
+- Run `git config core.hooksPath .githooks` once per clone. The pre-commit hook runs `scripts/sweep.sh` for secret shapes, database files, and stray legacy names. It then runs format, clippy, and tests.
+- CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --locked`, `scripts/sweep.sh`, and cargo audit. It has no separate `cargo build --locked` step.
+- Use a throwaway directory for tests: `mise exec -- env SUBROSA_DIR=/tmp/x SUBROSA_PROJECTS_DIR=/tmp/x/projects cargo run -- init`.
+
+Smoke recipe:
+
+1. Write a synthetic `.jsonl` file under `/tmp/x/projects/-tmp-demo/`.
+2. Run `init`, `ingest`, and `search`. Try `--after`, `--before`, and `--tag`.
+3. Run `sessions --tag tool:bash`, `session <id> --tags`, and the fact commands: `fact upsert --memdir /tmp/x/memdir --leaf note.md`, `fact doctor --memdir /tmp/x/memdir`, and `generate --memdir /tmp/x/memdir --dry-run`.
+4. Pipe `{"prompt":"...","cwd":"...","session_id":"..."}` into `hook user-prompt-submit`.
+5. Pipe `{"transcript_path":"...","session_id":"..."}` into `hook stop`. Then run `hook session-end`.
+6. Export `SUBROSA_SEMANTIC=off` unless you are testing the indexer. Otherwise the hooks start a real model download.
+7. Check `hook.log`, `pending`, the `hook session-start` nudge, redacted stored secrets, and derived tags.
 
 ## Verification gate (before commit, push, and release)
 
-Non-negotiable for any code change — never skip a step because it "looks safe". Tests are wired into the pre-commit hook (`.githooks/pre-commit`) and CI; the rest are run by hand, and every gate must be green before anything reaches the public.
+Run every gate for every code change. Do not skip a gate because a change looks safe. The pre-commit hook and CI run the tests. Run the other gates by hand.
 
-**Four of these are hard release requirements and are wrapped by one command — `scripts/release-check.sh` — which must run green on the exact commit you are about to tag.** Running them earlier in the branch and assuming nothing changed since is not enough: run them on the final tree, against the actually-built binary.
+Gates 1 through 4 are hard release requirements wrapped by `scripts/release-check.sh`. Run them on the final tree, the exact commit you will tag, and the built binary. Earlier results do not cover later changes.
 
-1. **Regression** — `cargo test --locked` (unit + the golden tests in `tests/`). A red test blocks the commit. Golden-format changes are deliberate: update the golden on purpose, never to silence a failure.
-2. **Performance** — `scripts/bench.sh` (needs `hyperfine`; covers the recall hot path, search, ingest, startup). The latency numbers are a product promise the README/FAQ cite, so a regression is a defect. Run it before push/release and on any change touching `recall.rs`, `search.rs`, `ingest.rs`, or the FTS schema.
-3. **Token usage** — also `scripts/bench.sh`: it measures the recall injection's token cost and hard-fails above the 220-token guard behind the "~180 tokens" promise. The per-prompt token budget is the product's whole pitch, so this is its own gate, not a footnote to performance.
-4. **Smoke** — `scripts/smoke.sh` (takes the built binary; runs a throwaway end-to-end pipeline). Proves on the real binary what the unit tests prove in isolation: redaction actually masks stored turns, the encrypted-mirror + restore paths work, the budget override fails closed, and the hooks exit 0. A green unit suite is not a substitute — run this on the shipped binary. `scripts/detach-test.sh` is the separate one, run by hand on any change to the spawn path: it proves the background indexer survives the session that started it (needs a shell with job control, and it is not part of `release-check.sh`).
-5. **Security review** — `cargo audit` (dependency CVEs, also a CI job) plus `/security-review` over the branch diff. Run before pushing code and always before a release — this repo is public.
-6. **Docs in sync** — update every affected markdown file (`README.md`, `docs/*.md`, `CLAUDE.md`, skill docs) in the same change as the behavior it documents. Token/latency claims, flags, and limits in the docs must match the code; a code change that lands without its doc update is incomplete.
+1. **Regression:** Run `cargo test --locked`. This runs unit tests and golden tests. A red test blocks the commit. Golden changes need a deliberate decision.
+2. **Performance:** Run `scripts/bench.sh`. It needs `hyperfine` and covers recall, search, ingest, and startup. The README and FAQ promise its latency numbers. Run it before push or release and after changes to `recall.rs`, `search.rs`, `ingest.rs`, or the FTS schema.
+3. **Token usage:** `scripts/bench.sh` also measures recall injection. It fails above the 220-token guard behind the about-180-token promise. Keep this as a separate gate because per-prompt cost is a product requirement.
+4. **Smoke:** Run `scripts/smoke.sh` with the built binary. It uses a throwaway directory and checks redaction of stored turns, encrypted-mirror and restore paths, a fail-closed budget override, and hook exit 0. Unit tests do not replace it.
+   - Run `scripts/detach-test.sh` by hand after spawn-path changes. It needs shell job control and is not part of `scripts/release-check.sh`. It proves the background indexer survives the session that starts it.
+5. **Security review:** Run `cargo audit` and `/security-review` over the branch diff. Do this before pushing code and before every release because the repository is public.
+6. **Docs in sync:** Update every affected `README.md`, `docs/*.md`, `CLAUDE.md`, and skill document with the behavior change. Keep token, latency, flag, and limit claims equal to the code.
 
-Gates 1-4 are `scripts/release-check.sh`; gates 5-6 a script can't run, so do them by hand. Before a public release, run all six green on the final commit, then follow the steps below. Never tag or push a release on an unverified or undocumented tree.
+Gates 5 and 6 need manual work. Before a public release, run all 6 gates on the final commit. Never tag or push an unverified or undocumented tree.
 
 ## Releasing
 
-Run `scripts/release-check.sh` green on the exact commit you're about to tag first (gates 1-4 above), and do the `/security-review` + docs-in-sync passes by hand — an unverified tree never gets tagged. Then bump the version in **both** `Cargo.toml` and `.claude-plugin/plugin.json` — they must match. `plugin.json` is the version `/plugin` shows and uses to detect updates, so bumping `Cargo.toml` alone ships a release no installed plugin will pull. Add the new version's section to `CHANGELOG.md` in that same version-bump commit (before the tag, so the tagged tree carries it) — including the `[x.y.z]:` compare-link reference definition at the bottom of the file, or the version heading renders as literal `[x.y.z]` text instead of a link. Then tag `vX.Y.Z` and push the tag — GitHub Actions builds the 4 targets and publishes the release with `sha256sums.txt`. Then pin the new checksums into `hooks/sha256sums.txt` + `hooks/binary-version` (the plugin bootstrap verifies against these), and update the Homebrew formula in `ij5a/homebrew-tap` with the new version + hashes. Last, update the local CLI on PATH to match — `cargo install --git https://github.com/ij5a/subrosa --tag vX.Y.Z --locked --force`, then confirm `subrosa -V`. This step is not optional: `hooks/run.sh` prefers a `subrosa` already on PATH over bootstrapping its own, so a stale PATH binary (e.g. an old `cargo install`) silently keeps the plugin running old code even after `/plugin` shows the new version.
+Run `scripts/release-check.sh` on the exact commit you will tag. Complete the security review and docs check by hand.
+
+Bump the version in both `Cargo.toml` and `.claude-plugin/plugin.json`. Keep the versions equal. The plugin uses `plugin.json` to show and detect updates.
+
+Add the new version section to `CHANGELOG.md` in the same commit before the tag. Add its `[x.y.z]:` compare-link definition at the bottom. Without that definition, the version heading renders as literal text.
+
+Tag `vX.Y.Z` and push the tag. GitHub Actions builds 4 targets and publishes `sha256sums.txt`.
+
+Pin the new hashes in `hooks/sha256sums.txt` and `hooks/binary-version`. Update the Homebrew formula in `ij5a/homebrew-tap` with the version and hashes.
+
+Update the local PATH binary with `cargo install --git https://github.com/ij5a/subrosa --tag vX.Y.Z --locked --force`. Confirm `subrosa -V`. `hooks/run.sh` prefers a PATH binary over bootstrapping one, so a stale binary can keep the plugin on old code.
