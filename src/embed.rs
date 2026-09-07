@@ -4,7 +4,7 @@
 //! also build one after an eligible exact miss — recall, ingest and every hook
 //! stay far away from it.
 //!
-//! ponytail: no HTTP crate. The one-time download shells out to the system
+//! NOTE: no HTTP crate. The one-time download shells out to the system
 //! curl, which is the only thing in the tree that opens a socket. An HTTP
 //! client would be a much larger supply chain for a fetch that happens once.
 
@@ -313,7 +313,7 @@ fn backoff_secs(failures: u32) -> i64 {
 /// device node would block the hook forever and a huge file would eat its
 /// memory — both are worse than having no state at all.
 ///
-/// ponytail: the stat and the open are two steps, so this trusts that nothing
+/// NOTE: the stat and the open are two steps, so this trusts that nothing
 /// swaps the file in between. Anything that could is already inside the 0700
 /// data dir, where it can write the state file directly anyway.
 fn read_state() -> Option<String> {
@@ -530,7 +530,7 @@ fn is_staging(file: &str, name: &str) -> bool {
 /// to resume and get a 416 for.
 ///
 /// Runs under `download_lock`, so nothing else is writing these files while we
-/// sort them out. ponytail: the lock only binds versions that take it, so a
+/// sort them out. NOTE: the lock only binds versions that take it, so a
 /// mixed old/new-binary fleet can still race — everything renamed into place is
 /// checksummed either way.
 fn stage(dir: &Path, name: &str, size: u64) -> Staged {
@@ -772,7 +772,7 @@ fn manual_hint(dir: &Path) -> String {
 
 /// Is this file there at the size we pinned? Anything else — missing, short,
 /// half-written — reads as "fetch it again".
-/// ponytail: a stat, not a hash. Re-reading the weights before every search cost
+/// NOTE: a stat, not a hash. Re-reading the weights before every search cost
 /// far more than it bought, and the checksum was verified on download. What
 /// this gives up: a file that rots in place at exactly the right size fails
 /// loudly only if the corruption touches the safetensors header — damage to the
@@ -1156,7 +1156,7 @@ mod tests {
 
     /// The download is serialized by `download_lock`, so these decisions only
     /// ever meet files left behind by runs that already finished or died.
-    /// ponytail: the decisions are tested, a real two-process race isn't — that
+    /// NOTE: the decisions are tested, a real two-process race isn't — that
     /// test is flaky, and what keeps the race safe is the lock plus the rule
     /// that only a checksummed staging file is ever renamed into place.
     #[test]

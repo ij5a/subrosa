@@ -145,7 +145,7 @@ fn is_ignored(c: char) -> bool {
 const LATIN_A: &[u8; 128] = b"AaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIiIiIiIiIiIiJjKkkLlLlLlLlLlNnNnNnnNnOoOoOoOoRrRrRrSsSsSsSsTtTtTtUuUuUuUuUuUuWwYyYZzZzZzs";
 
 /// `None` for a combining mark (dropped), otherwise the unaccented letter.
-/// ponytail: Latin-1 plus Latin Extended-A plus the combining range, not full
+/// NOTE: Latin-1 plus Latin Extended-A plus the combining range, not full
 /// NFD and no Unicode category tables. This vocab is English; anything outside
 /// those blocks keeps its accent and at worst costs one odd split. A
 /// unicode-normalization crate is the upgrade if ranking quality ever asks.
@@ -164,7 +164,7 @@ fn fold_accent(c: char) -> Option<char> {
     }
 }
 
-/// ponytail: ASCII punctuation, the General Punctuation block (dashes, smart
+/// NOTE: ASCII punctuation, the General Punctuation block (dashes, smart
 /// quotes, ellipsis), the handful of Latin-1 marks, and the CJK/fullwidth
 /// blocks. BERT splits on every Unicode `P*` category; the rest are rare in
 /// transcripts and only shift where a word is cut.

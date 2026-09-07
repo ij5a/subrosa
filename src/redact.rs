@@ -51,7 +51,7 @@ static REDACTIONS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         // \b never matches inside MYSQL_PASSWORD= or api_token=. The whole key
         // name stays in group 1, so it's still readable.
         //
-        // ponytail: one whitespace-delimited value, so `password="two words"`
+        // NOTE: one whitespace-delimited value, so `password="two words"`
         // masks only `"two`. Widening this to understand quoting is what
         // opened the leak described above; a real fix needs a shell-aware
         // tokenizer, not a bigger regex.
@@ -167,7 +167,7 @@ mod tests {
     /// whitespace-delimited value and leaves the sentence after it searchable —
     /// which is also why a quoted value with a space in it only masks its
     /// first word. That limitation is the price of never running past the
-    /// value; see the ponytail note on the pattern.
+    /// value; see the note on the pattern.
     #[test]
     fn generic_keys_take_one_value_and_leave_the_sentence() {
         assert_eq!(

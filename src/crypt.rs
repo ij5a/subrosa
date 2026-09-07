@@ -50,7 +50,7 @@ fn derive_key(passphrase: &str, salt: &[u8], m: u32, t: u32, p: u32) -> Result<[
 /// Seal a snapshot. Fresh salt and nonce every call, so the same DB encrypted
 /// twice never produces the same bytes.
 ///
-/// ponytail: whole-buffer — the output is sized up front and the body is
+/// NOTE: whole-buffer — the output is sized up front and the body is
 /// encrypted in place inside it, so a 239 MB archive peaks around 478 MB (the
 /// caller's plaintext plus this buffer). If that allocation fails the process
 /// aborts, because the crate is built with panic=abort; the hook wrapper still

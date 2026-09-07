@@ -121,7 +121,7 @@ pub const CONTROL_FILE_MAX: u64 = 1 << 20;
 /// from an absent file, which is how a `semantic=off` in an evicted
 /// cloud-synced config silently turns itself back on.
 ///
-/// ponytail: the stat and the open are two steps. Anything that could swap the
+/// NOTE: the stat and the open are two steps. Anything that could swap the
 /// file in between already has write access to a 0700 dir and could just write
 /// the file.
 pub fn read_control_file(path: &std::path::Path, max: u64) -> std::io::Result<Option<String>> {
@@ -170,7 +170,7 @@ pub fn read_control_file(path: &std::path::Path, max: u64) -> std::io::Result<Op
 /// FIFO for append blocks until someone reads it, and the callers run inside a
 /// hook.
 ///
-/// ponytail: a stat, then an open, with a window in between. Closing it needs
+/// NOTE: a stat, then an open, with a window in between. Closing it needs
 /// `O_NOFOLLOW`/`O_NONBLOCK` on the descriptor itself, which costs either
 /// `libc` as a direct dependency — the short dependency list is a stated
 /// property of this thing — or hardcoded flag values that differ between macOS

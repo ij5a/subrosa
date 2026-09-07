@@ -247,7 +247,7 @@ pub fn run(
                     // time so the others stay hard phrases and keep the candidate
                     // pool tight. Explicit AND: FTS5 rejects implicit AND right
                     // after a parenthesized group.
-                    // ponytail: two typo'd terms in one query stay unrescued.
+                    // NOTE: two typo'd terms in one query stay unrescued.
                     for &ri in &close_idxs {
                         let groups: Vec<String> = toks
                             .iter()
@@ -999,7 +999,7 @@ fn run_semantic(
     let mut binds: Vec<String> = vec![key.to_string()];
     binds.extend(filter_binds);
 
-    // ponytail: brute-force scan of every candidate vector, no index. Linear in
+    // NOTE: brute-force scan of every candidate vector, no index. Linear in
     // archive size and fine at tens of thousands of turns; an ANN index is the
     // upgrade if that stops holding.
     let mut scored: Vec<(f64, i64)> = Vec::new();

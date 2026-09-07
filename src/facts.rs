@@ -686,7 +686,7 @@ fn unfenced_lines(body: &str) -> Vec<&str> {
 /// `metadata:` in a sentence is just prose. The tail shape carries no leading
 /// `---`, so a body-start check alone never sees it.
 ///
-/// ponytail: keyed on the tail the real splice leaves behind. A spliced second
+/// NOTE: keyed on the tail the real splice leaves behind. A spliced second
 /// block built only from other keys still slips through — upgrade path is a real
 /// two-block frontmatter parser.
 fn splice_debris(body: &str) -> bool {
@@ -764,7 +764,7 @@ fn doctor(project: Option<String>, memdir: Option<PathBuf>) -> ExitCode {
     // absent: symlink_metadata doesn't follow links and doesn't swallow a stat
     // error, so a dangling db symlink or an unreadable parent stays "broken".
     //
-    // ponytail: probe-then-open is deliberately non-atomic. This is a single-user,
+    // NOTE: probe-then-open is deliberately non-atomic. This is a single-user,
     // hand-run command and nothing creates or removes the archive mid-run; closing
     // the window would mean reworking the shared connect_readonly.
     let conn = db::connect_readonly();
