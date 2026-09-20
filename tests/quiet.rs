@@ -938,6 +938,69 @@ fn checkpoint_drop_keeps_uncheckpointed_turns_queued() {
 }
 
 #[test]
+fn checkpoint_drop_abandon_removes_queue_without_advancing_watermark() {
+    let env = setup("checkpoint-abandon");
+    let transcript = env.projects.join("-tmp-demo/abandon.jsonl");
+    fs::write(
+        &transcript,
+        user_rec("2026-06-12T01:00:00Z", "u1", "abandon me"),
+    )
+    .unwrap();
+    let (_, err, ok) = run_env::<&str>(&env, &["ingest", transcript.to_str().unwrap()], None, &[]);
+    assert!(ok, "ingest failed: {err}");
+    run(&env, &["checkpoint-enqueue", "abandon"], None);
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    db.execute(
+        "UPDATE sessions SET checkpointed_seq=0 WHERE session_id='abandon'",
+        [],
+    )
+    .unwrap();
+    let (_, err, ok) = run_env::<&str>(
+        &env,
+        &["checkpoint-drop", "abandon", "--abandon"],
+        None,
+        &[],
+    );
+    assert!(ok, "abandon failed: {err}");
+    assert!(!run(&env, &["pending"], None).0.contains("abandon"));
+    assert_eq!(
+        db.query_row(
+            "SELECT checkpointed_seq FROM sessions WHERE session_id='abandon'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn checkpoint_drop_abandon_rejects_max_seq() {
+    let env = setup("checkpoint-abandon-max");
+    let transcript = env.projects.join("-tmp-demo/abandon-max.jsonl");
+    fs::write(
+        &transcript,
+        [
+            user_rec("2026-06-12T01:00:00Z", "u1", "keep me"),
+            user_rec("2026-06-12T01:01:00Z", "u2", "keep me too"),
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    run(&env, &["ingest", transcript.to_str().unwrap()], None);
+    run(&env, &["checkpoint-enqueue", "abandon-max"], None);
+    let (_, err, ok) = run_env::<&str>(
+        &env,
+        &["checkpoint-drop", "abandon-max", "--abandon", "--max-seq=5"],
+        None,
+        &[],
+    );
+    assert!(!ok);
+    assert!(err.contains("cannot be used with --max-seq"));
+    assert!(run(&env, &["pending"], None).0.contains("abandon-max"));
+}
+
+#[test]
 fn recall_needs_an_anchor_term() {
     let env = setup("anchor");
     ingest(

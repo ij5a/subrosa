@@ -4,11 +4,18 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.2] - 2026-09-21
+
+### Fixed
+
+- `checkpoint-drop --abandon` removes a queued session without changing `checkpointed_seq` and reports that no distillation happened. It cannot be combined with `--max-seq`. Use it to clear an unwanted entry. `--max-seq=-1` only keeps the entry queued because it marks no turns.
+- `checkpoint-mark` now refuses to complete a session with no fact registered for its `origin_session`. Use `--no-facts` only when the session has no durable facts. The output records that no facts were saved.
+
 ## [0.27.1] - 2026-09-21
 
 ### Fixed
 
-- The sweep no longer queues every past session. It queues a session only when that session's transcript changed, so an existing archive does not fill the queue. A v0.27.0 user may already have a large queue and can clear unwanted entries with `subrosa checkpoint-drop <id> --max-seq=-1`.
+- The sweep no longer queues every past session. It queues a session only when that session's transcript changed, so an existing archive does not fill the queue. A v0.27.0 user may already have a large queue and can clear unwanted entries with `subrosa checkpoint-drop <id> --abandon`. This removes the queue entry without changing `checkpointed_seq` or claiming that the session was distilled.
 - The sweep log now reports how many transcripts actually changed. It previously printed the total file count under the word "changed".
 
 ## [0.27.0] - 2026-09-20
@@ -312,6 +319,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 [0.27.0]: https://github.com/ij5a/subrosa/compare/v0.26.0...v0.27.0
 [0.27.1]: https://github.com/ij5a/subrosa/compare/v0.27.0...v0.27.1
+[0.27.2]: https://github.com/ij5a/subrosa/compare/v0.27.1...v0.27.2
 [0.26.0]: https://github.com/ij5a/subrosa/compare/v0.25.1...v0.26.0
 [0.25.1]: https://github.com/ij5a/subrosa/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/ij5a/subrosa/compare/v0.24.0...v0.25.0

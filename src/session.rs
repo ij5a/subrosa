@@ -180,7 +180,13 @@ pub fn dump(arg: &str, show_tags: bool, show_boundary: bool) -> ExitCode {
 
 /// Remove one session from the queue and record the checkpoint high-water mark
 /// so a re-fired SessionEnd won't re-queue it unless the transcript grows.
-pub fn drop_sid(sid: &str, max_seq: Option<i64>) -> ExitCode {
+pub fn drop_sid(sid: &str, max_seq: Option<i64>, abandon: bool) -> ExitCode {
+    if abandon && max_seq.is_some() {
+        eprintln!(
+            "[subrosa] refusing checkpoint-drop {sid}: --abandon cannot be used with --max-seq"
+        );
+        return ExitCode::FAILURE;
+    }
     let conn = match db::connect_with_timeout(std::time::Duration::from_secs(10)) {
         Ok(c) => c,
         Err(e) => {
@@ -195,6 +201,23 @@ pub fn drop_sid(sid: &str, max_seq: Option<i64>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if abandon {
+        match tx.execute("DELETE FROM checkpoint_queue WHERE session_id=?", [sid]) {
+            Ok(0) => {
+                println!("[subrosa] {sid} was not queued; session abandoned without distilling")
+            }
+            Ok(_) => println!("[subrosa] session {sid} abandoned without distilling"),
+            Err(e) => {
+                eprintln!("[subrosa] cannot abandon {sid}: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        if let Err(e) = tx.commit() {
+            eprintln!("[subrosa] cannot save abandonment: {e}");
+            return ExitCode::FAILURE;
+        }
+        return ExitCode::SUCCESS;
+    }
     let last_seq = match tx
         .query_row(
             "SELECT COALESCE((SELECT max(seq) FROM turns WHERE session_id=?), -1)",
@@ -275,7 +298,7 @@ pub fn enqueue(sid: &str) -> ExitCode {
 /// session doesn't re-queue on the next SessionEnd. No argument targets the cwd
 /// project's live session; an explicit id/prefix pins it exactly. A busier
 /// transcript elsewhere (another project, a spawned agent) can't steal the mark.
-pub fn mark_current(arg: Option<&str>, max_seq: Option<i64>) -> ExitCode {
+pub fn mark_current(arg: Option<&str>, max_seq: Option<i64>, no_facts: bool) -> ExitCode {
     let conn = match db::connect() {
         Ok(c) => c,
         Err(e) => {
@@ -345,6 +368,21 @@ pub fn mark_current(arg: Option<&str>, max_seq: Option<i64>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
+    let has_fact: bool = match tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM facts WHERE origin_session=?)",
+        [sid.as_str()],
+        |r| r.get(0),
+    ) {
+        Ok(value) => value,
+        Err(e) => {
+            eprintln!("[subrosa] cannot check facts for session {sid}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if !has_fact && !no_facts {
+        eprintln!("[subrosa] refusing to mark session {sid}: no saved facts have origin_session={sid}; use --no-facts only after checking for durable facts");
+        return ExitCode::FAILURE;
+    }
     let mark_result = ingest::advance_checkpoint(&tx, &sid, max_seq.unwrap_or(last));
     if let Err(e) = mark_result {
         eprintln!("[subrosa] cannot mark session {sid} checkpointed: {e}");
@@ -363,10 +401,13 @@ pub fn mark_current(arg: Option<&str>, max_seq: Option<i64>) -> ExitCode {
         eprintln!("[subrosa] cannot save checkpoint: {e}");
         return ExitCode::FAILURE;
     }
-    println!(
-        "[subrosa] marked current session {sid} checkpointed (last_seq={})",
-        last
-    );
+    if no_facts && !has_fact {
+        println!(
+            "[subrosa] marked current session {sid} checkpointed (last_seq={last}; no facts were saved)"
+        );
+    } else {
+        println!("[subrosa] marked current session {sid} checkpointed (last_seq={last})");
+    }
     ExitCode::SUCCESS
 }
 

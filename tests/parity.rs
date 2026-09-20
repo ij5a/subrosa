@@ -129,7 +129,7 @@ fn checkpoint_mark_scopes_to_cwd_project() {
     fs::write(&other, golden("transcript.jsonl")).unwrap();
     run(&env, &["ingest", other.to_str().unwrap()], None);
 
-    let out = run_in(&env, &cwd, &["checkpoint-mark"]);
+    let out = run_in(&env, &cwd, &["checkpoint-mark", "--no-facts"]);
     assert!(
         out.contains("marked current session aaaa-cwd-1111"),
         "mark must stay in the cwd project:\n{out}"
@@ -148,7 +148,7 @@ fn checkpoint_mark_explicit_id_wins() {
     fs::write(&other, golden("transcript.jsonl")).unwrap();
     run(&env, &["ingest", other.to_str().unwrap()], None);
 
-    let out = run_in(&env, &cwd, &["checkpoint-mark", "bbbb-oth"]);
+    let out = run_in(&env, &cwd, &["checkpoint-mark", "bbbb-oth", "--no-facts"]);
     assert!(
         out.contains("marked current session bbbb-other-2222"),
         "explicit prefix must win:\n{out}"
@@ -181,7 +181,11 @@ fn checkpoint_mark_max_seq_does_not_ingest_new_turns() {
     )
     .unwrap();
     let before = run(&env, &["session", "cccc-max-1111"], None);
-    let out = run_in(&env, &cwd, &["checkpoint-mark", "--max-seq", "2"]);
+    let out = run_in(
+        &env,
+        &cwd,
+        &["checkpoint-mark", "--max-seq", "2", "--no-facts"],
+    );
     assert!(out.contains("last_seq=5"));
     let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
     let checkpointed: i64 = db
@@ -204,7 +208,13 @@ fn checkpoint_mark_max_seq_does_not_ingest_new_turns() {
 
     let too_high = run_full(
         &env,
-        &["checkpoint-mark", "cccc-max-1111", "--max-seq", "6"],
+        &[
+            "checkpoint-mark",
+            "cccc-max-1111",
+            "--max-seq",
+            "6",
+            "--no-facts",
+        ],
         None,
     );
     assert!(!too_high.status.success());
@@ -226,12 +236,24 @@ fn checkpoint_mark_watermark_does_not_move_backwards() {
     run(&env, &["ingest", transcript.to_str().unwrap()], None);
     run(
         &env,
-        &["checkpoint-mark", "monotonic-1111", "--max-seq", "2"],
+        &[
+            "checkpoint-mark",
+            "monotonic-1111",
+            "--max-seq",
+            "2",
+            "--no-facts",
+        ],
         None,
     );
     run(
         &env,
-        &["checkpoint-mark", "monotonic-1111", "--max-seq", "1"],
+        &[
+            "checkpoint-mark",
+            "monotonic-1111",
+            "--max-seq",
+            "1",
+            "--no-facts",
+        ],
         None,
     );
     let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
@@ -243,6 +265,59 @@ fn checkpoint_mark_watermark_does_not_move_backwards() {
         )
         .unwrap();
     assert_eq!(watermark, 2);
+}
+
+#[test]
+fn checkpoint_mark_requires_fact_or_explicit_no_facts() {
+    let env = setup("mark-no-facts");
+    let transcript = env.projects.join("-tmp-demo/no-facts-1111.jsonl");
+    fs::write(&transcript, golden("transcript.jsonl")).unwrap();
+    run(&env, &["ingest", transcript.to_str().unwrap()], None);
+    let refused = run_full(&env, &["checkpoint-mark", "no-facts-1111"], None);
+    assert!(!refused.status.success());
+    let refused_err = String::from_utf8_lossy(&refused.stderr);
+    assert!(refused_err.contains("no saved facts") && refused_err.contains("no-facts-1111"));
+    let out = run_full(
+        &env,
+        &["checkpoint-mark", "no-facts-1111", "--no-facts"],
+        None,
+    );
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("no facts were saved"));
+}
+
+#[test]
+fn checkpoint_mark_with_fact_keeps_working() {
+    let env = setup("mark-with-fact");
+    let transcript = env.projects.join("-tmp-demo/with-fact-1111.jsonl");
+    fs::write(&transcript, golden("transcript.jsonl")).unwrap();
+    run(&env, &["ingest", transcript.to_str().unwrap()], None);
+    let memdir = env.data.join("memory");
+    fs::create_dir_all(&memdir).unwrap();
+    let fact = memdir.join("saved.md");
+    fs::write(
+        &fact,
+        "---\nname: saved\ntype: project\n---\nA durable fact.\n",
+    )
+    .unwrap();
+    let fact_out = run_full(
+        &env,
+        &[
+            "fact",
+            "upsert",
+            "--leaf",
+            "saved.md",
+            "--origin-session",
+            "with-fact-1111",
+            "--memdir",
+            memdir.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(fact_out.status.success());
+    let out = run_full(&env, &["checkpoint-mark", "with-fact-1111"], None);
+    assert!(out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("no facts were saved"));
 }
 
 fn user_rec_for_test() -> String {

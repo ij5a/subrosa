@@ -266,6 +266,9 @@ enum Cmd {
         /// Mark only through this archived sequence
         #[arg(long)]
         max_seq: Option<i64>,
+        /// Remove the queued session without claiming any turns were distilled
+        #[arg(long)]
+        abandon: bool,
     },
     /// Conditionally queue a session (prunes empty/sub-agent-only sessions)
     CheckpointEnqueue {
@@ -279,6 +282,9 @@ enum Cmd {
         /// Stamp this exact transcript sequence without ingesting newer turns
         #[arg(long)]
         max_seq: Option<i64>,
+        /// Confirm that no durable facts were saved for this session
+        #[arg(long)]
+        no_facts: bool,
     },
     /// Empty the whole checkpoint queue (prefer checkpoint-drop per session)
     CheckpointClear {
@@ -438,9 +444,17 @@ fn main() -> ExitCode {
         } => import_existing::run(memdir, no_backup, project),
         Cmd::Session { id, tags, boundary } => session::dump(&id, tags, boundary),
         Cmd::Pending => run_pending(),
-        Cmd::CheckpointDrop { id, max_seq } => session::drop_sid(&id, max_seq),
+        Cmd::CheckpointDrop {
+            id,
+            max_seq,
+            abandon,
+        } => session::drop_sid(&id, max_seq, abandon),
         Cmd::CheckpointEnqueue { id } => session::enqueue(&id),
-        Cmd::CheckpointMark { id, max_seq } => session::mark_current(id.as_deref(), max_seq),
+        Cmd::CheckpointMark {
+            id,
+            max_seq,
+            no_facts,
+        } => session::mark_current(id.as_deref(), max_seq, no_facts),
         Cmd::CheckpointClear { confirm } => run_checkpoint_clear(confirm),
     }
 }
