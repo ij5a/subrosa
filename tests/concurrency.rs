@@ -284,7 +284,8 @@ fn session_end_worker_survives_parent_process_group_exit() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let _ = Command::new("kill").args(["-TERM", &group]).status();
-    assert!(!parent.wait().unwrap().success());
+    // The hook may exit normally before the signal arrives, and either outcome is valid.
+    let _ = parent.wait();
     for _ in 0..100 {
         let output = base_cmd(&env).args(["pending"]).output().unwrap();
         let pending = String::from_utf8_lossy(&output.stdout);
