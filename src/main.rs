@@ -516,10 +516,10 @@ fn run_ingest(paths: Vec<PathBuf>, sweep: bool, quiet: bool, require_complete: b
     };
     if sweep {
         match ingest::sweep(&conn, &paths::projects_dir(), require_complete) {
-            Ok((files, ingested, inserted, complete)) => {
+            Ok((files, changed, inserted, complete)) => {
                 if !quiet {
                     println!(
-                        "[subrosa] sweep: {files} transcripts, {ingested} changed, +{inserted} turns"
+                        "[subrosa] sweep: {files} transcripts, {changed} files changed, +{inserted} turns"
                     );
                 }
                 if require_complete && !complete {

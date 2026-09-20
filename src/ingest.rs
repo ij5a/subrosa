@@ -584,32 +584,63 @@ pub fn sweep(
     }
     transcripts.sort();
 
-    let (mut files, mut ingested, mut inserted_total, mut complete) = (0, 0, 0, true);
+    let (mut files, mut changed, mut inserted_total, mut complete) = (0, 0, 0, true);
+    let mut changed_sessions = Vec::new();
     for path in transcripts {
         files += 1;
+        let sid = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let stored_metadata: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT file_size, file_mtime FROM sessions WHERE session_id=?",
+                [&sid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let metadata = fs::metadata(&path)?;
+        let file_size = metadata.len() as i64;
+        let file_mtime = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+            .unwrap_or(0);
+        let file_changed = stored_metadata != Some((file_size, file_mtime));
         match ingest_file_report(conn, &path, require_complete) {
             Ok(report) => {
                 let ins = report.inserted;
-                ingested += 1;
+                if file_changed {
+                    changed += 1;
+                    changed_sessions.push(sid);
+                }
                 inserted_total += ins;
                 complete &= report.complete;
             }
             Err(e) => return Err(format!("sweep failed for {path:?}: {e}").into()),
         }
     }
-    let queued: Vec<String> = conn
-        .prepare(
-            "SELECT s.session_id FROM sessions s \
-             LEFT JOIN checkpoint_queue q ON q.session_id=s.session_id \
-             WHERE q.session_id IS NULL AND COALESCE((SELECT max(seq) FROM turns WHERE session_id=s.session_id), -1) > COALESCE(s.checkpointed_seq, -1)
-               AND EXISTS (SELECT 1 FROM turns t WHERE t.session_id=s.session_id)",
-        )?
-        .query_map([], |r| r.get(0))?
+    let placeholders = std::iter::repeat_n("?", changed_sessions.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let query = format!(
+        "SELECT s.session_id FROM sessions s \
+         LEFT JOIN checkpoint_queue q ON q.session_id=s.session_id \
+         WHERE s.session_id IN ({placeholders})
+           AND q.session_id IS NULL AND COALESCE((SELECT max(seq) FROM turns WHERE session_id=s.session_id), -1) > COALESCE(s.checkpointed_seq, -1)
+           AND EXISTS (SELECT 1 FROM turns t WHERE t.session_id=s.session_id)"
+    );
+    let mut statement = conn.prepare(&query)?;
+    let queued: Vec<String> = statement
+        .query_map(rusqlite::params_from_iter(changed_sessions.iter()), |r| {
+            r.get(0)
+        })?
         .collect::<Result<_, _>>()?;
     for sid in queued {
         enqueue_checkpoint(conn, &sid)?;
     }
-    Ok((files, ingested, inserted_total, complete))
+    Ok((files, changed, inserted_total, complete))
 }
 
 pub fn distilled_boundary(conn: &Connection, sid: &str) -> rusqlite::Result<i64> {

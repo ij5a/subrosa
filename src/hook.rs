@@ -102,9 +102,9 @@ pub fn run(event: HookEvent) -> ExitCode {
 fn session_start(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
     let sweep_result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let conn = db::connect()?;
-        let (files, ingested, inserted, _) = ingest::sweep(&conn, &paths::projects_dir(), false)?;
+        let (files, changed, inserted, _) = ingest::sweep(&conn, &paths::projects_dir(), false)?;
         log(&format!(
-            "session-start sweep: {files} transcripts, {ingested} changed, +{inserted} turns"
+            "session-start sweep: {files} transcripts, {changed} files changed, +{inserted} turns"
         ));
         Ok(())
     })();

@@ -298,7 +298,7 @@ fn session_end_worker_survives_parent_process_group_exit() {
 }
 
 #[test]
-fn sweep_recovers_when_session_end_worker_never_runs() {
+fn sweep_enqueues_changed_session_after_prior_ingest() {
     let env = setup("session-end-sweep");
     let sid = "sweep-0001";
     let transcript = write_transcript(&env, sid, 2);
@@ -314,8 +314,82 @@ fn sweep_recovers_when_session_end_worker_never_runs() {
         .output()
         .unwrap();
     assert!(drop.status.success());
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .unwrap()
+        .write_all(format!("\n{}", user_record(sid)).as_bytes())
+        .unwrap();
     let sweep = base_cmd(&env).args(["sweep", "--quiet"]).output().unwrap();
     assert!(sweep.status.success());
     let pending = base_cmd(&env).args(["pending"]).output().unwrap();
-    assert!(String::from_utf8_lossy(&pending.stdout).contains(sid));
+    assert!(
+        String::from_utf8_lossy(&pending.stdout).contains(sid),
+        "pending stdout: {} stderr: {}",
+        String::from_utf8_lossy(&pending.stdout),
+        String::from_utf8_lossy(&pending.stderr)
+    );
+}
+
+#[test]
+fn sweep_does_not_enqueue_unchanged_sessions() {
+    let env = setup("session-end-sweep-noop");
+    let first = write_transcript(&env, "sweep-old-0001", 2);
+    let second = write_transcript(&env, "sweep-old-0002", 2);
+    assert!(base_cmd(&env)
+        .args(["init"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    for transcript in [&first, &second] {
+        assert!(base_cmd(&env)
+            .args(["ingest", transcript.to_str().unwrap()])
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    db.execute("UPDATE sessions SET checkpointed_seq=-1", [])
+        .unwrap();
+    let sweep = base_cmd(&env).args(["sweep", "--quiet"]).output().unwrap();
+    assert!(sweep.status.success());
+    let queued: i64 = db
+        .query_row("SELECT count(*) FROM checkpoint_queue", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(queued, 0);
+}
+
+#[test]
+fn sweep_enqueues_changed_session_with_new_turns() {
+    let env = setup("session-end-sweep-one");
+    let changed = write_transcript(&env, "sweep-new-0001", 1);
+    let unchanged = write_transcript(&env, "sweep-new-0002", 1);
+    assert!(base_cmd(&env)
+        .args(["init"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    for transcript in [&changed, &unchanged] {
+        assert!(base_cmd(&env)
+            .args(["ingest", transcript.to_str().unwrap()])
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&changed)
+        .unwrap()
+        .write_all(format!("\n{}", user_record("sweep-new-0001")).as_bytes())
+        .unwrap();
+    let sweep = base_cmd(&env).args(["sweep", "--quiet"]).output().unwrap();
+    assert!(sweep.status.success());
+    let pending = base_cmd(&env).args(["pending"]).output().unwrap();
+    let pending = String::from_utf8_lossy(&pending.stdout);
+    assert!(pending.contains("sweep-new-0001"), "pending: {pending}");
+    assert!(!pending.contains("sweep-new-0002"));
 }
