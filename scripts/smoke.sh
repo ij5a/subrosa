@@ -11,7 +11,10 @@ BIN="${1:-target/release/subrosa}"
 BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
 
 ROOT="$(mktemp -d)"
-trap 'rm -rf "$ROOT"' EXIT
+cleanup() {
+  rm -rf "$ROOT"
+}
+trap cleanup EXIT
 export SUBROSA_DIR="$ROOT/data"
 export SUBROSA_PROJECTS_DIR="$ROOT/projects"
 # The hooks below must not start the background indexer — it downloads a model.
@@ -120,6 +123,11 @@ echo "smoke: budget override ok"
 printf '{"prompt":"ping xyzzycontrol","cwd":"/tmp/demo","session_id":"smoke"}\n' | "$BIN" hook user-prompt-submit >/dev/null || fail "user-prompt-submit hook exited non-zero"
 printf '{"transcript_path":"%s","session_id":"smoke"}\n' "$T" | "$BIN" hook stop >/dev/null || fail "stop hook exited non-zero"
 printf '{"transcript_path":"%s","session_id":"smoke"}\n' "$T" | "$BIN" hook session-end >/dev/null || fail "session-end hook exited non-zero"
+deadline=$(($(date +%s) + 10))
+while ! "$BIN" pending | grep -q smoke; do
+  [ "$(date +%s)" -lt "$deadline" ] || fail "session-end worker did not queue smoke within 10 seconds"
+  sleep 0.05
+done
 echo "smoke: hooks exit-0 ok"
 
 echo "smoke: all checks passed"

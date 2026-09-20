@@ -3,7 +3,6 @@
 //! of tool_result, drops meta wrappers. The stored-text format is pinned
 //! byte-for-byte by golden tests — existing archives must re-ingest cleanly.
 
-use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
@@ -223,11 +222,29 @@ struct Row {
     cwd: Option<String>,
 }
 
+pub struct IngestReport {
+    pub inserted: i64,
+    pub scanned: i64,
+    pub skipped: i64,
+    pub partial_tail: bool,
+    pub complete: bool,
+}
+
 /// Parse one transcript JSONL and upsert its turns + session row. Idempotent.
 /// Returns (inserted, scanned).
-pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn Error>> {
+pub fn ingest_file_report(
+    conn: &Connection,
+    path: &Path,
+    require_complete: bool,
+) -> Result<IngestReport, Box<dyn Error>> {
     if !path.exists() {
-        return Ok((0, 0));
+        return Ok(IngestReport {
+            inserted: 0,
+            scanned: 0,
+            skipped: 0,
+            partial_tail: false,
+            complete: true,
+        });
     }
     // Filename stem == sessionId; stable key for re-ingest + file tracking.
     let sid = path
@@ -244,22 +261,78 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
     // seek to scan_offset and number lines from scan_seq, reading only the new bytes.
     // If the file is now shorter than that offset it was truncated or replaced (not an
     // append), so reset to (0, 0) and re-read from the top.
-    let (resume_offset, resume_seq): (u64, i64) = conn
+    let (resume_offset, resume_seq, stored_skipped, stored_size, stored_mtime, stored_turns): (u64, i64, i64, u64, i64, i64) = conn
         .query_row(
-            "SELECT scan_offset, scan_seq FROM sessions WHERE session_id=?",
+            "SELECT scan_offset, scan_seq, skipped_lines, partial_tail, file_size, file_mtime, num_turns FROM sessions WHERE session_id=?",
             [&sid],
-            |r| Ok((r.get::<_, i64>(0)?.max(0) as u64, r.get(1)?)),
+            |r| Ok((r.get::<_, i64>(0)?.max(0) as u64, r.get(1)?, r.get(2)?, r.get::<_, i64>(4)?.max(0) as u64, r.get(5)?, r.get(6)?)),
         )
         .optional()?
-        .unwrap_or((0, 0));
+        .unwrap_or((0, 0, 0, 0, 0, 0));
+    let stored_high_water = resume_seq - 1;
 
     let mut file = fs::File::open(path)?;
     let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let (mut offset, mut seq) = if resume_offset <= file_len {
+    let file_mtime = file
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0);
+    let strict_read = require_complete;
+    // All 4 checks prevent a stale or corrupt cursor from hiding new content.
+    if !strict_read
+        && stored_turns > 0
+        && stored_size == file_len
+        && stored_mtime == file_mtime
+        && resume_offset == file_len
+    {
+        return Ok(IngestReport {
+            inserted: 0,
+            scanned: 0,
+            skipped: stored_skipped,
+            partial_tail: false,
+            complete: stored_skipped == 0,
+        });
+    }
+    let archived_texts: std::collections::HashMap<i64, String> = if strict_read {
+        conn.prepare("SELECT seq, text FROM turns WHERE session_id=?")?
+            .query_map([&sid], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?
+    } else {
+        std::collections::HashMap::new()
+    };
+    let reset_for_shorter_file = stored_size > file_len;
+    let (mut offset, mut seq) = if strict_read || reset_for_shorter_file {
+        (0, 0)
+    } else if stored_turns > 0
+        && stored_size > 0
+        && stored_size < file_len
+        && stored_mtime <= file_mtime
+        && resume_offset < file_len
+    {
         (resume_offset, resume_seq)
     } else {
         (0, 0)
     };
+    if strict_read && stored_size > 0 && file_len < stored_size {
+        conn.execute(
+            "UPDATE sessions SET skipped_lines=MAX(skipped_lines, 1), partial_tail=0 WHERE session_id=?",
+            [&sid],
+        )?;
+        eprintln!(
+            "[subrosa] {}: content changed rather than grew; refusing to merge it",
+            path.display()
+        );
+        return Ok(IngestReport {
+            inserted: 0,
+            scanned: 0,
+            skipped: stored_skipped.max(1),
+            partial_tail: false,
+            complete: false,
+        });
+    }
     if offset > 0 {
         file.seek(SeekFrom::Start(offset))?;
     }
@@ -269,7 +342,9 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
     let (mut first_ts, mut last_ts, mut cwd): (Option<String>, Option<String>, Option<String>) =
         (None, None, None);
     let mut scanned: i64 = 0;
-
+    let mut skipped: i64 = stored_skipped;
+    let mut partial_tail = false;
+    let mut changed = false;
     let mut buf: Vec<u8> = Vec::new();
     loop {
         buf.clear();
@@ -281,6 +356,7 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
         // (and the cursor) for the next pass, when it's complete. This is the old
         // "half-written last line, picked up next pass" behavior without re-reading.
         if buf.last() != Some(&b'\n') {
+            partial_tail = true;
             break;
         }
         offset += n as u64;
@@ -292,13 +368,23 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
         let line = String::from_utf8_lossy(&buf);
         let line = line.trim();
         if line.is_empty() {
+            if strict_read && i <= stored_high_water && archived_texts.contains_key(&i) {
+                changed = true;
+            }
             continue;
         }
         let Ok(o) = serde_json::from_str::<Value>(line) else {
+            skipped += 1;
+            if strict_read && i <= stored_high_water && archived_texts.contains_key(&i) {
+                changed = true;
+            }
             continue;
         };
         scanned += 1;
         let Some((role, text)) = flatten_record(&o) else {
+            if strict_read && i <= stored_high_water && archived_texts.contains_key(&i) {
+                changed = true;
+            }
             continue;
         };
         let ts = o
@@ -329,6 +415,36 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
                 .and_then(Value::as_bool)
                 .unwrap_or(false) as i64,
             cwd: row_cwd,
+        });
+
+        if strict_read {
+            let current_text = &rows.last().expect("row just pushed").text;
+            let changed_archived = archived_texts
+                .get(&i)
+                .is_some_and(|archived| archived != current_text);
+            // A filtered record below the stored high-water mark is a rewrite, not an append.
+            let changed_filtered = i <= stored_high_water && !archived_texts.contains_key(&i);
+            if changed_archived || changed_filtered {
+                changed = true;
+            }
+        }
+    }
+
+    if changed {
+        conn.execute(
+            "UPDATE sessions SET skipped_lines=MAX(skipped_lines, 1), partial_tail=0 WHERE session_id=?",
+            [&sid],
+        )?;
+        eprintln!(
+            "[subrosa] {}: content changed rather than grew; refusing to merge it",
+            path.display()
+        );
+        return Ok(IngestReport {
+            inserted: 0,
+            scanned: 0,
+            skipped: stored_skipped.max(1),
+            partial_tail: false,
+            complete: false,
         });
     }
 
@@ -367,13 +483,16 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     let fsize = fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
+    partial_tail = partial_tail || (fsize as u64) > offset;
+    let complete = !partial_tail && fsize as u64 == offset;
     // first_ts/last_ts are MIN/MAX, not COALESCE-overwrite: an incremental pass only
     // sees the newly appended records, so its local min would otherwise clobber the
     // true session start. NULL-safe so a pass with no timestamps keeps the stored one.
+    // Cursors only move forward so a rewrite cannot make later content look new.
     conn.execute(
         "INSERT INTO sessions \
-           (session_id,file_path,project,cwd,first_ts,last_ts,num_turns,last_seq,file_size,scan_offset,scan_seq,ingested_at) \
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?) \
+           (session_id,file_path,project,cwd,first_ts,last_ts,num_turns,last_seq,file_size,file_mtime,scan_offset,scan_seq,skipped_lines,partial_tail,ingested_at) \
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
          ON CONFLICT(session_id) DO UPDATE SET \
            file_path=excluded.file_path, \
            project=excluded.project, \
@@ -391,8 +510,11 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
            num_turns=excluded.num_turns, \
            last_seq=excluded.last_seq, \
            file_size=excluded.file_size, \
-           scan_offset=excluded.scan_offset, \
-           scan_seq=excluded.scan_seq, \
+           file_mtime=excluded.file_mtime, \
+           scan_offset=CASE WHEN excluded.file_size < sessions.file_size THEN excluded.scan_offset ELSE MAX(sessions.scan_offset, excluded.scan_offset) END, \
+           scan_seq=CASE WHEN excluded.file_size < sessions.file_size THEN excluded.scan_seq ELSE MAX(sessions.scan_seq, excluded.scan_seq) END, \
+           skipped_lines=excluded.skipped_lines, \
+           partial_tail=excluded.partial_tail, \
            ingested_at=excluded.ingested_at",
         params![
             sid,
@@ -404,8 +526,11 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
             num_turns,
             last_seq,
             fsize,
+            file_mtime,
             offset as i64,
             seq,
+            skipped,
+            partial_tail as i64,
             now_iso()
         ],
     )?;
@@ -419,123 +544,127 @@ pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn
             eprintln!("[subrosa] tag derivation {sid}: {e}");
         }
     }
-    Ok((inserted, scanned))
+    Ok(IngestReport {
+        inserted,
+        scanned,
+        skipped,
+        partial_tail,
+        complete: complete && skipped == 0,
+    })
+}
+
+pub fn ingest_file(conn: &Connection, path: &Path) -> Result<(i64, i64), Box<dyn Error>> {
+    let report = ingest_file_report(conn, path, false)?;
+    Ok((report.inserted, report.scanned))
 }
 
 /// Ingest any transcript whose size changed since last archive (catch-up for a
 /// missed SessionEnd). Returns (files_seen, files_ingested, turns_inserted).
-pub fn sweep(conn: &Connection, root: &Path) -> Result<(i64, i64, i64), Box<dyn Error>> {
-    if !root.exists() {
-        return Ok((0, 0, 0));
-    }
-    let mut seen: HashMap<String, i64> = HashMap::new();
-    {
-        let mut stmt = conn.prepare("SELECT session_id, file_size FROM sessions")?;
-        let mut rows = stmt.query([])?;
-        while let Some(r) = rows.next()? {
-            seen.insert(r.get(0)?, r.get(1)?);
-        }
-    }
+pub fn sweep(
+    conn: &Connection,
+    root: &Path,
+    require_complete: bool,
+) -> Result<(i64, i64, i64, bool), Box<dyn Error>> {
     let mut transcripts = Vec::new();
     for project_dir in fs::read_dir(root)? {
-        let Ok(project_dir) = project_dir else {
-            continue;
-        };
+        let project_dir = project_dir?;
         let p = project_dir.path();
         if !p.is_dir() {
             continue;
         }
-        let Ok(entries) = fs::read_dir(&p) else {
-            continue;
-        };
-        for f in entries.flatten() {
+        let entries = fs::read_dir(&p)?;
+        for f in entries {
+            let f = f?;
             let fp = f.path();
             if fp.extension().and_then(|e| e.to_str()) == Some("jsonl") {
                 // DirEntry metadata — no second stat per transcript later.
-                let Ok(md) = f.metadata() else { continue };
-                transcripts.push((fp, md.len() as i64));
+                transcripts.push(fp);
             }
         }
     }
     transcripts.sort();
 
-    let (mut files, mut ingested, mut inserted_total) = (0, 0, 0);
-    for (path, size) in transcripts {
+    let (mut files, mut ingested, mut inserted_total, mut complete) = (0, 0, 0, true);
+    for path in transcripts {
         files += 1;
-        let stem = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        if seen.get(&stem) == Some(&size) {
-            continue; // unchanged since last ingest
+        match ingest_file_report(conn, &path, require_complete) {
+            Ok(report) => {
+                let ins = report.inserted;
+                ingested += 1;
+                inserted_total += ins;
+                complete &= report.complete;
+            }
+            Err(e) => return Err(format!("sweep failed for {path:?}: {e}").into()),
         }
-        let (ins, _) = ingest_file(conn, &path)?;
-        ingested += 1;
-        inserted_total += ins;
     }
-    Ok((files, ingested, inserted_total))
+    let queued: Vec<String> = conn
+        .prepare(
+            "SELECT s.session_id FROM sessions s \
+             LEFT JOIN checkpoint_queue q ON q.session_id=s.session_id \
+             WHERE q.session_id IS NULL AND COALESCE((SELECT max(seq) FROM turns WHERE session_id=s.session_id), -1) > COALESCE(s.checkpointed_seq, -1)
+               AND EXISTS (SELECT 1 FROM turns t WHERE t.session_id=s.session_id)",
+        )?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for sid in queued {
+        enqueue_checkpoint(conn, &sid)?;
+    }
+    Ok((files, ingested, inserted_total, complete))
+}
+
+pub fn distilled_boundary(conn: &Connection, sid: &str) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COALESCE((SELECT max(seq) FROM turns WHERE session_id=?), -1)",
+        [sid],
+        |r| r.get(0),
+    )
+}
+
+pub fn advance_checkpoint(conn: &Connection, sid: &str, boundary: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE sessions SET checkpointed_seq=MAX(COALESCE(checkpointed_seq, -1), ?) WHERE session_id=?",
+        rusqlite::params![boundary, sid],
+    )
 }
 
 /// Append a session to the checkpoint queue — but only when it's worth distilling
 /// and isn't already queued or already checkpointed. Idempotent: the SessionEnd
 /// hook fires repeatedly on resume. Returns: queued | pruned | unchanged | duplicate.
-/// The session-id field of a pending-queue line (`<ts>\t<sid>`), trimmed. Lines
-/// are written `<iso>\t<sid>`; a line with no tab is treated as a bare id.
-pub(crate) fn queue_sid(line: &str) -> &str {
-    let line = line.trim();
-    line.rsplit('\t').next().unwrap_or(line)
-}
-
-pub fn enqueue_checkpoint(
-    conn: &Connection,
-    sid: &str,
-    log_path: &Path,
-) -> Result<&'static str, Box<dyn Error>> {
-    let row: Option<(i64, i64)> = conn
-        .query_row(
-            "SELECT COALESCE(last_seq,-1), COALESCE(checkpointed_seq,-1) \
-             FROM sessions WHERE session_id=?",
-            [sid],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
+pub fn enqueue_checkpoint(conn: &Connection, sid: &str) -> Result<&'static str, Box<dyn Error>> {
     let user_turns: i64 = conn.query_row(
         "SELECT count(*) FROM turns WHERE session_id=? AND role='user' AND is_sidechain=0",
         [sid],
         |r| r.get(0),
     )?;
+    if user_turns < 1 {
+        return Ok("pruned");
+    }
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let row: Option<(i64, i64)> = tx
+        .query_row(
+            "SELECT COALESCE((SELECT max(seq) FROM turns WHERE session_id=s.session_id), -1), COALESCE(s.checkpointed_seq,-1) \
+             FROM sessions s WHERE s.session_id=?",
+            [sid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
     let Some((last_seq, checkpointed_seq)) = row else {
+        tx.commit()?;
         return Ok("pruned"); // not yet ingested
     };
-    if user_turns < 1 {
-        return Ok("pruned"); // empty / sub-agent-only / bare slash-command
-    }
-    if last_seq <= checkpointed_seq {
+    let scan_reset: bool = tx.query_row(
+        "SELECT scan_offset=0 AND scan_seq=0 FROM sessions WHERE session_id=?",
+        [sid],
+        |r| r.get(0),
+    )?;
+    if last_seq <= checkpointed_seq && !scan_reset {
+        tx.commit()?;
         return Ok("unchanged"); // already checkpointed and hasn't grown past the mark
     }
-    // Bounded and regular-file-only, both ways: this runs from SessionEnd, and
-    // a FIFO here would block the hook — on the read, and again on the append.
-    let pending: HashSet<String> =
-        crate::paths::read_control_file(log_path, crate::paths::CONTROL_FILE_MAX)?
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| queue_sid(l).to_string())
-            .collect();
-    if pending.contains(sid) {
-        return Ok("duplicate");
-    }
-    if !crate::paths::appendable(log_path) {
-        return Err(format!("{} is not a plain file", log_path.display()).into());
-    }
-    if let Some(parent) = log_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    use std::io::Write;
-    let mut f = fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(log_path)?;
-    writeln!(f, "{}\t{}", now_iso(), sid)?;
-    Ok("queued")
+    let inserted = tx.execute(
+        "INSERT OR IGNORE INTO checkpoint_queue(session_id, enqueued_at, enqueue_seq) VALUES (?, ?, (SELECT COALESCE(MAX(enqueue_seq), 0) + 1 FROM checkpoint_queue))",
+        rusqlite::params![sid, now_iso()],
+    )?;
+    tx.commit()?;
+    Ok(if inserted == 0 { "duplicate" } else { "queued" })
 }

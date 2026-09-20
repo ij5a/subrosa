@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  Persistent local memory for Claude Code.
+Persistent local memory for Claude Code.
 </p>
 
 <p align="center">
@@ -12,20 +12,20 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/ij5a/subrosa" alt="MIT license"></a>
 </p>
 
-subrosa archives every Claude Code session in a local SQLite database. Search the archive with `subrosa search`.
+subrosa archives every Claude Code session in a local SQLite database. Search it with `subrosa search`.
 
 A plain `subrosa search` retries semantic search after zero keyword hits when automatic indexing is on and its local model and index are available. Use `--raw` to skip that retry. Plain search never starts the one-time model download.
 
 Prompt recall is keyword-only. It adds up to 3 relevant snippets when the match is strong.
 
-- Saving a session uses plain-text parsing. It makes no LLM call and uses 0 model tokens.
-- The project has 11 direct crates and one static binary of about 5 MB. The binary has no daemon or worker.
+- Saving uses plain-text parsing. It makes no model call and uses 0 model tokens.
+- The project has 11 direct crates and one static binary of about 5 MB. SessionEnd starts a short-lived detached archival worker.
 - The binary opens no sockets. A system `curl` child makes the one-time model download.
 - Nothing you type, save, or search is uploaded. Secret shapes are masked before storage.
-- Recall costs about 180 tokens on a strong match and stays below the 220-token benchmark limit. `MEMORY.md` uses at most 23 KB by default.
+- Recall adds about 180 estimated tokens on a strong match in the benchmark fixture. The estimate divides response bytes by 3.8; it is not a runtime cap. `MEMORY.md` uses at most 23 KB by default.
 - Keyword hits take about 5 to 11 ms over 50,000 turns. A semantic fallback scans indexed turns linearly, so a miss gets slower as the index grows.
 
-The [FAQ](docs/faq.md) has the data paths, privacy limits, token details, semantic search details, proof commands, and performance data.
+The [FAQ](docs/faq.md) covers data paths, privacy limits, tokens, semantic search, proof commands, and performance.
 
 <p align="center">
   <img src="assets/demo.gif" alt="subrosa demo: search the archive, automatic recall on a prompt, dashboard" width="800">
@@ -54,9 +54,9 @@ Inside Claude Code, run:
 /plugin install subrosa@subrosa
 ```
 
-Start a new Claude Code session after installation. The plugin downloads the right prebuilt program for your computer, about 2.5 MB, and checks its checksum.
+Start a new Claude Code session after installation. The plugin downloads the right prebuilt program, about 2.5 MB, and checks its checksum.
 
-It also archives sessions already on your disk. Later, it archives sessions while you work and when they end. It shows related past sessions in Claude's context and reports sessions waiting for long-term memory.
+It also archives sessions already on your disk, then archives sessions while you work and when they end. It shows related past sessions in Claude's context and reports sessions waiting for long-term memory.
 
 The program download fetches only the program. Your data stays on your machine.
 
@@ -66,11 +66,11 @@ Run this command to add the optional Claude instructions:
 ~/.claude/subrosa/bin/subrosa init --claude-md   # or: subrosa init --claude-md
 ```
 
-The instructions make Claude search the archive at task start and process queued checkpoints. The command is safe to run again and adds only missing sections. It adds about 250 tokens of context.
+The instructions make Claude search the archive at task start and process queued checkpoints. Re-running adds only missing sections. They add about 250 tokens of context.
 
 ### Optional: install the `subrosa` command
 
-The plugin works without the CLI. Install the CLI to search and manage the archive yourself.
+The plugin works without the CLI. Install it to search and manage the archive yourself.
 
 ```sh
 brew install ij5a/tap/subrosa
@@ -87,9 +87,9 @@ subrosa          # open the dashboard
 
 ## What it does
 
-- Archives sessions when Claude Code ends them with quit, `/clear`, or logout. A start-up sweep catches changed transcripts.
+- Archives sessions when Claude Code ends them with quit, `/clear`, or logout. SessionEnd returns after starting a detached worker. The worker retries ordinary SQLite contention, and a start-up sweep catches a worker that never ran.
 - Archives the live session after each assistant turn. The current session becomes searchable before it ends.
-- Adds up to 3 strong keyword matches from the same project to a prompt. It skips weak matches and the current session.
+- Adds up to 3 strong keyword matches from the same project to each prompt. It skips weak matches and the current session.
 - Searches with FTS5. Use `--project`, `--after`, `--before`, `--tag`, `--context`, `--exclude`, `--any`, and `--fuzzy` to narrow results.
 - Supports semantic search with `subrosa search --semantic`. Automatic semantic search runs only after a plain search has zero hits and the local model and index are ready.
 - Builds curated facts with `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog`. Each fact has a small Markdown file. `subrosa generate` writes the size-limited `MEMORY.md`, and `subrosa fact search` finds facts.
@@ -128,7 +128,7 @@ subrosa generate                         # rebuild MEMORY.md
 subrosa import ~/.claude/projects/<project>/memory # import an existing MEMORY.md
 subrosa session <id>                     # full ID or unique prefix
 subrosa pending                          # queued checkpoints
-subrosa checkpoint-drop <id>             # remove one queued session
+subrosa checkpoint-drop <id> --max-seq N # remove a verified queue prefix
 subrosa sweep                            # catch up on transcripts
 subrosa backup --force                   # make a snapshot now
 subrosa restore <mirror>/subrosa-latest.db.enc   # decrypt an encrypted snapshot
@@ -178,15 +178,15 @@ the durable facts from each queued session into that project's memory, then clea
 the queue as it finishes. Skip it silently when nothing is queued.
 ```
 
-The first section makes Claude search during a task. The second clears queued checkpoints in the background.
+The first section searches during a task. The second clears queued checkpoints.
 
 ## Where your data lives
 
-See [Where is my data?](docs/faq.md#where-is-my-data) for paths, permissions, config, and mirror rules.
+See [Where is data stored?](docs/faq.md#where-is-data-stored) for paths, permissions, config, and mirror rules.
 
 ## Privacy model
 
-See [Can my data leave my machine?](docs/faq.md#can-my-data-leave-my-machine) and [What does subrosa not protect?](docs/faq.md#what-does-subrosa-not-protect).
+See [Can data leave my machine?](docs/faq.md#can-data-leave-my-machine) and [What does subrosa not protect?](docs/faq.md#what-does-subrosa-not-protect).
 
 ## Proof: verify it yourself
 

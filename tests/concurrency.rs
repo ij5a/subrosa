@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_subrosa")
 }
@@ -81,6 +84,33 @@ fn spawn_session_end(env: &TestEnv, sid: &str, transcript: &Path) -> Child {
     child
 }
 
+fn user_record(sid: &str) -> String {
+    format!(
+        r#"{{"type":"user","timestamp":"2026-06-12T01:00:00Z","uuid":"{sid}-u1","cwd":"/tmp/demo","message":{{"role":"user","content":"survive"}}}}"#
+    )
+}
+
+// This nudges overlap but does not force it, so the test can pass without the race.
+#[test]
+fn concurrent_schema_upgrades_both_succeed() {
+    let env = setup("schema-upgrades");
+    let first = base_cmd(&env)
+        .args(["init"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(25));
+    let second = base_cmd(&env)
+        .args(["init"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    assert!(first.wait_with_output().unwrap().status.success());
+    assert!(second.wait_with_output().unwrap().status.success());
+}
+
 #[test]
 fn concurrent_session_end_hooks_never_error() {
     let env = setup("hooks");
@@ -109,12 +139,21 @@ fn concurrent_session_end_hooks_never_error() {
         !log.contains("error"),
         "hook.log reports errors under concurrency:\n{log}"
     );
-    let pending = fs::read_to_string(env.data.join("pending-checkpoint.log")).unwrap_or_default();
-    for (sid, _) in &sessions {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let pending =
+            String::from_utf8(base_cmd(&env).args(["pending"]).output().unwrap().stdout).unwrap();
+        if sessions
+            .iter()
+            .all(|(sid, _)| pending.contains(sid.as_str()))
+        {
+            break;
+        }
         assert!(
-            pending.contains(sid.as_str()),
-            "{sid} missing from queue:\n{pending}"
+            Instant::now() < deadline,
+            "sessions missing from queue:\n{pending}"
         );
+        std::thread::sleep(Duration::from_millis(50));
     }
     // No prior snapshot existed, so the un-throttled backup ran while other
     // hooks were writing — it must have completed despite the contention.
@@ -130,6 +169,14 @@ fn connect_needs_no_write_lock_when_schema_current() {
     // Warm-up creates the schema and sets user_version once.
     let mut warm = spawn_session_end(&env, "warm-0000", Path::new("/nonexistent"));
     assert!(warm.wait().unwrap().success());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !env.data.join("memory.db").is_file() {
+        assert!(
+            Instant::now() < deadline,
+            "SessionEnd worker did not create the database"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     // Hold the write lock, then run a session-start (connect + sweep of an
     // empty projects dir = reads only). It must finish while the lock is held.
@@ -167,4 +214,107 @@ fn connect_needs_no_write_lock_when_schema_current() {
         !log.contains("error"),
         "session-start errored while a writer held the lock:\n{log}"
     );
+}
+
+#[test]
+fn session_end_returns_fast_and_worker_queues_after_contention() {
+    let env = setup("session-end-worker");
+    let sid = "worker-0001";
+    let transcript = write_transcript(&env, sid, 2);
+    let warm = base_cmd(&env).args(["init"]).output().unwrap();
+    assert!(warm.status.success());
+    let holder = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let blocker = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(700));
+        holder.execute_batch("COMMIT").unwrap();
+    });
+    let started = Instant::now();
+    let mut hook = spawn_session_end(&env, sid, &transcript);
+    assert!(hook.wait().unwrap().success());
+    assert!(started.elapsed() < Duration::from_secs(2));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let pending = base_cmd(&env).args(["pending"]).output().unwrap();
+        let text = String::from_utf8_lossy(&pending.stdout);
+        if text.contains(sid) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "worker did not queue {sid}: {text}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    blocker.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn session_end_worker_survives_parent_process_group_exit() {
+    let env = setup("session-end-process-group");
+    let sid = "group-worker-0001";
+    let transcript = env.projects.join(format!("-tmp-demo/{sid}.jsonl"));
+    fs::write(&transcript, user_record(sid) + "\n").unwrap();
+
+    let payload = format!(
+        r#"{{"session_id":"{sid}","transcript_path":"{}","reason":"other"}}"#,
+        transcript.display()
+    );
+    let mut parent = Command::new("sh")
+        .args([
+            "-c",
+            "printf '%s' \"$SUBROSA_TEST_PAYLOAD\" | \"$SUBROSA_BIN\" hook session-end; sleep 5",
+        ])
+        .env("SUBROSA_BIN", bin())
+        .env("SUBROSA_TEST_PAYLOAD", payload)
+        .env("SUBROSA_DIR", &env.data)
+        .env("SUBROSA_PROJECTS_DIR", &env.projects)
+        .env("SUBROSA_SEMANTIC", "off")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    let group = format!("-{}", parent.id());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !env.data.join("memory.db").is_file() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = Command::new("kill").args(["-TERM", &group]).status();
+    assert!(!parent.wait().unwrap().success());
+    for _ in 0..100 {
+        let output = base_cmd(&env).args(["pending"]).output().unwrap();
+        let pending = String::from_utf8_lossy(&output.stdout);
+        if pending.contains(sid) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("session-end worker did not survive its parent process group");
+}
+
+#[test]
+fn sweep_recovers_when_session_end_worker_never_runs() {
+    let env = setup("session-end-sweep");
+    let sid = "sweep-0001";
+    let transcript = write_transcript(&env, sid, 2);
+    let init = base_cmd(&env).args(["init"]).output().unwrap();
+    assert!(init.status.success());
+    let ingest = base_cmd(&env)
+        .args(["ingest", transcript.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(ingest.status.success());
+    let drop = base_cmd(&env)
+        .args(["checkpoint-drop", sid])
+        .output()
+        .unwrap();
+    assert!(drop.status.success());
+    let sweep = base_cmd(&env).args(["sweep", "--quiet"]).output().unwrap();
+    assert!(sweep.status.success());
+    let pending = base_cmd(&env).args(["pending"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&pending.stdout).contains(sid));
 }

@@ -7,11 +7,65 @@
 
 use std::io::{Read, Write};
 use std::path::Path;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
+use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::{db, embed, generate, ingest, paths, recall, HookEvent};
+
+pub fn session_end_worker(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    let transcript = input
+        .get("transcript_path")
+        .and_then(Value::as_str)
+        .map(Path::new);
+    let sid = input.get("session_id").and_then(Value::as_str);
+    for attempt in 0..20 {
+        match session_end_write(transcript, sid) {
+            Ok(()) => {
+                return Ok(());
+            }
+            Err(e) if attempt < 19 && is_busy_error(e.as_ref()) => {
+                std::thread::sleep(Duration::from_millis(50 * (attempt + 1)));
+            }
+            Err(e) => {
+                log(&format!("session-end worker error: {e}"));
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn session_end_write(
+    transcript: Option<&Path>,
+    sid: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let conn = db::connect_with_timeout(Duration::from_millis(300))?;
+    if let Some(p) = transcript {
+        if p.try_exists()? && p.is_file() {
+            let (inserted, scanned) = ingest::ingest_file(&conn, p)?;
+            log(&format!(
+                "session-end ingest {}: +{inserted} turns ({scanned} records scanned)",
+                p.display()
+            ));
+        }
+    }
+    if let Some(sid) = sid {
+        let status = ingest::enqueue_checkpoint(&conn, sid)?;
+        log(&format!("session-end enqueue {sid}: {status}"));
+    }
+    match crate::backup::throttled(&conn) {
+        Ok(Some(label)) => log(&format!("session-end backup: {label}")),
+        Ok(None) => {}
+        Err(e) => log(&format!("session-end backup error: {e}")),
+    }
+    Ok(())
+}
+
+fn is_busy_error(e: &dyn std::error::Error) -> bool {
+    e.to_string().contains("database is locked") || e.to_string().contains("database is busy")
+}
 
 pub fn run(event: HookEvent) -> ExitCode {
     let mut raw = String::new();
@@ -24,6 +78,7 @@ pub fn run(event: HookEvent) -> ExitCode {
     let result = match event {
         HookEvent::SessionStart => session_start(&input),
         HookEvent::SessionEnd => session_end(&input),
+        HookEvent::SessionEndWorker => session_end_worker(&input),
         HookEvent::UserPromptSubmit => user_prompt_submit(&input),
         HookEvent::PreCompact => pre_compact(&input),
         HookEvent::Stop => stop(&input),
@@ -32,6 +87,7 @@ pub fn run(event: HookEvent) -> ExitCode {
         let name = match event {
             HookEvent::SessionStart => "session-start",
             HookEvent::SessionEnd => "session-end",
+            HookEvent::SessionEndWorker => "session-end-worker",
             HookEvent::UserPromptSubmit => "user-prompt-submit",
             HookEvent::PreCompact => "pre-compact",
             HookEvent::Stop => "stop",
@@ -46,7 +102,7 @@ pub fn run(event: HookEvent) -> ExitCode {
 fn session_start(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
     let sweep_result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let conn = db::connect()?;
-        let (files, ingested, inserted) = ingest::sweep(&conn, &paths::projects_dir())?;
+        let (files, ingested, inserted, _) = ingest::sweep(&conn, &paths::projects_dir(), false)?;
         log(&format!(
             "session-start sweep: {files} transcripts, {ingested} changed, +{inserted} turns"
         ));
@@ -65,33 +121,25 @@ fn session_start(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
     sweep_result
 }
 
-/// Unique session ids waiting in the checkpoint queue, ordered oldest→newest
-/// enqueue (a session can fire SessionEnd more than once; the latest enqueue
-/// wins its slot). `Ok(empty)` when the queue file is absent or empty; `Err`
+/// Unique session ids waiting in the checkpoint queue, ordered newest→oldest
+/// enqueue (a session can fire SessionEnd more than once; the first enqueue
+/// wins its slot). `Ok(empty)` when the database queue is empty; `Err`
 /// when it can't be read, which callers must NOT show as an empty queue — the
 /// reminder would vanish exactly when the backlog is at its largest.
 fn queued_sessions() -> Result<Vec<String>, String> {
-    let mut order: Vec<String> = Vec::new();
-    // Bounded and regular-file-only: this is read on every prompt, and a hook
-    // that blocks on a FIFO blocks the session.
-    let text = paths::read_control_file(&paths::pending_log(), paths::CONTROL_FILE_MAX)
-        .map_err(|e| {
-            log(&format!("checkpoint queue unreadable — {e}"));
-            e.to_string()
-        })?
-        .unwrap_or_default();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let id = ingest::queue_sid(line);
-        if let Some(pos) = order.iter().position(|x| x == id) {
-            order.remove(pos);
-        }
-        order.push(id.to_string());
-    }
-    Ok(order)
+    let conn = match db::connect_queue_readonly() {
+        Ok(conn) => conn,
+        Err(_) if !paths::db_path().try_exists().unwrap_or(true) => return Ok(Vec::new()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut stmt = conn
+        .prepare("SELECT session_id FROM checkpoint_queue ORDER BY enqueue_seq DESC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<String>, _>>();
+    rows.map_err(|e| e.to_string())
 }
 
 /// Short, actionable nudge (stdout is injected into context). Stays silent
@@ -105,7 +153,7 @@ fn nudge_lines(input: &Value) -> Vec<String> {
         Err(e) => {
             out.push(format!(
                 "[subrosa] the checkpoint queue can't be read ({e}) — sessions may be waiting \
-                 that this can't list. Fix or delete ~/.claude/subrosa/pending-checkpoint.log."
+                 that this can't list. Check the database."
             ));
             Vec::new()
         }
@@ -119,7 +167,7 @@ fn nudge_lines(input: &Value) -> Vec<String> {
             "off" => {}
             "quiet" => out.push(format!(
                 "[subrosa] {n} session(s) queued for checkpoint — run /subrosa:checkpoint-backlog \
-                 to save them to memory now (in-session; handles up to 5, clears them as it finishes)."
+                 to save them to memory now (in-session; clears them as it finishes)."
             )),
             // loud (default): an imperative directive that's hard to skip.
             _ => {
@@ -130,10 +178,10 @@ fn nudge_lines(input: &Value) -> Vec<String> {
                 out.push(
                     "[subrosa] Run the /subrosa:checkpoint-backlog skill to do it (in-session; \
                      nothing auto-runs, no daemon). It distills each queued session into that \
-                     project's memory, up to 5 at a time, and clears them as it finishes."
+                     project's memory, and clears each one as it finishes."
                         .to_string(),
                 );
-                let newest: Vec<&str> = order.iter().rev().take(5).map(String::as_str).collect();
+                let newest: Vec<&str> = order.iter().take(5).map(|id| id.as_str()).collect();
                 out.push(format!(
                     "[subrosa] Queued, newest first: {}{}",
                     newest.join(", "),
@@ -218,37 +266,24 @@ fn kb(n: i64) -> String {
 /// Archive the just-ended transcript and queue its session id for checkpointing.
 /// Steps are isolated: a lock failure in one must not skip the others.
 fn session_end(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
-    // Ahead of db::connect(): an archive that won't open skips everything
-    // below, and that must not be what leaves a readable copy in the cloud.
     crate::backup::purge_mirror_plaintext();
-    let conn = db::connect()?;
-    if let Some(tp) = input.get("transcript_path").and_then(Value::as_str) {
-        let p = Path::new(tp);
-        if p.is_file() {
-            match ingest::ingest_file(&conn, p) {
-                Ok((inserted, scanned)) => log(&format!(
-                    "session-end ingest {tp}: +{inserted} turns ({scanned} records scanned)"
-                )),
-                Err(e) => log(&format!("session-end ingest error {tp}: {e}")),
-            }
-        }
-    }
-    if let Some(sid) = input.get("session_id").and_then(Value::as_str) {
-        match ingest::enqueue_checkpoint(&conn, sid, &paths::pending_log()) {
-            Ok(status) => log(&format!("session-end enqueue {sid}: {status}")),
-            Err(e) => log(&format!("session-end enqueue error {sid}: {e}")),
-        }
-    }
-    // Throttled snapshot — no-op unless the newest backup is >24h old.
-    match crate::backup::throttled(&conn) {
-        Ok(Some(label)) => log(&format!("session-end backup: {label}")),
-        Ok(None) => {}
-        Err(e) => log(&format!("session-end backup error: {e}")),
-    }
-    // The turns this session just archived are the ones a search wants next, so
-    // the index run starts here rather than waiting for the next session.
+    spawn_session_end_worker(input)?;
     embed::spawn_if_due();
     Ok(())
+}
+
+fn spawn_session_end_worker(input: &Value) -> std::io::Result<()> {
+    let exe = std::env::current_exe()?;
+    let payload = serde_json::to_string(input).map_err(std::io::Error::other)?;
+    let mut cmd = Command::new(exe);
+    cmd.args(["hook", "session-end-worker"])
+        .env("SUBROSA_SESSION_END_PAYLOAD", payload)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    cmd.spawn().map(|_| ())
 }
 
 /// Compaction is about to summarize the conversation away: archive the
@@ -259,8 +294,8 @@ fn session_end(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
 fn pre_compact(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(tp) = input.get("transcript_path").and_then(Value::as_str) {
         let p = Path::new(tp);
-        if p.is_file() {
-            let conn = db::connect()?;
+        if p.try_exists()? && p.is_file() {
+            let conn = db::connect_with_timeout(std::time::Duration::from_millis(300))?;
             match ingest::ingest_file(&conn, p) {
                 Ok((inserted, scanned)) => log(&format!(
                     "pre-compact ingest {tp}: +{inserted} turns ({scanned} records scanned)"
@@ -283,8 +318,8 @@ fn pre_compact(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
 fn stop(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(tp) = input.get("transcript_path").and_then(Value::as_str) {
         let p = Path::new(tp);
-        if p.is_file() {
-            let conn = db::connect()?;
+        if p.try_exists()? && p.is_file() {
+            let conn = db::connect_with_timeout(std::time::Duration::from_millis(300))?;
             match ingest::ingest_file(&conn, p) {
                 Ok((inserted, scanned)) => log(&format!(
                     "stop ingest {tp}: +{inserted} turns ({scanned} records scanned)"
@@ -308,7 +343,7 @@ fn backlog_directive() -> Option<String> {
         Err(e) => {
             return Some(format!(
                 "[subrosa] the checkpoint queue can't be read ({e}) — sessions may be queued. \
-                 Fix or delete ~/.claude/subrosa/pending-checkpoint.log."
+                 Check the database."
             ))
         }
     };

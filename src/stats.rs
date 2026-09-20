@@ -9,7 +9,7 @@ use std::process::{Command, ExitCode};
 use rusqlite::Connection;
 
 use crate::timeutil::{civil_from_days, civil_to_days, fmt_ts, now_unix, parse_ts, parse_ymd};
-use crate::{backup, db, embed, generate, ingest, paths};
+use crate::{backup, db, embed, generate, paths};
 
 // Path segments that name containers, not the project itself — dropped when shortening a label.
 const CONTAINER_TOKENS: &[&str] = &[
@@ -564,17 +564,12 @@ fn semantic_line(conn: &Connection) -> String {
 /// `None` when the queue can't be read — the dashboard says so rather than
 /// drawing a reassuring zero over a file that is actually broken.
 fn pending_count() -> Option<usize> {
-    let text = paths::read_control_file(&paths::pending_log(), paths::CONTROL_FILE_MAX)
-        .ok()?
-        .unwrap_or_default();
-    Some(
-        text.lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(ingest::queue_sid)
-            .collect::<HashSet<_>>()
-            .len(),
-    )
+    let conn = db::connect_queue_readonly().ok()?;
+    conn.query_row("SELECT count(*) FROM checkpoint_queue", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .ok()
+    .map(|n| n as usize)
 }
 
 // ---- current-context resolution ---------------------------------------------
@@ -1261,7 +1256,7 @@ fn render(conn: &Connection, stats: &Stats, ctx: &CurrentContext, detail: bool) 
                 &format!(
                     "{}{}",
                     c1(&format!("{} pending", pend), "yellow"),
-                    c1("  run /checkpoint", "gray")
+                    c1("  run /subrosa:checkpoint-backlog", "gray")
                 ),
                 8
             )
@@ -1271,14 +1266,7 @@ fn render(conn: &Connection, stats: &Stats, ctx: &CurrentContext, detail: bool) 
         // is invisible exactly when something is wrong with the file holding it.
         None => println!(
             "{}",
-            sline(
-                "ckpt",
-                &c1(
-                    "unreadable — check ~/.claude/subrosa/pending-checkpoint.log",
-                    "bred"
-                ),
-                8
-            )
+            sline("ckpt", &c1("unreadable — check the database", "bred"), 8)
         ),
     }
 

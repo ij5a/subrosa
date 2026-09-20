@@ -88,10 +88,853 @@ fn user_rec(ts: &str, uuid: &str, text: &str) -> String {
     )
 }
 
+fn drop_turns_table(env: &TestEnv) {
+    run(env, &["init"], None);
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    db.execute("DROP TABLE turns", []).unwrap();
+}
+
+fn assert_post_open_write_fails(env: &TestEnv, stem: &str) {
+    let transcript = env.projects.join(format!("-tmp-demo/{stem}.jsonl"));
+    fs::write(
+        &transcript,
+        user_rec("2026-06-12T01:00:00Z", "write-1", "write failure"),
+    )
+    .unwrap();
+    drop_turns_table(env);
+    let (_, err, ok) = run_env::<&str>(env, &["ingest", transcript.to_str().unwrap()], None, &[]);
+    assert!(!ok, "post-open write failure succeeded: {err}");
+}
+
 fn ingest(env: &TestEnv, stem: &str, records: &[String]) {
     let t = env.projects.join(format!("-tmp-demo/{stem}.jsonl"));
     fs::write(&t, records.join("\n") + "\n").unwrap();
     run(env, &["ingest", t.to_str().unwrap()], None);
+}
+
+#[test]
+fn ingest_missing_path_fails() {
+    let env = setup("ingest-missing");
+    let missing = env.projects.join("-tmp-demo/missing.jsonl");
+    let (out, err, ok) = run_env::<&str>(&env, &["ingest", missing.to_str().unwrap()], None, &[]);
+    assert!(!ok, "missing ingest succeeded: {out}{err}");
+    assert!(err.contains("does not exist"), "unexpected error: {err}");
+
+    assert_post_open_write_fails(&env, "write-missing");
+}
+
+#[test]
+fn ingest_existing_empty_transcript_succeeds() {
+    let env = setup("ingest-empty");
+    let transcript = env.projects.join("-tmp-demo/empty.jsonl");
+    fs::write(&transcript, "").unwrap();
+    let (out, err, ok) =
+        run_env::<&str>(&env, &["ingest", transcript.to_str().unwrap()], None, &[]);
+    assert!(ok, "empty ingest failed: {out}{err}");
+    assert!(out.contains("+0 turns"), "unexpected output: {out}");
+
+    assert_post_open_write_fails(&env, "write-empty");
+}
+
+#[test]
+fn ingest_good_transcript_succeeds_and_archives_turns() {
+    let env = setup("ingest-good");
+    let transcript = env.projects.join("-tmp-demo/good.jsonl");
+    fs::write(
+        &transcript,
+        user_rec("2026-06-12T01:00:00Z", "u1", "archive this") + "\n",
+    )
+    .unwrap();
+    let (out, err, ok) =
+        run_env::<&str>(&env, &["ingest", transcript.to_str().unwrap()], None, &[]);
+    assert!(ok, "good ingest failed: {out}{err}");
+    assert!(out.contains("+1 turns"), "unexpected output: {out}");
+    let dump = run(&env, &["session", "good"], None).0;
+    assert!(
+        dump.contains("archive this"),
+        "turn was not archived: {dump}"
+    );
+
+    assert_post_open_write_fails(&env, "write-good");
+}
+
+#[test]
+fn ingest_database_error_fails() {
+    let env = setup("ingest-db-error");
+    let transcript = env.projects.join("-tmp-demo/db-error.jsonl");
+    fs::write(&transcript, "").unwrap();
+    let broken = env.data.join("not-a-db");
+    fs::create_dir_all(&broken).unwrap();
+    let (out, err, ok) = run_env(
+        &env,
+        &["ingest", transcript.to_str().unwrap()],
+        None,
+        &[("SUBROSA_DB", broken.to_str().unwrap())],
+    );
+    assert!(!ok, "database error succeeded: {out}{err}");
+    assert!(err.contains("cannot open DB"), "unexpected error: {err}");
+
+    assert_post_open_write_fails(&env, "write-db-error");
+}
+
+#[test]
+fn sweep_reports_unreadable_transcript() {
+    let env = setup("sweep-unreadable");
+    run(&env, &["init"], None);
+    let bad = env.projects.join("-tmp-demo/bad.jsonl");
+    fs::create_dir(&bad).unwrap();
+    let (out, err, ok) = run_env::<&str>(&env, &["sweep"], None, &[]);
+    assert!(!ok, "sweep succeeded: {out}{err}");
+    assert!(
+        err.contains("sweep failed"),
+        "unexpected sweep error: {err}"
+    );
+}
+
+#[test]
+fn require_complete_stays_failed_after_malformed_retry() {
+    let env = setup("require-retry");
+    let transcript = env.projects.join("-tmp-demo/retry.jsonl");
+    fs::write(&transcript, "not json\n").unwrap();
+    for _ in 0..2 {
+        let (_, err, ok) = run_env::<&str>(
+            &env,
+            &["ingest", "--require-complete", transcript.to_str().unwrap()],
+            None,
+            &[],
+        );
+        assert!(!ok, "malformed input succeeded: {err}");
+    }
+}
+
+#[test]
+fn require_complete_sweep_rejects_partial_tail() {
+    let env = setup("require-sweep");
+    let transcript = env.projects.join("-tmp-demo/partial.jsonl");
+    fs::write(
+        &transcript,
+        user_rec("2026-06-12T01:00:00Z", "p1", "complete") + "\npartial",
+    )
+    .unwrap();
+    let (_, err, ok) = run_env::<&std::ffi::OsStr>(
+        &env,
+        &["ingest", "--sweep", "--require-complete"],
+        None,
+        &[],
+    );
+    assert!(!ok, "partial sweep succeeded: {err}");
+}
+
+#[test]
+fn normal_append_then_strict_check_passes() {
+    let env = setup("strict-append");
+    let tp = env.projects.join("-tmp-demo/strict-append.jsonl");
+    fs::write(&tp, user_rec("2026-06-12T01:00:00Z", "a1", "first") + "\n").unwrap();
+    assert!(run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]).2);
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&tp)
+        .unwrap()
+        .write_all(user_rec("2026-06-12T01:01:00Z", "a2", "second").as_bytes())
+        .unwrap();
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&tp)
+        .unwrap()
+        .write_all(b"\n")
+        .unwrap();
+    assert!(run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]).2);
+    assert!(
+        run_env::<&str>(
+            &env,
+            &["ingest", "--require-complete", tp.to_str().unwrap()],
+            None,
+            &[]
+        )
+        .2
+    );
+}
+
+#[test]
+fn strict_sweep_rejects_rewritten_transcript() {
+    let env = setup("strict-sweep-rewrite");
+    let tp = env.projects.join("-tmp-demo/strict-sweep-rewrite.jsonl");
+    fs::write(
+        &tp,
+        user_rec("2026-06-12T01:00:00Z", "s1", "original")
+            + "\n"
+            + &user_rec("2026-06-12T01:01:00Z", "s2", "second")
+            + "\n",
+    )
+    .unwrap();
+    assert!(run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]).2);
+    fs::write(
+        &tp,
+        user_rec("2026-06-12T01:00:00Z", "s1", "original")
+            + "\n"
+            + &user_rec("2026-06-12T01:01:00Z", "s2", "rewritten")
+            + "\n",
+    )
+    .unwrap();
+    let (_, _, ok) = run_env::<&str>(
+        &env,
+        &["ingest", "--sweep", "--require-complete"],
+        None,
+        &[],
+    );
+    assert!(!ok);
+}
+
+fn filtered_record() -> String {
+    user_rec(
+        "2026-06-12T01:01:00Z",
+        "filtered",
+        "<local-command-stdout> noise",
+    )
+}
+
+#[test]
+fn strict_rejects_rewritten_filtered_record_and_keeps_queue() {
+    for sweep in [false, true] {
+        let tag = if sweep {
+            "strict-filtered-rewrite-sweep"
+        } else {
+            "strict-filtered-rewrite-direct"
+        };
+        let env = setup(tag);
+        let tp = env.projects.join(format!("-tmp-demo/{tag}.jsonl"));
+        fs::write(
+            &tp,
+            user_rec("2026-06-12T01:00:00Z", "first", "first")
+                + "\n"
+                + &filtered_record()
+                + "\n"
+                + &user_rec("2026-06-12T01:02:00Z", "third", "third")
+                + "\n",
+        )
+        .unwrap();
+        assert!(run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]).2);
+        run(&env, &["checkpoint-enqueue", tag], None);
+
+        fs::write(
+            &tp,
+            user_rec("2026-06-12T01:00:00Z", "first", "first")
+                + "\n"
+                + &user_rec("2026-06-12T01:01:00Z", "rewritten", "rewritten")
+                + "\n"
+                + &user_rec("2026-06-12T01:02:00Z", "third", "third")
+                + "\n",
+        )
+        .unwrap();
+        let args = if sweep {
+            vec!["ingest", "--sweep", "--require-complete"]
+        } else {
+            vec!["ingest", "--require-complete", tp.to_str().unwrap()]
+        };
+        let (_, _, ok) = run_env::<&str>(&env, &args, None, &[]);
+        assert!(!ok, "filtered rewrite passed for {tag}");
+        let dump = run(&env, &["session", tag], None).0;
+        assert!(dump.contains("first") && dump.contains("third"));
+        assert!(!dump.contains("rewritten"));
+        assert!(run(&env, &["pending"], None).0.contains(tag));
+    }
+}
+
+#[test]
+fn strict_append_after_filtered_record_passes() {
+    let env = setup("strict-filtered-append");
+    let tp = env.projects.join("-tmp-demo/strict-filtered-append.jsonl");
+    fs::write(
+        &tp,
+        user_rec("2026-06-12T01:00:00Z", "first", "first") + "\n" + &filtered_record() + "\n",
+    )
+    .unwrap();
+    assert!(run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]).2);
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&tp)
+        .unwrap()
+        .write_all((user_rec("2026-06-12T01:02:00Z", "third", "third") + "\n").as_bytes())
+        .unwrap();
+    assert!(
+        run_env::<&str>(
+            &env,
+            &["ingest", "--require-complete", tp.to_str().unwrap()],
+            None,
+            &[]
+        )
+        .2
+    );
+}
+
+#[test]
+fn strict_filtered_record_still_passes_when_unchanged() {
+    let env = setup("strict-filtered-stays");
+    let tp = env.projects.join("-tmp-demo/strict-filtered-stays.jsonl");
+    fs::write(
+        &tp,
+        user_rec("2026-06-12T01:00:00Z", "first", "first") + "\n" + &filtered_record() + "\n",
+    )
+    .unwrap();
+    assert!(run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]).2);
+    assert!(
+        run_env::<&str>(
+            &env,
+            &["ingest", "--require-complete", tp.to_str().unwrap()],
+            None,
+            &[]
+        )
+        .2
+    );
+}
+
+#[test]
+fn strict_shorter_rewrite_keeps_rows_and_queue() {
+    let env = setup("shorter-repair");
+    let tp = env.projects.join("-tmp-demo/shorter-repair.jsonl");
+    fs::write(
+        &tp,
+        user_rec("2026-06-12T01:00:00Z", "l1", "old one")
+            + "\n"
+            + &user_rec("2026-06-12T01:01:00Z", "l2", "old two")
+            + "\n",
+    )
+    .unwrap();
+    assert!(run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]).2);
+    fs::write(
+        &tp,
+        user_rec("2026-06-12T02:00:00Z", "new", "short repaired") + "\n",
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    db.execute("INSERT INTO checkpoint_queue(session_id, enqueued_at, enqueue_seq) VALUES ('shorter-repair', '2026-06-12T00:00:00Z', 1)", []).unwrap();
+    assert!(
+        !run_env::<&str>(
+            &env,
+            &["ingest", "--require-complete", tp.to_str().unwrap()],
+            None,
+            &[],
+        )
+        .2
+    );
+    let rows: Vec<String> = db
+        .prepare("SELECT text FROM turns WHERE session_id='shorter-repair' ORDER BY seq")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(rows, vec!["old one", "old two"]);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM checkpoint_queue WHERE session_id='shorter-repair'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn normal_ingest_recovers_from_overlong_cursor() {
+    let env = setup("overlong-cursor");
+    let tp = env.projects.join("-tmp-demo/overlong-cursor.jsonl");
+    fs::write(&tp, user_rec("2026-06-12T01:00:00Z", "one", "one") + "\n").unwrap();
+    assert!(run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]).2);
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    fs::write(
+        &tp,
+        user_rec("2026-06-12T01:00:00Z", "one", "one")
+            + "\n"
+            + &user_rec("2026-06-12T01:01:00Z", "two", "two")
+            + "\n",
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE sessions SET scan_offset=999999 WHERE session_id='overlong-cursor'",
+        [],
+    )
+    .unwrap();
+    assert!(run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]).2);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM turns WHERE session_id='overlong-cursor'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn unchanged_ingest_skips_but_same_size_change_is_read() {
+    let env = setup("unchanged-skip");
+    let tp = env.projects.join("-tmp-demo/unchanged-skip.jsonl");
+    let first = user_rec("2026-06-12T01:00:00Z", "one", "one") + "\n";
+    fs::write(&tp, &first).unwrap();
+    assert!(run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]).2);
+
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    db.execute(
+        "UPDATE sessions SET scan_offset=0 WHERE session_id='unchanged-skip'",
+        [],
+    )
+    .unwrap();
+    assert!(run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]).2);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM turns WHERE session_id='unchanged-skip'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+
+    let changed = user_rec("2026-06-12T01:00:00Z", "one", "two") + "\n";
+    assert_eq!(changed.len(), first.len());
+    fs::write(&tp, changed).unwrap();
+    let (_, _, ok) = run_env::<&str>(
+        &env,
+        &["ingest", "--require-complete", tp.to_str().unwrap()],
+        None,
+        &[],
+    );
+    assert!(!ok, "strict mode accepted same-size changed content");
+}
+
+#[test]
+fn strict_rejects_filtered_record_rewritten_as_real() {
+    let env = setup("filtered-to-real");
+    let tp = env.projects.join("-tmp-demo/filtered-to-real.jsonl");
+    fs::write(
+        &tp,
+        user_rec("2026-06-12T01:00:00Z", "first", "first") + "\n" + &filtered_record() + "\n",
+    )
+    .unwrap();
+    assert!(run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]).2);
+    fs::write(
+        &tp,
+        user_rec("2026-06-12T01:00:00Z", "first", "first")
+            + "\n"
+            + &user_rec("2026-06-12T01:01:00Z", "second", "new real")
+            + "\n",
+    )
+    .unwrap();
+    let (_, _, ok) = run_env::<&str>(
+        &env,
+        &["ingest", "--require-complete", tp.to_str().unwrap()],
+        None,
+        &[],
+    );
+    assert!(!ok);
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM turns WHERE session_id='filtered-to-real'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn repair_resets_cursor_and_archives_fixed_line() {
+    let env = setup("repair-cursor");
+    let tp = env.projects.join("-tmp-demo/repair-cursor.jsonl");
+    fs::write(&tp, "not json\n").unwrap();
+    let (_, _, ok) = run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]);
+    assert!(ok);
+    fs::write(
+        &tp,
+        user_rec("2026-06-17T08:00:00Z", "repair-1", "repaired-line") + "\n",
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    db.execute("UPDATE sessions SET skipped_lines=0, partial_tail=0, scan_offset=0, scan_seq=0 WHERE session_id='repair-cursor'", []).unwrap();
+    let (_, _, ok) = run_env::<&str>(
+        &env,
+        &["ingest", "--require-complete", tp.to_str().unwrap()],
+        None,
+        &[],
+    );
+    assert!(ok);
+    assert!(run(&env, &["session", "repair-cursor"], None)
+        .0
+        .contains("repaired-line"));
+}
+
+#[test]
+fn legacy_upgrade_does_not_certify_unread_tail() {
+    let env = setup("legacy-tail");
+    let db = env.data.join("memory.db");
+    let tp = env.projects.join("-tmp-demo/legacy-tail.jsonl");
+    fs::write(
+        &tp,
+        format!(
+            "{}\nnot json\n",
+            user_rec("2026-06-17T08:00:00Z", "legacy-1", "legacy-line")
+        ),
+    )
+    .unwrap();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, file_path TEXT, project TEXT, cwd TEXT, first_ts TEXT, last_ts TEXT, num_turns INTEGER DEFAULT 0, last_seq INTEGER DEFAULT -1, file_size INTEGER DEFAULT 0, checkpointed_seq INTEGER DEFAULT -1, scan_offset INTEGER NOT NULL DEFAULT 0, scan_seq INTEGER NOT NULL DEFAULT 0, ingested_at TEXT); CREATE TABLE turns (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, seq INTEGER NOT NULL, uuid TEXT, ts TEXT, role TEXT, text TEXT, is_meta INTEGER DEFAULT 0, is_sidechain INTEGER DEFAULT 0, project TEXT, cwd TEXT, UNIQUE(session_id, seq)); CREATE VIRTUAL TABLE turns_fts USING fts5(text, content='turns', content_rowid='id'); CREATE TABLE facts (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL, name TEXT, type TEXT, title TEXT, hook TEXT, leaf_path TEXT, description TEXT, tags TEXT, index_seq INTEGER, pinned INTEGER DEFAULT 0, status TEXT DEFAULT 'active', hits INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, last_used_at TEXT, superseded_at TEXT, superseded_by INTEGER, origin_session TEXT); CREATE VIRTUAL TABLE facts_fts USING fts5(title, hook, description, content='facts', content_rowid='id'); CREATE TABLE session_tags (session_id TEXT NOT NULL, ns TEXT NOT NULL, tag TEXT NOT NULL, rank INTEGER NOT NULL, PRIMARY KEY(session_id, tag)); PRAGMA user_version=4;").unwrap();
+    drop(conn);
+    let (_, _, ok) = run_env::<&str>(
+        &env,
+        &["ingest", "--require-complete", tp.to_str().unwrap()],
+        None,
+        &[],
+    );
+    assert!(!ok);
+}
+
+#[test]
+fn upgraded_database_allows_two_normal_appends() {
+    let env = setup("null-head-append");
+    let tp = env.projects.join("-tmp-demo/null-head-append.jsonl");
+    fs::write(&tp, user_rec("2026-06-17T08:00:00Z", "n1", "first") + "\n").unwrap();
+    run(&env, &["ingest", tp.to_str().unwrap()], None);
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    fs::write(
+        &tp,
+        format!(
+            "{}\n{}\n",
+            user_rec("2026-06-17T08:00:00Z", "n1", "first"),
+            user_rec("2026-06-17T08:01:00Z", "n2", "second")
+        ),
+    )
+    .unwrap();
+    let (_, err, ok) = run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]);
+    assert!(ok, "first append failed: {err}");
+    fs::write(
+        &tp,
+        format!(
+            "{}\n{}\n{}\n",
+            user_rec("2026-06-17T08:00:00Z", "n1", "first"),
+            user_rec("2026-06-17T08:01:00Z", "n2", "second"),
+            user_rec("2026-06-17T08:02:00Z", "n3", "third")
+        ),
+    )
+    .unwrap();
+    let (_, err, ok) = run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]);
+    assert!(ok, "second append failed: {err}");
+    let rows: i64 = db
+        .query_row(
+            "SELECT count(*) FROM turns WHERE session_id='null-head-append'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 3);
+}
+
+#[test]
+fn upgraded_archive_keeps_existing_rows_on_normal_ingest() {
+    let env = setup("upgrade-keeps-rows");
+    let db = env.data.join("memory.db");
+    let tp = env.projects.join("-tmp-demo/upgrade-keeps-rows.jsonl");
+    let first = user_rec("2026-06-17T08:00:00Z", "u1", "old first");
+    let second = user_rec("2026-06-17T08:01:00Z", "u2", "old second");
+    let third = user_rec("2026-06-17T08:02:00Z", "u3", "new third");
+    let original = format!("{first}\n{second}\n");
+    fs::write(&tp, &original).unwrap();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, file_path TEXT, project TEXT, cwd TEXT, first_ts TEXT, last_ts TEXT, num_turns INTEGER DEFAULT 0, last_seq INTEGER DEFAULT -1, file_size INTEGER DEFAULT 0, checkpointed_seq INTEGER DEFAULT -1, scan_offset INTEGER NOT NULL DEFAULT 0, scan_seq INTEGER NOT NULL DEFAULT 0, ingested_at TEXT); CREATE TABLE turns (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, seq INTEGER NOT NULL, uuid TEXT, ts TEXT, role TEXT, text TEXT, is_meta INTEGER DEFAULT 0, is_sidechain INTEGER DEFAULT 0, project TEXT, cwd TEXT, UNIQUE(session_id, seq)); CREATE VIRTUAL TABLE turns_fts USING fts5(text, content='turns', content_rowid='id'); CREATE TABLE facts (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL, name TEXT, type TEXT, title TEXT, hook TEXT, leaf_path TEXT, description TEXT, tags TEXT, index_seq INTEGER, pinned INTEGER DEFAULT 0, status TEXT DEFAULT 'active', hits INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, last_used_at TEXT, superseded_at TEXT, superseded_by INTEGER, origin_session TEXT); CREATE VIRTUAL TABLE facts_fts USING fts5(title, hook, description, content='facts', content_rowid='id'); CREATE TABLE session_tags (session_id TEXT NOT NULL, ns TEXT NOT NULL, tag TEXT NOT NULL, rank INTEGER NOT NULL, PRIMARY KEY(session_id, tag)); PRAGMA user_version=4;").unwrap();
+    conn.execute("INSERT INTO sessions(session_id,file_path,num_turns,last_seq,file_size,scan_offset,scan_seq) VALUES ('upgrade-keeps-rows', ?, 2, 1, ?, ?, 2)", rusqlite::params![tp.to_string_lossy(), original.len() as i64, original.len() as i64]).unwrap();
+    conn.execute("INSERT INTO turns(session_id,seq,uuid,role,text) VALUES ('upgrade-keeps-rows',0,'u1','user','original archived first'),('upgrade-keeps-rows',1,'u2','user','original archived second')", []).unwrap();
+    drop(conn);
+    fs::write(&tp, format!("{original}{third}\n")).unwrap();
+    let (_, err, ok) = run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]);
+    assert!(ok, "upgrade ingest failed: {err}");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let rows: Vec<String> = conn
+        .prepare("SELECT text FROM turns WHERE session_id='upgrade-keeps-rows' ORDER BY seq")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            "original archived first",
+            "original archived second",
+            "new third"
+        ]
+    );
+}
+
+#[test]
+fn strict_repair_clears_state_and_re_reads_content() {
+    let env = setup("strict-repair");
+    let tp = env.projects.join("-tmp-demo/strict-repair.jsonl");
+    fs::write(
+        &tp,
+        user_rec("2026-06-17T08:00:00Z", "r1", "original") + "\n",
+    )
+    .unwrap();
+    run(&env, &["ingest", tp.to_str().unwrap()], None);
+    run(&env, &["checkpoint-enqueue", "strict-repair"], None);
+    fs::write(
+        &tp,
+        user_rec("2026-06-17T08:00:00Z", "r1", "repaired") + "\n",
+    )
+    .unwrap();
+    let (_, _, ok) = run_env::<&str>(
+        &env,
+        &["ingest", "--require-complete", tp.to_str().unwrap()],
+        None,
+        &[],
+    );
+    assert!(!ok);
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    db.execute("DELETE FROM turns WHERE session_id='strict-repair'", [])
+        .unwrap();
+    db.execute("UPDATE sessions SET num_turns=0, last_seq=-1, file_size=0, file_mtime=0, skipped_lines=0, partial_tail=0, scan_offset=0, scan_seq=0 WHERE session_id='strict-repair'", []).unwrap();
+    let (_, err, ok) = run_env::<&str>(
+        &env,
+        &["ingest", "--require-complete", tp.to_str().unwrap()],
+        None,
+        &[],
+    );
+    assert!(ok, "repair ingest failed: {err}");
+    let text: String = db
+        .query_row(
+            "SELECT text FROM turns WHERE session_id='strict-repair' AND seq=0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(text.contains("repaired"));
+    let (_, output, ok) = run_env::<&str>(&env, &["search", "repaired"], None, &[]);
+    assert!(ok, "repaired text is not searchable: {output}");
+}
+
+#[test]
+fn strict_rejects_archived_record_replaced_by_whitespace() {
+    let env = setup("whitespace-rewrite");
+    let tp = env.projects.join("-tmp-demo/whitespace-rewrite.jsonl");
+    fs::write(&tp, user_rec("2026-06-17T08:00:00Z", "w1", "held") + "\n").unwrap();
+    assert!(run_env::<&str>(&env, &["ingest", tp.to_str().unwrap()], None, &[]).2);
+    let size = fs::metadata(&tp).unwrap().len();
+    fs::write(&tp, " ".repeat(size as usize - 1) + "\n").unwrap();
+    let (_, _, ok) = run_env::<&str>(
+        &env,
+        &["ingest", "--require-complete", tp.to_str().unwrap()],
+        None,
+        &[],
+    );
+    assert!(!ok);
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT text FROM turns WHERE session_id='whitespace-rewrite'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "held"
+    );
+}
+
+#[test]
+fn sweep_fails_when_projects_root_is_not_a_directory() {
+    let env = setup("bad-project-root");
+    let root_file = env.data.join("projects-file");
+    fs::write(&root_file, "x").unwrap();
+    let (_, err, ok) = run_env(
+        &env,
+        &["ingest", "--sweep"],
+        None,
+        &[("SUBROSA_PROJECTS_DIR", root_file.as_os_str())],
+    );
+    assert!(!ok, "bad projects root succeeded: {err}");
+}
+
+#[test]
+fn checkpoint_clear_requires_confirmation_and_preserves_queue() {
+    let env = setup("checkpoint-clear");
+    let transcript = env.projects.join("-tmp-demo/aaaa-1111.jsonl");
+    fs::write(
+        &transcript,
+        [
+            user_rec("2026-06-12T01:00:00Z", "u1", "queue me"),
+            user_rec("2026-06-12T01:01:00Z", "u2", "queue me too"),
+        ]
+        .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    let (ingest_out, ingest_err, ingest_ok) =
+        run_env::<&str>(&env, &["ingest", transcript.to_str().unwrap()], None, &[]);
+    assert!(ingest_ok, "ingest failed: {ingest_out} {ingest_err}");
+    let (_, ingest_err, ingest_ok) =
+        run_env::<&str>(&env, &["ingest", transcript.to_str().unwrap()], None, &[]);
+    assert!(ingest_ok, "ingest failed: {ingest_err}");
+    run(&env, &["checkpoint-enqueue", "aaaa-1111"], None);
+    let (_, err, ok) = run_env::<&str>(&env, &["checkpoint-clear"], None, &[]);
+    assert!(!ok);
+    assert!(err.contains("1 queued session(s)"));
+    assert!(err.contains("checkpoint-drop <id>"));
+    assert!(run(&env, &["pending"], None).0.contains("aaaa-1111"));
+}
+
+#[test]
+fn checkpoint_clear_confirm_refuses_incomplete_queue() {
+    let env = setup("checkpoint-clear-confirm");
+    let transcript = env.projects.join("-tmp-demo/clear-confirm.jsonl");
+    fs::write(
+        &transcript,
+        [
+            user_rec("2026-06-12T01:00:00Z", "u1", "queue me"),
+            user_rec("2026-06-12T01:01:00Z", "u2", "queue me too"),
+        ]
+        .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    let (ingest_out, ingest_err, ingest_ok) =
+        run_env::<&str>(&env, &["ingest", transcript.to_str().unwrap()], None, &[]);
+    assert!(ingest_ok, "ingest failed: {ingest_out} {ingest_err}");
+    let (enqueue_out, enqueue_err, enqueue_ok) =
+        run_env::<&str>(&env, &["checkpoint-enqueue", "clear-confirm"], None, &[]);
+    assert!(enqueue_ok, "enqueue failed: {enqueue_out} {enqueue_err}");
+    let (_, err, ok) = run_env::<&str>(&env, &["checkpoint-clear", "--confirm"], None, &[]);
+    assert!(!ok);
+    assert!(err.contains("still need per-session verification"));
+    assert!(run(&env, &["pending"], None).0.contains("clear-confirm"));
+}
+
+#[test]
+fn queue_read_paths_use_the_database_queue() {
+    let env = setup("queue-upgrade");
+    let db = env.data.join("memory.db");
+    let transcript = env.projects.join("-tmp-demo/old-session.jsonl");
+    fs::write(
+        &transcript,
+        [
+            user_rec("2026-06-12T01:00:00Z", "u1", "one"),
+            user_rec("2026-06-12T01:01:00Z", "u2", "two"),
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    run(&env, &["ingest", transcript.to_str().unwrap()], None);
+    run(&env, &["checkpoint-enqueue", "old-session"], None);
+    let (prompt, err, ok) = run_env::<&str>(
+        &env,
+        &["hook", "user-prompt-submit"],
+        Some(r#"{"prompt":"hello","session_id":"live"}"#),
+        &[],
+    );
+    assert!(ok, "prompt hook failed: {err}");
+    assert!(prompt.contains("1 session(s) queued"), "got: {prompt}");
+    assert_eq!(
+        rusqlite::Connection::open(db)
+            .unwrap()
+            .query_row("SELECT count(*) FROM checkpoint_queue", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn legacy_queue_import_runs_on_real_v4_upgrade_once() {
+    let env = setup("legacy-upgrade");
+    let db = env.data.join("memory.db");
+    let legacy = env.data.join("pending-checkpoint.log");
+    fs::write(
+        &legacy,
+        "2026-06-12T02:00:00+00:00\tlater-session\n2026-06-12T01:00:00+00:00\tlegacy-session\n",
+    )
+    .unwrap();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, file_path TEXT, project TEXT, cwd TEXT, first_ts TEXT, last_ts TEXT, num_turns INTEGER DEFAULT 0, last_seq INTEGER DEFAULT -1, file_size INTEGER DEFAULT 0, checkpointed_seq INTEGER DEFAULT -1, scan_offset INTEGER NOT NULL DEFAULT 0, scan_seq INTEGER NOT NULL DEFAULT 0, ingested_at TEXT); CREATE TABLE turns (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, seq INTEGER NOT NULL, uuid TEXT, ts TEXT, role TEXT, text TEXT, is_meta INTEGER DEFAULT 0, is_sidechain INTEGER DEFAULT 0, project TEXT, cwd TEXT, UNIQUE(session_id, seq)); CREATE VIRTUAL TABLE turns_fts USING fts5(text, content='turns', content_rowid='id', tokenize='porter unicode61'); CREATE TABLE facts (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL, name TEXT, type TEXT, title TEXT, hook TEXT, leaf_path TEXT, description TEXT, tags TEXT, index_seq INTEGER, pinned INTEGER DEFAULT 0, status TEXT DEFAULT 'active', hits INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, last_used_at TEXT, superseded_at TEXT, superseded_by INTEGER, origin_session TEXT); CREATE VIRTUAL TABLE facts_fts USING fts5(title, hook, description, content='facts', content_rowid='id', tokenize='porter unicode61'); CREATE TABLE session_tags (session_id TEXT NOT NULL, ns TEXT NOT NULL, tag TEXT NOT NULL, rank INTEGER NOT NULL, PRIMARY KEY(session_id, tag)); PRAGMA user_version=4;",
+    ).unwrap();
+    drop(conn);
+    run(&env, &["init"], None);
+    let pending = run(&env, &["pending"], None).0;
+    assert!(pending.find("later-session").unwrap() < pending.find("legacy-session").unwrap());
+    fs::write(&legacy, "2026-06-12T03:00:00+00:00\tnew-session\n").unwrap();
+    run(&env, &["init"], None);
+    let pending = run(&env, &["pending"], None).0;
+    assert!(pending.contains("legacy-session"));
+    assert!(!pending.contains("new-session"));
+    assert!(legacy.exists());
+}
+
+#[test]
+fn legacy_queue_import_skips_completed_and_avoids_sequence_collision() {
+    let env = setup("legacy-completed");
+    let db = env.data.join("memory.db");
+    let legacy = env.data.join("pending-checkpoint.log");
+    fs::write(
+        &legacy,
+        "2026-06-12T01:00:00+00:00\tcompleted\n2026-06-12T02:00:00+00:00\tlive\n",
+    )
+    .unwrap();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, file_path TEXT, project TEXT, cwd TEXT, first_ts TEXT, last_ts TEXT, num_turns INTEGER DEFAULT 0, last_seq INTEGER DEFAULT -1, file_size INTEGER DEFAULT 0, checkpointed_seq INTEGER DEFAULT -1, scan_offset INTEGER NOT NULL DEFAULT 0, scan_seq INTEGER NOT NULL DEFAULT 0, ingested_at TEXT); CREATE TABLE turns (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, seq INTEGER NOT NULL, uuid TEXT, ts TEXT, role TEXT, text TEXT, is_meta INTEGER DEFAULT 0, is_sidechain INTEGER DEFAULT 0, project TEXT, cwd TEXT, UNIQUE(session_id, seq)); CREATE VIRTUAL TABLE turns_fts USING fts5(text, content='turns', content_rowid='id', tokenize='porter unicode61'); CREATE VIRTUAL TABLE facts_fts USING fts5(title, hook, description, content='facts', content_rowid='id', tokenize='porter unicode61'); CREATE TABLE facts (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL, name TEXT, type TEXT, title TEXT, hook TEXT, leaf_path TEXT, description TEXT, tags TEXT, index_seq INTEGER, pinned INTEGER DEFAULT 0, status TEXT DEFAULT 'active', hits INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, last_used_at TEXT, superseded_at TEXT, superseded_by INTEGER, origin_session TEXT); CREATE TABLE session_tags (session_id TEXT NOT NULL, ns TEXT NOT NULL, tag TEXT NOT NULL, rank INTEGER NOT NULL, PRIMARY KEY(session_id, tag)); CREATE TABLE checkpoint_queue (session_id TEXT PRIMARY KEY, enqueued_at TEXT NOT NULL, enqueue_seq INTEGER NOT NULL DEFAULT 0); INSERT INTO sessions(session_id, checkpointed_seq, last_seq) VALUES ('completed', 0, 0), ('live', -1, 0); INSERT INTO turns(session_id, seq) VALUES ('completed', 0), ('live', 0); INSERT INTO checkpoint_queue(session_id, enqueued_at, enqueue_seq) VALUES ('existing', '2026-06-12T00:00:00Z', 7); PRAGMA user_version=4;",
+    ).unwrap();
+    drop(conn);
+    run(&env, &["init"], None);
+    let conn = rusqlite::Connection::open(db).unwrap();
+    let rows: Vec<(String, i64)> = conn
+        .prepare("SELECT session_id, enqueue_seq FROM checkpoint_queue ORDER BY session_id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(rows, vec![("existing".into(), 7), ("live".into(), 8)]);
+}
+
+#[test]
+fn checkpoint_mark_empty_queue_is_safe() {
+    let env = setup("checkpoint-empty");
+    let (_, err, ok) = run_env::<&str>(&env, &["checkpoint-mark", "missing-session"], None, &[]);
+    assert!(!ok);
+    assert!(err.contains("no archived turns"));
+    assert!(!run(&env, &["pending"], None).0.contains("missing-session"));
+}
+
+#[test]
+fn checkpoint_drop_keeps_uncheckpointed_turns_queued() {
+    let env = setup("checkpoint-boundary");
+    let transcript = env.projects.join("-tmp-demo/boundary.jsonl");
+    let records = [
+        user_rec("2026-06-12T01:00:00Z", "u1", "first"),
+        user_rec("2026-06-12T01:01:00Z", "u2", "second"),
+        user_rec("2026-06-12T01:02:00Z", "u3", "third"),
+    ];
+    fs::write(&transcript, records.join("\n") + "\n").unwrap();
+    let (_, err, ok) = run_env::<&str>(&env, &["ingest", transcript.to_str().unwrap()], None, &[]);
+    assert!(ok, "ingest failed: {err}");
+    run(&env, &["checkpoint-enqueue", "boundary"], None);
+    let (_, err, ok) = run_env::<&str>(
+        &env,
+        &["checkpoint-drop", "boundary", "--max-seq", "1"],
+        None,
+        &[],
+    );
+    assert!(ok, "bounded drop failed: {err}");
+    assert!(run(&env, &["pending"], None).0.contains("boundary"));
+    let (_, err, ok) = run_env::<&str>(
+        &env,
+        &["checkpoint-drop", "boundary", "--max-seq", "2"],
+        None,
+        &[],
+    );
+    assert!(ok, "final drop failed: {err}");
+    assert!(!run(&env, &["pending"], None).0.contains("boundary"));
 }
 
 #[test]
@@ -195,12 +1038,20 @@ fn nudge_text_never_archived() {
 #[test]
 fn loud_nudge_is_imperative_and_fully_prefixed() {
     let env = setup("loudnudge");
-    // Seed the checkpoint queue with two sessions (oldest enqueue first).
-    fs::write(
-        env.data.join("pending-checkpoint.log"),
-        "2026-06-12T01:00:00Z\taaaaaaaa-1111\n2026-06-12T02:00:00Z\tbbbbbbbb-2222\n",
-    )
-    .unwrap();
+    for (sid, text) in [("zzzzzzzz-1111", "one"), ("aaaaaaaa-2222", "two")] {
+        let transcript = env.projects.join(format!("-tmp-demo/{sid}.jsonl"));
+        fs::write(
+            &transcript,
+            [
+                user_rec("2026-06-12T01:00:00Z", "u1", text),
+                user_rec("2026-06-12T01:01:00Z", "u2", "more"),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        run(&env, &["ingest", transcript.to_str().unwrap()], None);
+        run(&env, &["checkpoint-enqueue", sid], None);
+    }
     let (out, _) = run(
         &env,
         &["hook", "session-start"],
@@ -220,7 +1071,7 @@ fn loud_nudge_is_imperative_and_fully_prefixed() {
         .find(|l| l.contains("Queued, newest first"))
         .expect("ids line missing");
     assert!(
-        ids_line.find("bbbbbbbb-2222").unwrap() < ids_line.find("aaaaaaaa-1111").unwrap(),
+        ids_line.find("aaaaaaaa-2222").unwrap() < ids_line.find("zzzzzzzz-1111").unwrap(),
         "ids not newest-first: {ids_line}"
     );
     // Invariant: every emitted line starts with [subrosa], so the whole block is
@@ -257,11 +1108,18 @@ fn loud_nudge_is_imperative_and_fully_prefixed() {
 fn quiet_nudge_mode_is_the_calm_one_liner() {
     let env = setup("quietnudge");
     fs::write(env.data.join("config"), "checkpoint_nudge=quiet\n").unwrap();
+    let transcript = env.projects.join("-tmp-demo/aaaaaaa-1111.jsonl");
     fs::write(
-        env.data.join("pending-checkpoint.log"),
-        "2026-06-12T01:00:00Z\taaaaaaaa-1111\n",
+        &transcript,
+        [
+            user_rec("2026-06-12T01:00:00Z", "u1", "one"),
+            user_rec("2026-06-12T01:01:00Z", "u2", "two"),
+        ]
+        .join("\n"),
     )
     .unwrap();
+    run(&env, &["ingest", transcript.to_str().unwrap()], None);
+    run(&env, &["checkpoint-enqueue", "aaaaaaa-1111"], None);
     let (out, _) = run(
         &env,
         &["hook", "session-start"],
@@ -281,11 +1139,18 @@ fn quiet_nudge_mode_is_the_calm_one_liner() {
 fn off_nudge_mode_is_silent() {
     let env = setup("offnudge");
     fs::write(env.data.join("config"), "checkpoint_nudge=off\n").unwrap();
+    let transcript = env.projects.join("-tmp-demo/aaaaaaa-1111.jsonl");
     fs::write(
-        env.data.join("pending-checkpoint.log"),
-        "2026-06-12T01:00:00Z\taaaaaaaa-1111\n",
+        &transcript,
+        [
+            user_rec("2026-06-12T01:00:00Z", "u1", "one"),
+            user_rec("2026-06-12T01:01:00Z", "u2", "two"),
+        ]
+        .join("\n"),
     )
     .unwrap();
+    run(&env, &["ingest", transcript.to_str().unwrap()], None);
+    run(&env, &["checkpoint-enqueue", "aaaaaaa-1111"], None);
     let (out, _) = run(
         &env,
         &["hook", "session-start"],
@@ -303,11 +1168,18 @@ fn empty_env_nudge_mode_falls_back_to_config() {
     // value (env::var returns Ok("") for an empty var) — config "quiet" wins.
     let env = setup("envnudge");
     fs::write(env.data.join("config"), "checkpoint_nudge=quiet\n").unwrap();
+    let transcript = env.projects.join("-tmp-demo/aaaaaaa-1111.jsonl");
     fs::write(
-        env.data.join("pending-checkpoint.log"),
-        "2026-06-12T01:00:00Z\taaaaaaaa-1111\n",
+        &transcript,
+        [
+            user_rec("2026-06-12T01:00:00Z", "u1", "one"),
+            user_rec("2026-06-12T01:01:00Z", "u2", "two"),
+        ]
+        .join("\n"),
     )
     .unwrap();
+    run(&env, &["ingest", transcript.to_str().unwrap()], None);
+    run(&env, &["checkpoint-enqueue", "aaaaaaa-1111"], None);
     let (stdout, _, _) = run_env(
         &env,
         &["hook", "session-start"],
@@ -327,11 +1199,20 @@ fn backlog_directive_rides_each_user_prompt() {
     // lands, so the directive must also ride UserPromptSubmit while sessions are
     // queued. Empty archive here, so stdout is purely the directive (no recall).
     let env = setup("backlogride");
-    fs::write(
-        env.data.join("pending-checkpoint.log"),
-        "2026-06-12T01:00:00Z\taaaaaaaa-1111\n2026-06-12T02:00:00Z\tbbbbbbbb-2222\n",
-    )
-    .unwrap();
+    for (sid, text) in [("aaaaaaaa-1111", "one"), ("bbbbbbbb-2222", "two")] {
+        let transcript = env.projects.join(format!("-tmp-demo/{sid}.jsonl"));
+        fs::write(
+            &transcript,
+            [
+                user_rec("2026-06-12T01:00:00Z", "u1", text),
+                user_rec("2026-06-12T01:01:00Z", "u2", "more"),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        run(&env, &["ingest", transcript.to_str().unwrap()], None);
+        run(&env, &["checkpoint-enqueue", sid], None);
+    }
     let payload = r#"{"prompt":"a normal question with no archive match","cwd":"/tmp/demo","session_id":"live-bd"}"#;
     let (out, _) = run(&env, &["hook", "user-prompt-submit"], Some(payload));
     assert!(
@@ -365,11 +1246,18 @@ fn backlog_directive_silent_when_queue_empty() {
 fn backlog_directive_respects_off_mode() {
     let env = setup("backlogoff");
     fs::write(env.data.join("config"), "checkpoint_nudge=off\n").unwrap();
+    let transcript = env.projects.join("-tmp-demo/aaaaaaa-1111.jsonl");
     fs::write(
-        env.data.join("pending-checkpoint.log"),
-        "2026-06-12T01:00:00Z\taaaaaaaa-1111\n",
+        &transcript,
+        [
+            user_rec("2026-06-12T01:00:00Z", "u1", "one"),
+            user_rec("2026-06-12T01:01:00Z", "u2", "two"),
+        ]
+        .join("\n"),
     )
     .unwrap();
+    run(&env, &["ingest", transcript.to_str().unwrap()], None);
+    run(&env, &["checkpoint-enqueue", "aaaaaaa-1111"], None);
     let payload = r#"{"prompt":"anything","cwd":"/tmp/demo","session_id":"live-bo"}"#;
     let (out, _) = run(&env, &["hook", "user-prompt-submit"], Some(payload));
     assert!(
@@ -1947,9 +2835,16 @@ fn session_end_clears_the_mirror_even_with_an_unopenable_database() {
     assert_eq!(out, "", "session-end must keep stdout empty, got:\n{out}");
     assert!(!twin.exists(), "the daily path left the twin exposed");
     assert!(sealed.is_file(), "the sealed mirror was removed");
-    let log = fs::read_to_string(env.data.join("hook.log")).unwrap_or_default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let log = loop {
+        let log = fs::read_to_string(env.data.join("hook.log")).unwrap_or_default();
+        if log.contains("session-end worker error") || std::time::Instant::now() >= deadline {
+            break log;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
     assert!(
-        log.contains("session-end error"),
+        log.contains("session-end worker error"),
         "the connect failure never reached the log:\n{log}"
     );
 }

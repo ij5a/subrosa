@@ -214,6 +214,12 @@ pub(crate) fn fmt_ts(ts: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn parses_z_and_offset_forms() {
@@ -259,6 +265,7 @@ mod tests {
 
     #[test]
     fn now_unix_honors_parseable_subrosa_now_else_real_clock() {
+        let _guard = env_lock().lock().unwrap();
         let key = "SUBROSA_NOW";
         let saved = std::env::var(key).ok();
 

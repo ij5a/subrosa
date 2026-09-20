@@ -11,6 +11,12 @@ cd "$(git rev-parse --show-toplevel)"
 echo "==> [1/4] regression — cargo test --locked (unit + golden)"
 cargo test --locked
 
+echo "==> format"
+cargo fmt --check
+
+echo "==> clippy"
+cargo clippy --all-targets -- -D warnings
+
 echo "==> building release binary for the perf + smoke gates"
 cargo build --release --locked
 BIN="target/release/subrosa"

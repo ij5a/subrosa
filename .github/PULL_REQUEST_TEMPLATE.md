@@ -14,7 +14,7 @@ State the problem and context.
 
 ## Pre-merge checklist
 
-- [ ] `cargo test --locked` passes, including golden tests
+- [ ] `cargo test --locked` passes, including the golden tests
 - [ ] Run `scripts/bench.sh` for changes to `recall.rs`, `search.rs`, `ingest.rs`, or the FTS schema
 - [ ] Run `cargo audit`; review the diff for security
 - [ ] Update affected docs (`README.md`, `docs/*.md`, `CLAUDE.md`, skill docs)

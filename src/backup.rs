@@ -6,7 +6,6 @@
 
 use std::error::Error;
 use std::fs;
-use std::io::Read;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -251,9 +250,15 @@ fn unplaceholder(name: &str) -> &str {
 /// Does the file open with SQLite's header? Anything unreadable or shorter
 /// than the header is "don't know", which the caller treats as keep.
 fn is_plaintext(p: &Path) -> bool {
+    let Ok(meta) = fs::symlink_metadata(p) else {
+        return false;
+    };
+    if !meta.file_type().is_file() {
+        return false;
+    }
     let mut head = [0u8; 16];
-    fs::File::open(p)
-        .and_then(|mut f| f.read_exact(&mut head))
+    std::fs::File::open(p)
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head))
         .is_ok()
         && &head == b"SQLite format 3\0"
 }

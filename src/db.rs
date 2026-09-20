@@ -14,7 +14,8 @@ use crate::paths;
 // v2: porter-stemmed FTS (word forms match; identifiers pass through unchanged).
 // v3: session_tags (auto-derived, read-only tags) + a one-time backfill.
 // v4: scan_offset/scan_seq resume cursor on sessions — incremental transcript ingest.
-const SCHEMA_VERSION: i64 = 4;
+// v5: checkpoint_queue moves the pending session list into SQLite.
+const SCHEMA_VERSION: i64 = 7;
 const SCHEMA: &str = r#"
 PRAGMA journal_mode=WAL;
 
@@ -28,9 +29,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   num_turns   INTEGER DEFAULT 0,
   last_seq    INTEGER DEFAULT -1,
   file_size   INTEGER DEFAULT 0,
+  file_mtime  INTEGER DEFAULT 0,
   checkpointed_seq INTEGER DEFAULT -1,
   scan_offset INTEGER NOT NULL DEFAULT 0,
   scan_seq    INTEGER NOT NULL DEFAULT 0,
+  skipped_lines INTEGER NOT NULL DEFAULT 0,
+  partial_tail INTEGER NOT NULL DEFAULT 0,
   ingested_at TEXT
 );
 
@@ -123,10 +127,20 @@ CREATE TABLE IF NOT EXISTS session_tags (
 );
 CREATE INDEX IF NOT EXISTS idx_session_tags_tag ON session_tags(tag, session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_last_ts ON sessions(last_ts);
+
+CREATE TABLE IF NOT EXISTS checkpoint_queue (
+  session_id TEXT PRIMARY KEY,
+  enqueued_at TEXT NOT NULL,
+  enqueue_seq INTEGER NOT NULL DEFAULT 0
+);
 "#;
 
 /// Open the DB read-write: creates the schema, tightens perms, applies migrations.
 pub fn connect() -> rusqlite::Result<Connection> {
+    connect_with_timeout(Duration::from_millis(30_000))
+}
+
+pub fn connect_with_timeout(timeout: Duration) -> rusqlite::Result<Connection> {
     let p = paths::db_path();
     if let Some(parent) = p.parent() {
         let _ = fs::create_dir_all(parent);
@@ -134,21 +148,26 @@ pub fn connect() -> rusqlite::Result<Connection> {
         // also covers the -wal/-shm sidecars and the hook log.
         chmod(parent, 0o700);
     }
-    let conn = Connection::open(&p)?;
+    let mut conn = Connection::open(&p)?;
     chmod(&p, 0o600);
-    conn.busy_timeout(Duration::from_millis(30_000))?;
+    conn.busy_timeout(timeout)?;
     // Connection-local; the persistent WAL switch lives in the init batch.
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     tune(&conn)?;
     // user_version current → everyday connects are pure reads. Creation and
     // upgrades retry: WAL conversion can BUSY right past the busy handler.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + timeout;
     loop {
-        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if v == SCHEMA_VERSION {
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version == SCHEMA_VERSION {
             return Ok(conn);
         }
-        match init_schema(&conn) {
+        if version > SCHEMA_VERSION {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "database schema version {version} is newer than this binary supports ({SCHEMA_VERSION})"
+            )));
+        }
+        match init_schema(&mut conn) {
             Ok(()) => return Ok(conn),
             Err(e) if is_busy(&e) && Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(50));
@@ -158,10 +177,13 @@ pub fn connect() -> rusqlite::Result<Connection> {
     }
 }
 
-fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
+fn init_schema(conn: &mut Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SCHEMA)?;
-    migrate(conn)?;
-    conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    migrate(conn, version)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    tx.commit()
 }
 
 fn is_busy(e: &rusqlite::Error) -> bool {
@@ -185,6 +207,26 @@ pub fn connect_readonly() -> rusqlite::Result<Connection> {
     conn.busy_timeout(Duration::from_millis(5_000))?;
     tune(&conn)?;
     Ok(conn)
+}
+
+/// Open the queue read-only after upgrading old databases when needed.
+pub fn connect_queue_readonly() -> rusqlite::Result<Connection> {
+    if !paths::db_path()
+        .try_exists()
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+    {
+        return connect_readonly();
+    }
+    let probe = Connection::open_with_flags(
+        paths::db_path(),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )?;
+    let version: i64 = probe.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    drop(probe);
+    if version < SCHEMA_VERSION {
+        drop(connect_with_timeout(Duration::from_millis(300))?);
+    }
+    connect_readonly()
 }
 
 /// Connection-local read-path tuning. mmap skips read() syscalls for FTS page
@@ -273,31 +315,38 @@ fn chmod(_path: &std::path::Path, _mode: u32) {}
 
 /// Idempotent upgrades for DBs created by an older version: column adds and
 /// the v2 stemmed-FTS rebuild.
-fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+fn migrate(conn: &Connection, version: i64) -> rusqlite::Result<()> {
     let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
     let cols: Vec<String> = stmt
         .query_map([], |r| r.get::<_, String>(1))?
         .collect::<Result<_, _>>()?;
+    let add_column = |sql: &str| {
+        let result = conn.execute(sql, []);
+        if let Err(e) = result {
+            if !e.to_string().contains("duplicate column name") {
+                return Err(e);
+            }
+        }
+        Ok(())
+    };
     if !cols.iter().any(|c| c == "checkpointed_seq") {
-        conn.execute(
-            "ALTER TABLE sessions ADD COLUMN checkpointed_seq INTEGER DEFAULT -1",
-            [],
-        )?;
+        add_column("ALTER TABLE sessions ADD COLUMN checkpointed_seq INTEGER DEFAULT -1")?;
     }
-    // v4: byte/line resume cursor for incremental ingest. Existing rows default to
-    // (0, 0), so the first ingest after the upgrade re-reads from the top and resets
-    // the cursor — no special backfill needed.
     if !cols.iter().any(|c| c == "scan_offset") {
-        conn.execute(
-            "ALTER TABLE sessions ADD COLUMN scan_offset INTEGER NOT NULL DEFAULT 0",
-            [],
-        )?;
+        add_column("ALTER TABLE sessions ADD COLUMN scan_offset INTEGER NOT NULL DEFAULT 0")?;
     }
     if !cols.iter().any(|c| c == "scan_seq") {
-        conn.execute(
-            "ALTER TABLE sessions ADD COLUMN scan_seq INTEGER NOT NULL DEFAULT 0",
-            [],
-        )?;
+        add_column("ALTER TABLE sessions ADD COLUMN scan_seq INTEGER NOT NULL DEFAULT 0")?;
+    }
+    if !cols.iter().any(|c| c == "skipped_lines") {
+        add_column("ALTER TABLE sessions ADD COLUMN skipped_lines INTEGER NOT NULL DEFAULT 0")?;
+    }
+    if !cols.iter().any(|c| c == "partial_tail") {
+        add_column("ALTER TABLE sessions ADD COLUMN partial_tail INTEGER NOT NULL DEFAULT 0")?;
+    }
+    if !cols.iter().any(|c| c == "file_mtime") {
+        add_column("ALTER TABLE sessions ADD COLUMN file_mtime INTEGER NOT NULL DEFAULT 0")?;
+        conn.execute("UPDATE sessions SET scan_offset=0, scan_seq=0, skipped_lines=0, partial_tail=0, file_mtime=0", [])?;
     }
     // v2: swap both FTS indexes to the stemmed tokenizer. The CREATE statements
     // must match SCHEMA above (minus IF NOT EXISTS).
@@ -318,6 +367,67 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // user_version only reaches 3 once this returns Ok, so an interrupted backfill
     // picks up the remainder on the next connect.
     crate::tags::backfill(conn)?;
+    if version < 5 {
+        import_legacy_queue(conn)?;
+    }
+    if version < 6 {
+        if version >= 5
+            && conn
+                .prepare("SELECT enqueue_seq FROM checkpoint_queue LIMIT 0")
+                .is_err()
+        {
+            conn.execute(
+                "ALTER TABLE checkpoint_queue ADD COLUMN enqueue_seq INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        conn.execute(
+            "UPDATE checkpoint_queue SET enqueue_seq=rowid WHERE enqueue_seq=0",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn import_legacy_queue(conn: &Connection) -> rusqlite::Result<()> {
+    let path = paths::pending_log();
+    let text = match paths::read_control_file(&path, paths::CONTROL_FILE_MAX) {
+        Ok(Some(text)) => text,
+        Ok(None) => return Ok(()),
+        Err(e) => return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(e))),
+    };
+    let mut rows: Vec<(String, String)> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let mut fields = line.rsplitn(2, '\t');
+            let sid = fields.next().unwrap_or(line).to_string();
+            let at = fields.next().unwrap_or("").to_string();
+            (at, sid)
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut next_seq: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(enqueue_seq), 0) FROM checkpoint_queue",
+        [],
+        |r| r.get(0),
+    )?;
+    for (at, sid) in rows {
+        let completed: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions s WHERE s.session_id=? AND COALESCE(s.checkpointed_seq, -1) >= 0 AND COALESCE(s.checkpointed_seq, -1) >= COALESCE((SELECT max(seq) FROM turns WHERE session_id=s.session_id), -1))",
+            [&sid],
+            |r| r.get(0),
+        )?;
+        if completed {
+            continue;
+        }
+        next_seq += 1;
+        conn.execute(
+            "INSERT OR IGNORE INTO checkpoint_queue(session_id, enqueued_at, enqueue_seq) VALUES (?, ?, ?)",
+            rusqlite::params![sid, if at.is_empty() { now_iso() } else { at }, next_seq],
+        )?;
+    }
     Ok(())
 }
 
@@ -419,6 +529,18 @@ pub fn now_iso() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     // The pre-v2 shape of the turns side: unstemmed FTS plus the insert trigger.
     const V1_DDL: &str = r#"
@@ -450,9 +572,10 @@ END;
 
     #[test]
     fn migrate_rebuilds_fts_with_porter() {
+        let _guard = lock_env();
         let p = std::env::temp_dir().join(format!("subrosa-mig-{}.db", std::process::id()));
         let _ = fs::remove_file(&p);
-        let conn = Connection::open(&p).unwrap();
+        let mut conn = Connection::open(&p).unwrap();
         conn.execute_batch(V1_DDL).unwrap();
         conn.execute(
             "INSERT INTO turns(session_id, seq, text) VALUES('s1', 0, 'we deployed the cache service')",
@@ -462,7 +585,7 @@ END;
         conn.pragma_update(None, "user_version", 1).unwrap();
         assert_eq!(count_match(&conn, "deploy"), 0, "v1 index must not stem");
 
-        init_schema(&conn).unwrap();
+        init_schema(&mut conn).unwrap();
 
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -491,17 +614,48 @@ END;
         assert_eq!(count_match(&conn, "deploy"), 2);
 
         // Re-running is a no-op (porter already present → no rebuild path).
-        init_schema(&conn).unwrap();
+        init_schema(&mut conn).unwrap();
         assert_eq!(count_match(&conn, "deploy"), 2);
         drop(conn);
         let _ = fs::remove_file(&p);
     }
 
     #[test]
-    fn migrate_v3_backfills_session_tags() {
-        let p = std::env::temp_dir().join(format!("subrosa-tagmig-{}.db", std::process::id()));
+    fn newer_schema_is_not_downgraded() {
+        let _guard = lock_env();
+        let p = std::env::temp_dir().join(format!("subrosa-newer-{}.db", std::process::id()));
         let _ = fs::remove_file(&p);
         let conn = Connection::open(&p).unwrap();
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+            .unwrap();
+        drop(conn);
+
+        let old_db = std::env::var_os("SUBROSA_DB");
+        std::env::set_var("SUBROSA_DB", &p);
+        let result = connect_with_timeout(Duration::from_millis(300));
+        match old_db {
+            Some(value) => std::env::set_var("SUBROSA_DB", value),
+            None => std::env::remove_var("SUBROSA_DB"),
+        }
+        let error = result.expect_err("newer schema must be rejected");
+        assert!(error
+            .to_string()
+            .contains("newer than this binary supports"));
+        let check = Connection::open(&p).unwrap();
+        let version: i64 = check
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION + 1);
+        drop(check);
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn migrate_v3_backfills_session_tags() {
+        let _guard = lock_env();
+        let p = std::env::temp_dir().join(format!("subrosa-tagmig-{}.db", std::process::id()));
+        let _ = fs::remove_file(&p);
+        let mut conn = Connection::open(&p).unwrap();
         // Seed a session + turn, then pretend the archive predates v3 (no tags yet).
         conn.execute_batch(SCHEMA).unwrap();
         conn.execute("INSERT INTO sessions(session_id) VALUES('s1')", [])
@@ -518,7 +672,7 @@ END;
             .unwrap();
         assert_eq!(n0, 0, "no tags before the upgrade");
 
-        init_schema(&conn).unwrap();
+        init_schema(&mut conn).unwrap();
 
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -542,7 +696,7 @@ END;
         assert_eq!(bash, 1, "tool:bash derived from the marker");
 
         // Resumable + idempotent: a second pass changes nothing (s1 already tagged).
-        init_schema(&conn).unwrap();
+        init_schema(&mut conn).unwrap();
         let total2: i64 = conn
             .query_row(
                 "SELECT count(*) FROM session_tags WHERE session_id='s1'",
@@ -557,10 +711,11 @@ END;
 
     #[test]
     fn trigram_index_substring_matches_and_stays_synced() {
+        let _guard = lock_env();
         let p = std::env::temp_dir().join(format!("subrosa-tri-{}.db", std::process::id()));
         let _ = fs::remove_file(&p);
-        let conn = Connection::open(&p).unwrap();
-        init_schema(&conn).unwrap();
+        let mut conn = Connection::open(&p).unwrap();
+        init_schema(&mut conn).unwrap();
         conn.execute(
             "INSERT INTO turns(session_id, seq, text) VALUES('s1', 0, 'pgbouncer kept pinning the writer')",
             [],
@@ -625,12 +780,13 @@ END;
     /// Only the first call writes at all; once the table is there it's a read.
     #[test]
     fn creating_the_embeddings_table_waits_for_a_writer_instead_of_failing() {
+        let _guard = lock_env();
         let p = std::env::temp_dir().join(format!("subrosa-emb-busy-{}.db", std::process::id()));
         for suffix in ["", "-wal", "-shm"] {
             let _ = fs::remove_file(format!("{}{suffix}", p.display()));
         }
-        let conn = Connection::open(&p).unwrap();
-        init_schema(&conn).unwrap();
+        let mut conn = Connection::open(&p).unwrap();
+        init_schema(&mut conn).unwrap();
         conn.busy_timeout(Duration::from_secs(10)).unwrap();
 
         // A second connection holding an open write transaction, exactly like a

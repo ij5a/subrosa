@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use rusqlite::OptionalExtension;
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::{db, ingest, paths, tags};
 
@@ -80,8 +80,8 @@ fn resolve_session(conn: &rusqlite::Connection, arg: &str) -> Resolved {
 /// the full session id or any unique prefix (e.g. the 8-char id `search` and
 /// `related` print). With `show_tags`, adds one `# tags:` line to the header;
 /// the default output stays byte-identical (pinned by session_dump.golden).
-pub fn dump(arg: &str, show_tags: bool) -> ExitCode {
-    let conn = match db::connect_readonly() {
+pub fn dump(arg: &str, show_tags: bool, show_boundary: bool) -> ExitCode {
+    let conn = match db::connect_queue_readonly() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("[subrosa] cannot open DB: {e}");
@@ -99,7 +99,14 @@ pub fn dump(arg: &str, show_tags: bool) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let rows: Result<Vec<(String, Option<String>)>, _> = conn
+    let tx = match conn.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(e) => {
+            eprintln!("[subrosa] cannot start session read: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let rows: Result<Vec<(String, Option<String>)>, _> = tx
         .prepare("SELECT role, text FROM turns WHERE session_id=? ORDER BY seq")
         .and_then(|mut s| {
             s.query_map([sid.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -122,7 +129,7 @@ pub fn dump(arg: &str, show_tags: bool) -> ExitCode {
         Option<String>,
         Option<String>,
     );
-    let meta: Option<Meta> = conn
+    let meta: Option<Meta> = tx
         .query_row(
             "SELECT project, cwd, first_ts, last_ts FROM sessions WHERE session_id=?",
             [sid.as_str()],
@@ -142,6 +149,16 @@ pub fn dump(arg: &str, show_tags: bool) -> ExitCode {
         // Default output ends here (a memdir line + blank line). --tags slots one
         // extra line in before the blank, so session_dump.golden stays untouched.
         println!("# memdir: {}", memdir.display());
+        if show_boundary {
+            let boundary: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(max(seq), -1) FROM turns WHERE session_id=?",
+                    [sid.as_str()],
+                    |r| r.get(0),
+                )
+                .unwrap_or(-1);
+            println!("# last_seq: {boundary}");
+        }
         if show_tags {
             let line = match tags::tags_for_session(&conn, &sid) {
                 Ok(t) if !t.is_empty() => t.join(", "),
@@ -151,55 +168,83 @@ pub fn dump(arg: &str, show_tags: bool) -> ExitCode {
         }
         println!();
     }
+    if let Err(e) = tx.commit() {
+        eprintln!("[subrosa] cannot finish session read: {e}");
+        return ExitCode::FAILURE;
+    }
     for (role, text) in rows {
         println!("## {role}\n{}\n", text.unwrap_or_default());
     }
     ExitCode::SUCCESS
 }
 
-/// The queue text with every entry for `sid` removed, or `None` when `sid` isn't
-/// queued (so the caller can skip the rewrite). Preserves the trailing newline.
-fn without_sid(text: &str, sid: &str) -> Option<String> {
-    let lines: Vec<&str> = text.lines().collect();
-    let keep: Vec<&str> = lines
-        .iter()
-        .copied()
-        .filter(|ln| ingest::queue_sid(ln) != sid)
-        .collect();
-    if keep.len() == lines.len() {
-        return None;
-    }
-    Some(if keep.is_empty() {
-        String::new()
-    } else {
-        keep.join("\n") + "\n"
-    })
-}
-
 /// Remove one session from the queue and record the checkpoint high-water mark
 /// so a re-fired SessionEnd won't re-queue it unless the transcript grows.
-pub fn drop_sid(sid: &str) -> ExitCode {
-    // last_seq is read fresh at drop time — it may have grown since queuing.
-    if let Ok(conn) = db::connect() {
-        let _ = conn.execute(
-            "UPDATE sessions SET checkpointed_seq=last_seq WHERE session_id=?",
-            [sid],
-        );
-    }
-    let pending = paths::pending_log();
-    let Ok(text) = std::fs::read_to_string(&pending) else {
-        println!("[subrosa] queue empty");
-        return ExitCode::SUCCESS;
+pub fn drop_sid(sid: &str, max_seq: Option<i64>) -> ExitCode {
+    let conn = match db::connect_with_timeout(std::time::Duration::from_secs(10)) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[subrosa] cannot open DB: {e}");
+            return ExitCode::FAILURE;
+        }
     };
-    match without_sid(&text, sid) {
-        Some(body) => {
-            if let Err(e) = std::fs::write(&pending, body) {
-                eprintln!("[subrosa] cannot write queue: {e}");
+    let tx = match Transaction::new_unchecked(&conn, TransactionBehavior::Immediate) {
+        Ok(tx) => tx,
+        Err(e) => {
+            eprintln!("[subrosa] cannot start checkpoint transaction: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let last_seq = match tx
+        .query_row(
+            "SELECT COALESCE((SELECT max(seq) FROM turns WHERE session_id=?), -1)",
+            [sid],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+    {
+        Ok(Some(seq)) => seq,
+        Ok(None) => -1,
+        Err(e) => {
+            eprintln!("[subrosa] cannot read session: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let boundary = max_seq.unwrap_or_else(|| {
+        tx.query_row(
+            "SELECT COALESCE(checkpointed_seq, -1) FROM sessions WHERE session_id=?",
+            [sid],
+            |r| r.get(0),
+        )
+        .unwrap_or(-1)
+    });
+    if boundary > last_seq {
+        eprintln!("[subrosa] max sequence {boundary} is above archived last sequence {last_seq}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(e) = ingest::advance_checkpoint(&tx, sid, boundary) {
+        eprintln!("[subrosa] cannot mark session {sid} checkpointed: {e}");
+        return ExitCode::FAILURE;
+    }
+    if boundary < last_seq {
+        if let Err(e) = tx.commit() {
+            eprintln!("[subrosa] cannot save checkpoint: {e}");
+            return ExitCode::FAILURE;
+        }
+        println!("[subrosa] kept {sid} queued; checkpointed through {boundary} of {last_seq}");
+    } else {
+        match tx.execute("DELETE FROM checkpoint_queue WHERE session_id=?", [sid]) {
+            Ok(0) => println!("[subrosa] {sid} not in queue"),
+            Ok(_) => println!("[subrosa] dropped {sid} from queue"),
+            Err(e) => {
+                eprintln!("[subrosa] cannot drop {sid} from queue: {e}");
                 return ExitCode::FAILURE;
             }
-            println!("[subrosa] dropped {sid} from queue");
         }
-        None => println!("[subrosa] {sid} not in queue"),
+        if let Err(e) = tx.commit() {
+            eprintln!("[subrosa] cannot save checkpoint: {e}");
+            return ExitCode::FAILURE;
+        }
     }
     ExitCode::SUCCESS
 }
@@ -213,7 +258,7 @@ pub fn enqueue(sid: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match ingest::enqueue_checkpoint(&conn, sid, &paths::pending_log()) {
+    match ingest::enqueue_checkpoint(&conn, sid) {
         Ok(status) => {
             println!("[subrosa] enqueue {sid}: {status}");
             ExitCode::SUCCESS
@@ -228,9 +273,9 @@ pub fn enqueue(sid: &str) -> ExitCode {
 /// Mark a session as checkpointed: ingest its latest turns, set the high-water
 /// mark, and drop it from the queue. Run as the last step of /checkpoint so the
 /// session doesn't re-queue on the next SessionEnd. No argument targets the cwd
-/// project's live session; an explicit id/prefix pins it exactly — a busier
+/// project's live session; an explicit id/prefix pins it exactly. A busier
 /// transcript elsewhere (another project, a spawned agent) can't steal the mark.
-pub fn mark_current(arg: Option<&str>) -> ExitCode {
+pub fn mark_current(arg: Option<&str>, max_seq: Option<i64>) -> ExitCode {
     let conn = match db::connect() {
         Ok(c) => c,
         Err(e) => {
@@ -276,37 +321,57 @@ pub fn mark_current(arg: Option<&str>) -> ExitCode {
             (sid, Some(f))
         }
     };
-    // Bring last_seq up to the checkpoint moment before recording the mark.
+    // Bring last_seq up to the checkpoint moment unless the caller supplied a boundary.
     if let Some(f) = &file {
-        let _ = ingest::ingest_file(&conn, f);
-    }
-    let _ = conn.execute(
-        "UPDATE sessions SET checkpointed_seq=last_seq WHERE session_id=?",
-        [sid.as_str()],
-    );
-    let last: Option<i64> = conn
-        .query_row(
-            "SELECT last_seq FROM sessions WHERE session_id=?",
-            [sid.as_str()],
-            |r| r.get(0),
-        )
-        .optional()
-        .unwrap_or(None);
-    let pending = paths::pending_log();
-    if let Ok(text) = std::fs::read_to_string(&pending) {
-        if let Some(body) = without_sid(&text, &sid) {
-            let _ = std::fs::write(&pending, body);
+        if max_seq.is_none() {
+            if let Err(e) = ingest::ingest_file(&conn, f) {
+                eprintln!("[subrosa] cannot ingest session before marking: {e}");
+                return ExitCode::FAILURE;
+            }
         }
+    }
+    let tx = match Transaction::new_unchecked(&conn, TransactionBehavior::Immediate) {
+        Ok(tx) => tx,
+        Err(e) => {
+            eprintln!("[subrosa] cannot start checkpoint transaction: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let last = ingest::distilled_boundary(&tx, &sid).unwrap_or(-1);
+    let full_mark = max_seq.map(|seq| seq == last).unwrap_or(true);
+    if let Some(max_seq) = max_seq {
+        if max_seq > last {
+            eprintln!("[subrosa] max sequence {max_seq} is above archived last sequence {last}");
+            return ExitCode::FAILURE;
+        }
+    }
+    let mark_result = ingest::advance_checkpoint(&tx, &sid, max_seq.unwrap_or(last));
+    if let Err(e) = mark_result {
+        eprintln!("[subrosa] cannot mark session {sid} checkpointed: {e}");
+        return ExitCode::FAILURE;
+    }
+    if full_mark {
+        if let Err(e) = tx.execute(
+            "DELETE FROM checkpoint_queue WHERE session_id=?",
+            [sid.as_str()],
+        ) {
+            eprintln!("[subrosa] cannot drop {sid} from queue: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+    if let Err(e) = tx.commit() {
+        eprintln!("[subrosa] cannot save checkpoint: {e}");
+        return ExitCode::FAILURE;
     }
     println!(
         "[subrosa] marked current session {sid} checkpointed (last_seq={})",
-        last.map(|v| v.to_string()).unwrap_or_else(|| "?".into())
+        last
     );
     ExitCode::SUCCESS
 }
 
 /// Best guess at the session running right now: the most recently modified
-/// transcript in the cwd's OWN project dir (/checkpoint keeps appending to it),
+/// transcript in the cwd's OWN project dir (the checkpoint flow keeps appending to it),
 /// falling back to the newest across all projects. The cwd scope keeps a busier
 /// concurrent session in another project from stealing the mark; raw + resolved
 /// cwd are both tried because Claude Code encodes the symlink-resolved path.

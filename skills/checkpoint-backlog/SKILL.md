@@ -1,55 +1,55 @@
 ---
 name: checkpoint-backlog
-description: Checkpoint the ended Claude Code sessions waiting in subrosa's queue. Reads the pending-checkpoint queue and, for each queued past session, extracts durable facts into that project's memory (leaf files + facts database + regenerated MEMORY.md), then clears it from the queue. Run it at session start when there's a backlog; it's also fine to invoke by hand.
+description: Check ended Claude Code sessions in subrosa's queue. Read the SQLite queue, save facts, regenerate MEMORY.md, and clear completed entries. Run at session start or by hand.
 ---
 
 # checkpoint-backlog: checkpoint queued sessions
 
-When a session ends, subrosa's `SessionEnd` hook adds it to `pending-checkpoint.log` in `~/.claude/subrosa/` by default. This skill processes the queue **in-session**. It uses no background daemon or headless `claude` run. It applies the checkpoint skill to each *past* session.
+When a session ends, `SessionEnd` adds it to the database queue. Older versions used `~/.claude/subrosa/pending-checkpoint.log`. This skill processes the queue **in-session**. It uses no background daemon or headless `claude` run. It applies the checkpoint skill to each *past* session.
 
-Follow the checkpoint skill's 4 types, user, feedback, project, and reference rules. Follow its exclusion list and leaf to `subrosa fact upsert` to `subrosa generate` flow. Read `${CLAUDE_PLUGIN_ROOT}/skills/checkpoint/SKILL.md` for details. Apply these overrides.
+Follow the checkpoint skill's 4 types, rules, exclusions, and `subrosa fact upsert` to `subrosa generate` flow. Read `${CLAUDE_PLUGIN_ROOT}/skills/checkpoint/SKILL.md`. Apply these overrides.
 
-When the queue spans **more than one project**, read each session dump in parallel, with one sub-agent per project. Keep a single-project queue sequential. Separate projects have separate `MEMORY.md` files and do not race. Sessions in the same project would race regeneration and deduplication, so keep them serial.
+For **more than one project**, read dumps in parallel, one sub-agent per project. Keep one project sequential. Separate `MEMORY.md` files prevent races; same-project sessions would race regeneration and deduplication.
 
 ## Procedure
 
-1. **List the backlog:** Run `subrosa pending`. Each line is `<timestamp>\t<session-id>`, oldest first. Collect unique ids. If it is empty, say "no backlog" and stop.
+1. **List the backlog:** Run `subrosa pending`. Each line is `<timestamp>\t<session-id>`, newest first. Collect unique ids. If empty, say "no backlog" and stop.
 
-2. **Cap the work** at the 5 most recent queued sessions. The newest is last in the file. If more remain, process those 5. Tell the user to run `/subrosa:checkpoint-backlog` again for the rest. This prevents session startup from stalling.
+2. **Process all queued sessions.** Work through every id from `subrosa pending`, newest first. Process every queued id. Drop each completed session or leave it queued explicitly.
 
 3. **Find each session's project.** For each id, run `subrosa session <id> | head -2`. The pipe stops after 2 header lines. It avoids dumping the whole session and works with any recent binary:
-   - Line 1 is `# session <id>  project=<project>  cwd=<cwd>  <first>..<last>`. Take the `project=` value.
-   - Line 2 is `# memdir: <path>`. Take the memdir path.
+   - Line 1 is `# session <id>  project=<project>  cwd=<cwd>  <first>..<last>`. Take `project=`.
+   - Line 2 is `# memdir: <path>`. Take the memdir. Run `subrosa ingest --require-complete <transcript>` with the session's live transcript path. A non-zero exit means UNKNOWN: report why, leave the id queued, and do not mark or drop it or pass it to a lane. If it exits 0, run `subrosa session <id> --boundary | head -3` and store `# last_seq: <DISTILLED_SEQ>`, the inclusive boundary. Only a complete ingest plus a boundary reporting no archived turns permits `subrosa checkpoint-drop <id> --max-seq=-1` and a counted skip. Do not pass it to a lane.
 
-   If it prints `[subrosa] no archived turns for session <id>`, the session was never ingested. There is nothing to extract. Run `subrosa checkpoint-drop <id>`. Count it as a skip. Do not pass it to a lane.
+   If it prints `[subrosa] no archived turns for session <id>`, only a prior complete ingest that exited 0 permits the empty result. Drop it with `subrosa checkpoint-drop <id> --max-seq=-1` and count a skip. A failed or incomplete ingest stays queued.
 
-4. **Group surviving ids by project, then choose a branch.** If none survive, skip to the report.
+4. **Group surviving ids by project, then choose a branch.** If none survive, report.
 
    ### Branch A: one project
 
-   Process sessions one at a time in this conversation. This matches the old byte behavior. Process ids oldest first:
-   - Run `subrosa session <id>` and read the flattened turns.
-   - Pull durable facts using the checkpoint rules. Use the 4 types and exclusion list. Skip borderline candidates because `MEMORY.md` is byte-budgeted and low-signal facts can hide good ones.
-   - Check memory first with `subrosa fact list --memdir "<memdir>"` and `subrosa search "<keyword>"`. Update a similar stale fact instead of creating a duplicate.
+   Process sessions one at a time. This matches old byte behavior. Process ids newest first:
+   - Run `subrosa session <id>` and read its flattened turns.
+   - Pull durable facts using the checkpoint rules, 4 types, and exclusion list. Skip borderline candidates because `MEMORY.md` is byte-budgeted and low-signal facts can hide good ones.
+   - Check memory with `subrosa fact list --memdir "<memdir>"` and `subrosa search "<keyword>"`. Update a similar stale fact instead of duplicating it.
    - Write each leaf in the probed `<memdir>`. Register it with `subrosa fact upsert --memdir "<memdir>" --leaf <name>.md --hook "<one-line hook>" --origin-session <id>`.
-   - Rebuild the project index with `subrosa generate --memdir "<memdir>"`.
-   - Remove it from the queue with `subrosa checkpoint-drop <id>`.
+   - Rebuild the index with `subrosa generate --memdir "<memdir>"`.
+   - Before removing it, run `subrosa ingest --require-complete <transcript>` again. A non-zero exit reports UNKNOWN and leaves the id queued. If it exits 0, run `subrosa session <id> --boundary | head -3`. If `last_seq` is greater than `DISTILLED_SEQ`, leave it queued and report that it grew. Otherwise remove it with `subrosa checkpoint-drop <id> --max-seq <DISTILLED_SEQ>` only after handling all archived turns through `<DISTILLED_SEQ>`. Older versions used `subrosa checkpoint-drop <id>`.
 
    ### Branch B: more than one project
 
-   Launch **one sub-agent per project** in one batch with the Agent tool (general-purpose type). Run project lanes at the same time. Keep each project's sessions *serial* inside its lane.
-   - Use the **sub-agent prompt** below for each group. Fill `{{PROJECT}}`, `{{MEMDIR}}`, `{{SESSION_IDS}}` (oldest first, space-separated), and `{{PLUGIN_ROOT}}` (the real `${CLAUDE_PLUGIN_ROOT}`).
-   - Each sub-agent reads, extracts, and writes only its project's facts. It must not drop queue entries or touch another project's memdir.
+   Launch **one sub-agent per project** in one batch with the Agent tool (general-purpose type). Run lanes together; keep sessions *serial*.
+   - Use the **sub-agent prompt** below. Fill `{{PROJECT}}`, `{{MEMDIR}}`, `{{SESSION_IDS}}` (newest first, space-separated), and `{{PLUGIN_ROOT}}` (the real `${CLAUDE_PLUGIN_ROOT}`).
+   - Each sub-agent writes only its project's facts. It must not drop queue entries or touch another memdir.
 
-5. **Drop queue entries yourself, Branch B only, after every sub-agent returns.** Each sub-agent reports finished ids with `FINISHED_IDS:`. Run `subrosa checkpoint-drop <id>` once per finished id, one at a time, in the orchestrator. Never run it inside a sub-agent. This gives shared `pending-checkpoint.log` one writer.
+5. **Drop queue entries yourself, Branch B only, after sub-agents return.** Each reports finished ids and `DISTILLED_SEQ` boundaries, or reports an id as `empty; safe to drop` after ingest. Run `subrosa checkpoint-drop <id> --max-seq <DISTILLED_SEQ>` for finished ids and `subrosa checkpoint-drop <id> --max-seq=-1` for ids reported `empty; safe to drop`. Never run it inside a sub-agent.
 
-   A failed or unreported id stays queued for the next backlog. This is safe and self-healing. `checkpointed_seq` in the database is the real done-marker. The log is only a to-do list.
+   A failed or unreported id stays queued. This is safe and self-healing. `checkpointed_seq` is the database done-marker.
 
-6. **Do NOT** run `subrosa checkpoint-clear`. It wipes the whole queue, including unreached sessions. Do **not** run the staleness archive pass. Both actions stay with the interactive checkpoint skill.
+6. **Do NOT** run `subrosa checkpoint-clear`. It refuses while any queue entry remains. Do **not** run the staleness archive pass.
 
-## Sub-agent prompt (Branch B)
+## Sub-agent prompt
 
-Launch one sub-agent per project in one batch. Use this prompt with the four placeholders filled in:
+Launch one sub-agent per project. Fill the 4 placeholders:
 
 ```
 You are saving durable memory from ended Claude Code sessions in ONE project. Use the `checkpoint` skill procedure for past sessions. Read
@@ -57,11 +57,11 @@ You are saving durable memory from ended Claude Code sessions in ONE project. Us
 
 Project: {{PROJECT}}
 Memory directory (memdir): {{MEMDIR}}
-Session ids, oldest first: {{SESSION_IDS}}
+Session ids, newest first: {{SESSION_IDS}}
 
 Process ids IN ORDER, one at a time. Do not parallelize this lane. Sessions share one MEMORY.md and would race. For each id:
 
-1. `subrosa session <id>` Read the flattened turns.
+1. Run `subrosa ingest --require-complete <transcript>`. A non-zero exit is UNKNOWN: report why and leave the id queued. After an exit 0, run `subrosa session <id> --boundary` to capture the sequence boundary before reading the flattened turns.
 2. Pull out durable facts. Match each to one type:
    - user: role, preferences, knowledge, working context
    - feedback: corrections ("don't do X") and confirmed-good approaches; always include the why
@@ -77,27 +77,35 @@ Process ids IN ORDER, one at a time. Do not parallelize this lane. Sessions shar
 9. Rebuild this project's index after EACH session with `subrosa generate --memdir "{{MEMDIR}}"`. Regenerate per session, not once at the end. A partial failure must leave earlier sessions saved.
 
 Hard rules:
-- Use ONLY these commands: `subrosa session`, `subrosa fact list`, `subrosa fact upsert`, `subrosa search`, `subrosa generate`.
+- Use ONLY these commands: `subrosa ingest`, `subrosa session`, `subrosa fact list`, `subrosa fact upsert`, `subrosa search`, `subrosa generate`.
 - NEVER run `subrosa checkpoint-drop` or `subrosa checkpoint-clear`. The orchestrator owns the queue.
 - NEVER write to any memdir other than {{MEMDIR}}.
-- If `subrosa session <id>` prints "no archived turns", extract nothing. Count that id finished and move on.
+- If `subrosa session <id>` prints "no archived turns" after a complete ingest exit 0, extract nothing and report `empty; safe to drop`. The orchestrator drops it with `subrosa checkpoint-drop <id> --max-seq=-1`. A failed or incomplete ingest is a failure report, not an empty result.
+
+Before reporting an id finished, run `subrosa ingest --require-complete <transcript>` again. If it fails, leave the id queued and report UNKNOWN. If it exits 0, re-read the boundary. If it grew past the captured boundary, leave it queued and do not report it as finished.
+
+If a session has a permanently malformed line, its stored incomplete state must be cleared by hand only after the source is fixed or accepted: `sqlite3 "$SUBROSA_DIR/memory.db" "DELETE FROM turns WHERE session_id='<id>'; UPDATE sessions SET num_turns=0, last_seq=-1, file_size=0, file_mtime=0, skipped_lines=0, partial_tail=0, scan_offset=0, scan_seq=0 WHERE session_id='<id>';"`. The cursor reset makes the next check read the repaired line. Run `subrosa ingest --require-complete` again before clearing its queue entry.
+
+This discards that session's archived turns and re-reads the file from the start. If a transcript is rewritten instead of appended to, subrosa refuses it, keeps archived turns intact, and leaves the session queued. Check the file, apply the SQLite repair above, then run the complete ingest check again.
 
 When done, return EXACTLY this and nothing else:
 
-FINISHED_IDS: <space-separated ids you fully handled: saved, updated, or confirmed nothing-to-save>
+`FINISHED_IDS:` <space-separated ids you fully handled: saved, updated, or confirmed nothing-to-save>
 PER_SESSION:
-<id>: saved <n>, updated <n>, skipped <n>; <very short note>
+<id>: boundary <DISTILLED_SEQ>; saved <n>, updated <n>, skipped <n>; <very short note>
 TOTALS: saved <X>, updated <Y>, skipped <Z>
 ```
 
 ## Report
 
-Add the work from inline Branch A sessions, each sub-agent's `TOTALS`, and no-turns skips from step 3. Re-run `subrosa pending`. Count unique ids left. That is the authoritative `M`.
+Print `👍 Safe to /clear or /compact.` only for a session that was marked. For a session that grew, print `⚠️ Session grew; do not /clear or /compact.` For a session with genuinely no archived turns after ingest, print `⚠️ No archived turns; do not /clear or /compact.`
 
-Keep the report short:
+Add Branch A work, each `TOTALS`, and no-turn skips. Re-run `subrosa pending`. Count ids left. `M` is authoritative.
+
+Keep it short:
 
 ```
 [checkpoint-backlog] N sessions → saved X, updated Y, skipped Z. Queue: M left.
 ```
 
-If you ran this at session start, finish it, then return to the user's task.
+At session start, finish, then return to the user's task.

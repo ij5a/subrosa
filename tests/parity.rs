@@ -156,6 +156,100 @@ fn checkpoint_mark_explicit_id_wins() {
 }
 
 #[test]
+fn checkpoint_mark_max_seq_does_not_ingest_new_turns() {
+    let env = setup("mark-max-seq");
+    let cwd = env.data.parent().unwrap().join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    let encoded: String = cwd
+        .canonicalize()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let dir = env.projects.join(encoded);
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("cccc-max-1111.jsonl");
+    fs::write(&file, golden("transcript.jsonl")).unwrap();
+    run(&env, &["ingest", file.to_str().unwrap()], None);
+    run(&env, &["checkpoint-enqueue", "cccc-max-1111"], None);
+    fs::write(
+        &file,
+        golden("transcript.jsonl").replace("2026-06-12T01:05:00Z", "2026-06-12T01:06:00Z")
+            + &user_rec_for_test(),
+    )
+    .unwrap();
+    let before = run(&env, &["session", "cccc-max-1111"], None);
+    let out = run_in(&env, &cwd, &["checkpoint-mark", "--max-seq", "2"]);
+    assert!(out.contains("last_seq=5"));
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    let checkpointed: i64 = db
+        .query_row(
+            "SELECT checkpointed_seq FROM sessions WHERE session_id='cccc-max-1111'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(checkpointed, 2);
+    let queue: i64 = rusqlite::Connection::open(env.data.join("memory.db"))
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM checkpoint_queue WHERE session_id='cccc-max-1111'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(queue, 1);
+
+    let too_high = run_full(
+        &env,
+        &["checkpoint-mark", "cccc-max-1111", "--max-seq", "6"],
+        None,
+    );
+    assert!(!too_high.status.success());
+    assert!(String::from_utf8_lossy(&too_high.stderr).contains("above archived last sequence"));
+    let after = run(&env, &["session", "cccc-max-1111"], None);
+    assert_eq!(before, after);
+}
+
+#[test]
+fn checkpoint_mark_watermark_does_not_move_backwards() {
+    let env = setup("mark-monotonic");
+    let transcript = env.projects.join("-tmp-demo/monotonic-1111.jsonl");
+    let records = [
+        user_rec_for_test(),
+        user_rec_for_test().replace("new", "newer"),
+        user_rec_for_test().replace("new", "newest"),
+    ];
+    fs::write(&transcript, records.join("\n") + "\n").unwrap();
+    run(&env, &["ingest", transcript.to_str().unwrap()], None);
+    run(
+        &env,
+        &["checkpoint-mark", "monotonic-1111", "--max-seq", "2"],
+        None,
+    );
+    run(
+        &env,
+        &["checkpoint-mark", "monotonic-1111", "--max-seq", "1"],
+        None,
+    );
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    let watermark: i64 = db
+        .query_row(
+            "SELECT checkpointed_seq FROM sessions WHERE session_id='monotonic-1111'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(watermark, 2);
+}
+
+fn user_rec_for_test() -> String {
+    "\n{\"type\":\"user\",\"timestamp\":\"2026-06-12T01:06:00Z\",\"uuid\":\"new\",\"cwd\":\"/tmp/demo\",\"message\":{\"role\":\"user\",\"content\":\"new turn\"}}\n".to_string()
+}
+
+#[test]
 fn search_fuzzy_typo_finds_nearest_match() {
     let env = setup("fuzzy-typo");
     ingest_golden_transcript(&env);
@@ -1358,4 +1452,74 @@ fn incremental_ingest_survives_a_shorter_file() {
         run(&env, &["search", "crocodilethump"], None).contains("crocodilethump"),
         "existing turns survive a shorter file"
     );
+}
+
+#[test]
+fn same_size_replacement_is_refused_not_merged() {
+    let env = setup("same-size-replacement");
+    let sid = "same-size-0000";
+    let tp = env.projects.join(format!("-tmp-demo/{sid}.jsonl"));
+    let first = r#"{"type":"user","timestamp":"2026-06-17T07:00:00Z","uuid":"same-1","message":{"role":"user","content":"old-same-size-text"}}"#;
+    fs::write(&tp, format!("{first}\n")).unwrap();
+    run(&env, &["ingest", tp.to_str().unwrap()], None);
+    run(&env, &["checkpoint-enqueue", sid], None);
+    let second = r#"{"type":"user","timestamp":"2026-06-17T07:00:00Z","uuid":"same-2","message":{"role":"user","content":"new-same-size-text"}}"#;
+    assert_eq!(first.len(), second.len());
+    fs::write(&tp, format!("{second}\n")).unwrap();
+    let result = run_full(
+        &env,
+        &["ingest", "--require-complete", tp.to_str().unwrap()],
+        None,
+    );
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("content changed rather than grew"),
+        "{stderr}"
+    );
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    let stored: String = db
+        .query_row(
+            "SELECT text FROM turns WHERE session_id=? AND seq=0",
+            [sid],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(stored.contains("old-same-size-text"), "{stored}");
+    assert!(!stored.contains("new-same-size-text"), "{stored}");
+    let queued: i64 = db
+        .query_row(
+            "SELECT count(*) FROM checkpoint_queue WHERE session_id=?",
+            [sid],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(queued, 1);
+}
+
+#[test]
+fn fresh_large_transcript_reads_all_lines_after_head_hash() {
+    let env = setup("fresh-large-head");
+    let sid = "fresh-large-head";
+    let tp = env.projects.join(format!("-tmp-demo/{sid}.jsonl"));
+    let records: Vec<String> = (0..300)
+        .map(|i| {
+            format!(
+                r#"{{"type":"user","timestamp":"2026-06-17T09:{:02}:{:02}Z","uuid":"large-{i}","cwd":"/tmp/demo","message":{{"role":"user","content":"large fresh line {i}"}}}}"#,
+                (i / 60) % 60,
+                i % 60
+            )
+        })
+        .collect();
+    fs::write(&tp, records.join("\n") + "\n").unwrap();
+    run(&env, &["ingest", tp.to_str().unwrap()], None);
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    let count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM turns WHERE session_id=?",
+            [sid],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 300);
 }

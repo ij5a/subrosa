@@ -17,11 +17,37 @@ export SUBROSA_PROJECTS_DIR="$BENCH/projects"
 # No background indexer during a benchmark: it would download the model and
 # compete for cores with the very thing being timed.
 export SUBROSA_SEMANTIC=off
+# Recall cost excludes the separate checkpoint reminder injected by this hook.
+export SUBROSA_CHECKPOINT_NUDGE=off
 
 # Deterministic synthetic transcripts: prose + identifiers + tool records across
 # 8 projects, shaped like real Claude Code JSONL. awk with a hand-rolled LCG so
 # the corpus is byte-identical on every awk (no srand portability gamble).
-if [ ! -f "$BENCH/projects/.generated" ]; then
+if [ -e "$BENCH" ] && [ ! -d "$BENCH" ]; then
+  echo "bench: BENCH_DIR must be a directory" >&2
+  exit 1
+fi
+# Ownership accepts an empty marker because the pre-v2 bench created it with touch.
+# Any other content is treated as someone else's directory; use a sidecar marker to tighten this later.
+owned_bench() {
+  [ -f "$BENCH/projects/.generated" ] &&
+    [ ! -L "$BENCH/projects/.generated" ] &&
+    { [ ! -s "$BENCH/projects/.generated" ] || fresh_bench; }
+}
+fresh_bench() {
+  [ "$(cat "$BENCH/projects/.generated" 2>/dev/null || true)" = "subrosa-bench-v2" ]
+}
+if [ ! -e "$BENCH" ] || ! owned_bench || [ ! -s "$BENCH/projects/.generated" ] || ! fresh_bench; then
+  if [ -e "$BENCH" ] && [ -n "$(find "$BENCH" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    if [ ! -f "$BENCH/projects/.generated" ] || [ -L "$BENCH/projects/.generated" ]; then
+      echo "bench: refusing to delete unowned BENCH_DIR: $BENCH" >&2
+      exit 1
+    fi
+    if [ -s "$BENCH/projects/.generated" ] && ! fresh_bench; then
+      echo "bench: refusing to delete unowned BENCH_DIR: $BENCH" >&2
+      exit 1
+    fi
+  fi
   rm -rf "$BENCH"
   mkdir -p "$BENCH/projects"
   awk -v root="$BENCH/projects" -v sessions="$SESSIONS" -v turns="$TURNS" 'BEGIN {
@@ -66,7 +92,12 @@ if [ ! -f "$BENCH/projects/.generated" ]; then
     if (rnd(10) < 4) out = out " " pick(idents, ni)
     return out
   }'
-  touch "$BENCH/projects/.generated"
+  printf '%s\n' 'subrosa-bench-v2' > "$BENCH/projects/.generated"
+fi
+
+if [ ! -s "$BENCH/projects/.generated" ] || ! fresh_bench; then
+  echo "bench: corpus marker is missing or invalid" >&2
+  exit 1
 fi
 
 # Fresh full ingest: archive build throughput (3 runs, DB wiped in prepare).
@@ -78,6 +109,10 @@ hyperfine --warmup 1 --runs 3 \
 [ -f "$SUBROSA_DIR/memory.db" ] || "$BIN" ingest --sweep --quiet
 TURNS_TOTAL=$("$BIN" init | sed -n 's/.*turns=//p')
 DB_KB=$(du -k "$SUBROSA_DIR/memory.db" | cut -f1)
+if [ -z "$TURNS_TOTAL" ] || [ "$TURNS_TOTAL" -le 0 ]; then
+  echo "bench: archive is empty" >&2
+  exit 1
+fi
 echo "archive: $TURNS_TOTAL turns, $((DB_KB / 1024))MB"
 echo
 

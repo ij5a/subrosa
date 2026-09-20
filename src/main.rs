@@ -77,6 +77,9 @@ enum Cmd {
         /// Suppress per-file output
         #[arg(long)]
         quiet: bool,
+        /// Fail when any file has skipped lines or an unread trailing line
+        #[arg(long)]
+        require_complete: bool,
     },
     /// Decrypt an encrypted mirror snapshot back into a plain .db file
     Restore {
@@ -250,6 +253,9 @@ enum Cmd {
         /// Also print the session's auto-derived tags (one extra `# tags:` line)
         #[arg(long)]
         tags: bool,
+        /// Print the archived sequence boundary for checkpointing.
+        #[arg(long)]
+        boundary: bool,
     },
     /// List sessions queued for checkpoint
     Pending,
@@ -257,6 +263,9 @@ enum Cmd {
     CheckpointDrop {
         /// Session id
         id: String,
+        /// Mark only through this archived sequence
+        #[arg(long)]
+        max_seq: Option<i64>,
     },
     /// Conditionally queue a session (prunes empty/sub-agent-only sessions)
     CheckpointEnqueue {
@@ -267,9 +276,16 @@ enum Cmd {
     CheckpointMark {
         /// Session id or unique prefix (default: the cwd project's live session)
         id: Option<String>,
+        /// Stamp this exact transcript sequence without ingesting newer turns
+        #[arg(long)]
+        max_seq: Option<i64>,
     },
     /// Empty the whole checkpoint queue (prefer checkpoint-drop per session)
-    CheckpointClear,
+    CheckpointClear {
+        /// Confirm that every queued session may be removed
+        #[arg(long)]
+        confirm: bool,
+    },
     /// Claude Code hook entrypoints (read the hook JSON on stdin; never fail the session)
     #[command(subcommand)]
     Hook(HookEvent),
@@ -281,6 +297,9 @@ pub enum HookEvent {
     SessionStart,
     /// SessionEnd: archive the ended session and queue it for checkpoint
     SessionEnd,
+    /// Internal detached SessionEnd writer
+    #[command(hide = true)]
+    SessionEndWorker,
     /// UserPromptSubmit: inject relevant past-session hits into context
     UserPromptSubmit,
     /// PreCompact: archive the conversation so far + reset recall dedup
@@ -305,6 +324,14 @@ fn main() -> ExitCode {
         });
     };
     match cmd {
+        Cmd::Hook(HookEvent::SessionEndWorker) => {
+            let input = std::env::var("SUBROSA_SESSION_END_PAYLOAD")
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or(serde_json::Value::Null);
+            let _ = hook::session_end_worker(&input);
+            ExitCode::SUCCESS
+        }
         Cmd::Hook(event) => hook::run(event), // logs problems, always exits 0
         Cmd::Setup { mirror, no_mirror } => setup::run(mirror, no_mirror),
         Cmd::Backup {
@@ -317,9 +344,10 @@ fn main() -> ExitCode {
             paths,
             sweep,
             quiet,
-        } => run_ingest(paths, sweep, quiet),
+            require_complete,
+        } => run_ingest(paths, sweep, quiet, require_complete),
         Cmd::Restore { file, out } => crypt::restore(file, out),
-        Cmd::Sweep { quiet } => run_ingest(Vec::new(), true, quiet),
+        Cmd::Sweep { quiet } => run_ingest(Vec::new(), true, quiet, false),
         Cmd::Search {
             terms,
             limit,
@@ -408,12 +436,12 @@ fn main() -> ExitCode {
             no_backup,
             project,
         } => import_existing::run(memdir, no_backup, project),
-        Cmd::Session { id, tags } => session::dump(&id, tags),
+        Cmd::Session { id, tags, boundary } => session::dump(&id, tags, boundary),
         Cmd::Pending => run_pending(),
-        Cmd::CheckpointDrop { id } => session::drop_sid(&id),
+        Cmd::CheckpointDrop { id, max_seq } => session::drop_sid(&id, max_seq),
         Cmd::CheckpointEnqueue { id } => session::enqueue(&id),
-        Cmd::CheckpointMark { id } => session::mark_current(id.as_deref()),
-        Cmd::CheckpointClear => run_checkpoint_clear(),
+        Cmd::CheckpointMark { id, max_seq } => session::mark_current(id.as_deref(), max_seq),
+        Cmd::CheckpointClear { confirm } => run_checkpoint_clear(confirm),
     }
 }
 
@@ -478,7 +506,7 @@ fn run_init(claude_md: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_ingest(paths: Vec<PathBuf>, sweep: bool, quiet: bool) -> ExitCode {
+fn run_ingest(paths: Vec<PathBuf>, sweep: bool, quiet: bool, require_complete: bool) -> ExitCode {
     let conn = match db::connect() {
         Ok(c) => c,
         Err(e) => {
@@ -487,14 +515,18 @@ fn run_ingest(paths: Vec<PathBuf>, sweep: bool, quiet: bool) -> ExitCode {
         }
     };
     if sweep {
-        match ingest::sweep(&conn, &paths::projects_dir()) {
-            Ok((files, ingested, inserted)) => {
+        match ingest::sweep(&conn, &paths::projects_dir(), require_complete) {
+            Ok((files, ingested, inserted, complete)) => {
                 if !quiet {
                     println!(
                         "[subrosa] sweep: {files} transcripts, {ingested} changed, +{inserted} turns"
                     );
                 }
-                ExitCode::SUCCESS
+                if require_complete && !complete {
+                    ExitCode::FAILURE
+                } else {
+                    ExitCode::SUCCESS
+                }
             }
             Err(e) => {
                 eprintln!("[subrosa] sweep failed: {e}");
@@ -506,48 +538,76 @@ fn run_ingest(paths: Vec<PathBuf>, sweep: bool, quiet: bool) -> ExitCode {
         ExitCode::from(2)
     } else {
         let mut total = 0;
+        let mut failed = false;
         for p in &paths {
-            match ingest::ingest_file(&conn, p) {
-                Ok((inserted, scanned)) => {
-                    total += inserted;
+            let result = if !p.is_file() {
+                Err("path does not exist or is not a regular file".to_string())
+            } else {
+                ingest::ingest_file_report(&conn, p, require_complete).map_err(|e| e.to_string())
+            };
+            match result {
+                Ok(report) => {
+                    total += report.inserted;
                     if !quiet {
                         println!(
-                            "[subrosa] {}: +{inserted} turns ({scanned} records scanned)",
-                            p.display()
+                            "[subrosa] {}: +{} turns ({} records scanned, {} lines skipped, partial tail: {})",
+                            p.display(), report.inserted, report.scanned, report.skipped, report.partial_tail
                         );
                     }
+                    if require_complete && (report.skipped > 0 || report.partial_tail) {
+                        failed = true;
+                    }
                 }
-                Err(e) => eprintln!("[subrosa] {}: {e}", p.display()),
+                Err(e) => {
+                    failed = true;
+                    eprintln!("[subrosa] {}: {e}", p.display());
+                }
             }
         }
         if !quiet && paths.len() > 1 {
             println!("[subrosa] total +{total} turns");
         }
-        ExitCode::SUCCESS
+        if failed {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        }
     }
 }
 
 /// Print the queue, deduped by session id (a session can fire SessionEnd more than once).
 fn run_pending() -> ExitCode {
-    let text = match paths::read_control_file(&paths::pending_log(), paths::CONTROL_FILE_MAX) {
-        Ok(Some(t)) => t,
-        Ok(None) => return ExitCode::SUCCESS, // no queue file = empty queue
-        // Never a silent empty queue: that reads as "nothing to check point"
-        // exactly when something is wrong with the file holding the backlog.
+    let conn = match db::connect_queue_readonly() {
+        Ok(conn) => conn,
+        Err(_) if !paths::db_path().try_exists().unwrap_or(true) => return ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("[subrosa] cannot read the checkpoint queue: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let mut seen = std::collections::HashSet::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
+    let mut stmt = match conn
+        .prepare("SELECT enqueued_at, session_id FROM checkpoint_queue ORDER BY enqueue_seq DESC")
+    {
+        Ok(stmt) => stmt,
+        Err(e) => {
+            eprintln!("[subrosa] cannot read the checkpoint queue: {e}");
+            return ExitCode::FAILURE;
         }
-        let sid = ingest::queue_sid(line);
-        if seen.insert(sid.to_string()) {
-            println!("{line}");
+    };
+    let rows = match stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+        Ok(rows) => rows,
+        Err(e) => {
+            eprintln!("[subrosa] cannot read the checkpoint queue: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    for row in rows {
+        match row {
+            Ok((at, sid)) => println!("{at}\t{sid}"),
+            Err(e) => {
+                eprintln!("[subrosa] cannot read the checkpoint queue: {e}");
+                return ExitCode::FAILURE;
+            }
         }
     }
     ExitCode::SUCCESS
@@ -567,30 +627,51 @@ fn restore_sigpipe() {
 #[cfg(not(unix))]
 fn restore_sigpipe() {}
 
-fn run_checkpoint_clear() -> ExitCode {
-    let pending = paths::pending_log();
-    let text = match paths::read_control_file(&pending, paths::CONTROL_FILE_MAX) {
-        Ok(Some(t)) => t,
-        Ok(None) => {
-            println!("[subrosa] queue empty");
-            return ExitCode::SUCCESS;
+fn run_checkpoint_clear(confirm: bool) -> ExitCode {
+    let conn = match db::connect() {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!("[subrosa] cannot open DB: {e}");
+            return ExitCode::FAILURE;
         }
-        // Clearing a queue we could not read would throw away a backlog
-        // without ever showing what was in it.
+    };
+    if !confirm {
+        let n: i64 = match conn.query_row("SELECT count(*) FROM checkpoint_queue", [], |r| r.get(0))
+        {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("[subrosa] cannot read the checkpoint queue: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        eprintln!("[subrosa] refusing to clear {n} queued session(s): the queue lists sessions whose facts were never saved; use checkpoint-drop <id> for one session");
+        return ExitCode::FAILURE;
+    }
+    let tx = match conn.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(e) => {
+            eprintln!("[subrosa] cannot start queue clear: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let n: i64 = match tx.query_row("SELECT count(*) FROM checkpoint_queue", [], |r| r.get(0)) {
+        Ok(n) => n,
         Err(e) => {
             eprintln!("[subrosa] cannot read the checkpoint queue: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let n = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(ingest::queue_sid)
-        .collect::<std::collections::HashSet<_>>()
-        .len();
-    if let Err(e) = std::fs::write(&pending, "") {
+    if n > 0 {
+        eprintln!("[subrosa] refusing to clear {n} queued session(s) that still need per-session verification; use checkpoint-drop <id>");
+        return ExitCode::FAILURE;
+    }
+    // Clearing only drops pending work. It must not acknowledge turns that no one distilled.
+    if let Err(e) = tx.execute("DELETE FROM checkpoint_queue", []) {
         eprintln!("[subrosa] cannot clear queue: {e}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(e) = tx.commit() {
+        eprintln!("[subrosa] cannot commit queue clear: {e}");
         return ExitCode::FAILURE;
     }
     println!("[subrosa] cleared {n} queued session(s)");

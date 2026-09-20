@@ -50,14 +50,14 @@ pub fn claude_md() -> PathBuf {
     })
 }
 
+pub fn hook_log() -> PathBuf {
+    mem_dir().join("hook.log")
+}
+
 pub fn pending_log() -> PathBuf {
     env_path("SUBROSA_PENDING_LOG", || {
         mem_dir().join("pending-checkpoint.log")
     })
-}
-
-pub fn hook_log() -> PathBuf {
-    mem_dir().join("hook.log")
 }
 
 /// Recall dedup state: which source sessions were already injected into a

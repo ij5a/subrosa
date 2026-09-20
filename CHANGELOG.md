@@ -4,6 +4,18 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0] - 2026-09-20
+
+### Changed
+
+- SessionEnd starts a detached archival worker and returns immediately. The worker archives the transcript, queues it in SQLite, retries ordinary lock contention for a bounded time, and takes the throttled backup. Sweep recovers a missed worker.
+- The schema is now version 7. New databases do not have the obsolete `file_head` and `prefix_hash` columns. Existing databases keep them, but the code no longer uses them. Strict ingest reads the file from offset 0, refuses rewrites, and keeps archived rows and the queue entry unchanged. It also refuses a file that is shorter than the stored file. Normal ingest rereads a shorter file from the start.
+- The completion watermark, `checkpointed_seq`, only moves forward.
+- Checkpoint decisions now read the live maximum turn sequence instead of the cached `sessions.last_seq`.
+- Strict `subrosa ingest --require-complete` detects a rewritten transcript, refuses it, keeps archived rows, and leaves the session queued. Normal ingest can miss an edit that preserves the file size and timestamp or archive rows deleted by hand. The checkpoint procedure runs the strict check before dropping a queue entry, so run `subrosa ingest --require-complete` before checkpointing and use the documented state reset when repairing an archive.
+- Checkpoint backlog processing no longer has an unbounded branch drop: each completed session is dropped with its distilled sequence boundary, so later turns stay queued.
+- `checkpoint-clear` requires `--confirm` and refuses to clear a queue that still needs per-session verification; use `checkpoint-drop` for verified individual entries.
+
 ## [0.26.0] - 2026-08-31
 
 ### Added
@@ -291,6 +303,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Initial release: Rust memory engine, local SQLite FTS5 transcript archive, Claude Code plugin wiring, plugin binary bootstrap, install script, release automation, and CI.
 
+[0.27.0]: https://github.com/ij5a/subrosa/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/ij5a/subrosa/compare/v0.25.1...v0.26.0
 [0.25.1]: https://github.com/ij5a/subrosa/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/ij5a/subrosa/compare/v0.24.0...v0.25.0
