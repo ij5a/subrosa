@@ -4,6 +4,13 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.1] - 2026-09-21
+
+### Fixed
+
+- The sweep no longer queues every past session. It queues a session only when that session's transcript changed, so an existing archive does not fill the queue. A v0.27.0 user may already have a large queue and can clear unwanted entries with `subrosa checkpoint-drop <id> --max-seq=-1`.
+- The sweep log now reports how many transcripts actually changed. It previously printed the total file count under the word "changed".
+
 ## [0.27.0] - 2026-09-20
 
 ### Changed
@@ -304,6 +311,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial release: Rust memory engine, local SQLite FTS5 transcript archive, Claude Code plugin wiring, plugin binary bootstrap, install script, release automation, and CI.
 
 [0.27.0]: https://github.com/ij5a/subrosa/compare/v0.26.0...v0.27.0
+[0.27.1]: https://github.com/ij5a/subrosa/compare/v0.27.0...v0.27.1
 [0.26.0]: https://github.com/ij5a/subrosa/compare/v0.25.1...v0.26.0
 [0.25.1]: https://github.com/ij5a/subrosa/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/ij5a/subrosa/compare/v0.24.0...v0.25.0
