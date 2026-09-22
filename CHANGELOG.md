@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Opt-in `subrosa distill --auto` starts from the SessionEnd worker when `distill=` is configured; it is off by default and needs `ANTHROPIC_API_KEY` because the child runs with `--bare`.
+- Opt-in `subrosa distill --auto` starts from the SessionEnd worker when `distill=` is configured; it is off by default and needs `ANTHROPIC_API_KEY` because the child runs with `--bare`; file tools are limited to the memory folder.
 - The worker processes up to 3 sessions per run, with a $1 budget and 40-turn cap, and proves leaf hashes before dropping a queue row.
 
 ### Changed

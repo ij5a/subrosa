@@ -227,7 +227,11 @@ fn distill_one(program: &std::path::Path, sid: &str) -> Result<(), Box<dyn std::
             "--max-budget-usd",
             "1",
             "--allowedTools",
-            "Read,Write,Edit,Bash(subrosa session *),Bash(subrosa search *),Bash(subrosa fact *),Bash(subrosa generate *)",
+            &format!(
+                "Read(//{}/**),Edit(//{}/**),Bash(subrosa session *),Bash(subrosa search *),Bash(subrosa fact *),Bash(subrosa generate *)",
+                memdir.display().to_string().trim_start_matches('/'),
+                memdir.display().to_string().trim_start_matches('/')
+            ),
             "--",
             &prompt,
         ])
@@ -386,6 +390,20 @@ mod tests {
         let memdir = root.join("memory");
         fs::create_dir_all(&memdir).unwrap();
         (conn, memdir)
+    }
+
+    #[test]
+    fn allowed_tools_scope_file_access_to_memdir() {
+        let memdir = std::path::Path::new("/Users/test/memory");
+        let allowed = format!(
+            "Read(//{}/**),Edit(//{}/**),Bash(subrosa session *),Bash(subrosa search *),Bash(subrosa fact *),Bash(subrosa generate *)",
+            memdir.display().to_string().trim_start_matches('/'),
+            memdir.display().to_string().trim_start_matches('/')
+        );
+        assert!(allowed.starts_with("Read(//Users/test/memory/**),Edit(//Users/test/memory/**),"));
+        assert!(!allowed
+            .split(',')
+            .any(|rule| matches!(rule, "Read" | "Write" | "Edit")));
     }
 
     #[test]
