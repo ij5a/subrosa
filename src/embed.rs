@@ -482,7 +482,7 @@ pub fn spawn_if_due() {
 /// hooks ran in, and a child outside that group survives it, reparents to init
 /// and finishes the index. Claude Code caps a hook at 120s, so the work cannot
 /// live inside the hook.
-fn detach(argv: &[&OsStr]) -> std::io::Result<()> {
+pub(crate) fn detach(argv: &[&OsStr]) -> std::io::Result<()> {
     let mut cmd = Command::new(argv[0]);
     cmd.args(&argv[1..])
         .stdin(std::process::Stdio::null())

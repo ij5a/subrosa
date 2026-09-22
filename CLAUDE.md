@@ -7,7 +7,7 @@ Rust CLI and Claude Code plugin for persistent local memory. Read before changin
 `subrosa` is one binary. `.claude-plugin/` and `hooks/hooks.json` connect SessionStart, SessionEnd, UserPromptSubmit, PreCompact, and Stop to `hooks/run.sh`, which finds or bootstraps it and runs `subrosa hook <event>`.
 
 - SessionStart catch-up-ingests changed transcripts and prints the checkpoint nudge.
-- SessionEnd starts a detached worker that archives, queues, retries SQLite contention for a bounded time, and backs up. The hook returns immediately. Sweep recovers a missed worker.
+- SessionEnd starts a detached worker that archives, queues, retries SQLite contention for a bounded time, optionally drains up to 3 checkpoints, and backs up. The hook returns immediately. Sweep recovers a missed worker.
 - SessionStart and SessionEnd start detached `embed --auto`.
 - UserPromptSubmit injects past-session hits and repeats backlog directives.
 - PreCompact archives before compaction and resets deduplication.
@@ -40,6 +40,7 @@ Rust CLI and Claude Code plugin for persistent local memory. Read before changin
 | `crypt.rs` | Encrypted mirror snapshots with XChaCha20-Poly1305 and argon2id. It also implements `subrosa restore`. |
 | `setup.rs` | Interactive first-run config for a mirror folder and optional mirror passphrase |
 | `embed.rs` | CPU `bge-small-en-v1.5` model, pinned revision, one-time system-`curl` download, per-file sha256 checks on download, pinned-size checks later, CLS pooling, cosine normalization, and shared `Embedder`. `embed(&self)` is Send+Sync, so workers share one loaded model. It also owns `spawn_if_due`, `embed.lock`, and `embed.state`. |
+| `distill.rs` | Opt-in detached checkpoint worker, its run lock and retry state, muted child session ids, and prove-before-drop queue completion. |
 | `wordpiece.rs` | Hand-rolled BERT WordPiece tokenizer over `vocab.txt`. The project leaves out `tokenizers` because it builds C oniguruma. |
 | `hook.rs` | Hook entrypoints. They read JSON from stdin, log to a file, always exit 0, and start the detached indexer at SessionStart and SessionEnd. |
 
@@ -47,11 +48,11 @@ Rust CLI and Claude Code plugin for persistent local memory. Read before changin
 
 - **Schema and output formats are compatibility-critical.** Archives must work across versions. Golden tests pin stored text, session dumps, `MEMORY.md`, recall, related, fact links, and session listings byte for byte. A failing golden test needs a deliberate format decision. Never update one only to silence failure.
   - Schema changes are additive through `migrate()`. v3 adds `session_tags` and backfill. v4 adds `scan_offset` and `scan_seq`. v5 imports the old queue once. v6 adds the queue ordering column.
-- **Hooks never fail or block.** They log to `$SUBROSA_DIR/hook.log` and exit 0. SessionEnd hands archive and queue writes to a detached worker. Stdout carries only the nudge, backlog directive, and recall hits. Never print errors or spawn `claude`, which recurses.
+- **Hooks never fail or block.** They log to `$SUBROSA_DIR/hook.log` and exit 0. SessionEnd hands archive, queue writes, and optional distill spawning to detached workers. Stdout carries only the nudge, backlog directive, and recall hits. Hooks never spawn Claude; the detached distill worker may, only with `--bare` and a muted session id.
 - **Checkpoint completion is monotonic.** `checkpointed_seq` only moves forward. `checkpoint-clear --confirm` refuses a queue that still needs per-session verification. `checkpoint-drop` without `--max-seq` uses the distilled watermark as its boundary; pass `--max-seq` to acknowledge a verified prefix explicitly.
 - **The live database never goes in a synced folder.** Sync can corrupt SQLite WAL and SHM sidecars. Only static snapshots may mirror. Do not move the live database.
 - **An intended encrypted mirror never becomes plaintext.** Intent starts when a passphrase resolves, even with an error, or when `subrosa-latest.db.enc` exists. Later failure skips the mirror and leaves it stale. It never falls back. Clear the plaintext twin before bailout. Disable encryption by deleting `.enc`; missing config must not do it.
-- **The binary has no network path except the model download child.** The one-time download uses system `curl`, a pinned revision, and sha256 checks. Nothing else reaches the network or uploads text. Hooks never download or embed. SessionStart and SessionEnd spawn `embed --auto` in a detached process group with null stdio and no wait. Claude Code kills hooks at 120 seconds; a first backfill takes minutes.
+- **The binary has no network path except the model download child and the opt-in distill child.** The one-time download uses system `curl`, a pinned revision, and sha256 checks. The distill child sends redacted transcript text to Anthropic, so `distill` is unset and off by default. Hooks never download, embed, or distill. SessionStart and SessionEnd spawn background work in detached process groups with null stdio and no wait.
   - `semantic=off` or `SUBROSA_SEMANTIC=off` stops spawn and download. Other values keep the feature on. `ensure_model` refuses before `curl`. A disk model may load. An unreadable config counts as off.
   - A failed run writes `embed.state`. The next spawn waits for its retry window; an offline machine does not retry every session.
   - Embedding runs in-process on the CPU. `subrosa embed` and `search --semantic` construct `Embedder` directly. Plain search constructs it only after an eligible exact miss. Recall, hooks, and ingest keep their startup cost. `--semantic` fails instead of falling back.

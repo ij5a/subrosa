@@ -20,8 +20,8 @@ Prompt recall is keyword-only. It adds up to 3 relevant snippets when the match 
 
 - Saving uses plain-text parsing. It makes no model call and uses 0 model tokens.
 - The project has 11 direct crates and one static binary of about 5 MB. SessionEnd starts a short-lived detached archival worker.
-- The binary opens no sockets. A system `curl` child makes the one-time model download.
-- Nothing you type, save, or search is uploaded. Secret shapes are masked before storage.
+- The binary opens no sockets by default. A system `curl` child makes the one-time model download. Optional automatic checkpointing runs a configured Claude child and sends redacted transcript text to Anthropic.
+- Nothing you type, save, or search is uploaded unless you explicitly opt in to automatic checkpointing. Secret shapes are masked before storage.
 - Recall adds about 180 estimated tokens on a strong match in the benchmark fixture. The estimate divides response bytes by 3.8; it is not a runtime cap. `MEMORY.md` uses at most 23 KB by default.
 - Keyword hits take about 5 to 11 ms over 50,000 turns. A semantic fallback scans indexed turns linearly, so a miss gets slower as the index grows.
 
@@ -142,6 +142,18 @@ subrosa setup                            # choose the backup mirror
 3. The note repeats on each prompt until the queue clears. Set `checkpoint_nudge=quiet` or `off` to change the reminder.
 4. Run `/subrosa:checkpoint-backlog` to save durable facts from queued sessions. Run `/subrosa:checkpoint` before `/clear` or `/compact` to save the live session.
 5. `subrosa generate` builds `MEMORY.md` under a byte budget. Pinned facts and feedback win when space is limited. Other facts stay searchable in the archive.
+
+### Optional automatic checkpointing
+
+Automatic draining is off unless the config contains an executable path:
+
+```sh
+printf 'distill=/absolute/path/to/claude\n' >> ~/.claude/subrosa/config
+```
+
+The child uses `--bare`, so it does not use a Claude subscription login; set `ANTHROPIC_API_KEY` in its environment.
+
+SessionEnd then starts `subrosa distill --auto`, up to 3 queued sessions per run. Each child uses `--bare`, `--model sonnet`, 40 turns, and a $1 budget. The worker compares leaf hashes and registered fact rows before dropping a queue row; a verified no-op also needs no changed leaf, the exact `SESSION_TOTAL: saved 0, updated 0` line, and an unchanged `max(seq)`. Set `SUBROSA_DISTILL=off` to disable it.
 
 ## Make Claude use the archive itself
 

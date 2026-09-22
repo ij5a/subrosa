@@ -699,3 +699,64 @@ pub fn enqueue_checkpoint(conn: &Connection, sid: &str) -> Result<&'static str, 
     tx.commit()?;
     Ok(if inserted == 0 { "duplicate" } else { "queued" })
 }
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn max_watermark_survives_ingest_and_sweep() {
+        let _env = crate::paths::test_env_lock();
+        let root = std::env::temp_dir().join(format!("subrosa-mute-{}", std::process::id()));
+        let project = root.join("-tmp-demo");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&project).unwrap();
+        let path = project.join("muted.jsonl");
+        std::fs::write(&path, r#"{"type":"user","timestamp":"2026-01-01T00:00:00Z","uuid":"m1","cwd":"/tmp/demo","message":{"role":"user","content":"mute"}}
+"#).unwrap();
+        let db = root.join("memory.db");
+        std::env::set_var("SUBROSA_DIR", &root);
+        std::env::set_var("SUBROSA_DB", &db);
+        let conn = crate::db::connect().unwrap();
+        ingest_file(&conn, &path).unwrap();
+        conn.execute(
+            "UPDATE sessions SET checkpointed_seq=9223372036854775807 WHERE session_id='muted'",
+            [],
+        )
+        .unwrap();
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(r#"{"type":"user","timestamp":"2026-01-01T00:00:01Z","uuid":"m2","cwd":"/tmp/demo","message":{"role":"user","content":"grown"}}"#.as_bytes()).unwrap();
+        file.write_all(b"\n").unwrap();
+        sweep(&conn, &root, false).unwrap();
+        let max_seq: i64 = conn
+            .query_row(
+                "SELECT max(seq) FROM turns WHERE session_id='muted'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(max_seq > 0);
+        assert_eq!(enqueue_checkpoint(&conn, "muted").unwrap(), "unchanged");
+        let queued: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM checkpoint_queue WHERE session_id='muted'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mark: i64 = conn
+            .query_row(
+                "SELECT checkpointed_seq FROM sessions WHERE session_id='muted'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued, 0);
+        assert_eq!(mark, i64::MAX);
+        std::env::remove_var("SUBROSA_DB");
+        std::env::remove_var("SUBROSA_DIR");
+        let _ = std::fs::remove_dir_all(root);
+    }
+}

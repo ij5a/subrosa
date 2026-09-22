@@ -1,6 +1,7 @@
 mod backup;
 mod crypt;
 mod db;
+mod distill;
 mod embed;
 mod facts;
 mod generate;
@@ -144,6 +145,12 @@ enum Cmd {
         /// The background run subrosa starts for itself: silent, low priority,
         /// gives up if another run is going
         #[arg(long, hide = true)]
+        auto: bool,
+    },
+    /// Automatically distill queued sessions when enabled by config
+    Distill {
+        /// Run the detached-style worker
+        #[arg(long)]
         auto: bool,
     },
     /// Find terms and sessions that co-occur with an identifier across the archive
@@ -384,6 +391,7 @@ fn main() -> ExitCode {
             semantic,
         ),
         Cmd::Embed { rebuild, auto } => search::embed_backfill(rebuild, auto),
+        Cmd::Distill { auto } => distill::run(auto),
         Cmd::Related {
             identifier,
             limit,

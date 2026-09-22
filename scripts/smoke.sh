@@ -21,7 +21,17 @@ export SUBROSA_PROJECTS_DIR="$ROOT/projects"
 export SUBROSA_SEMANTIC=off
 # Start from a clean mirror config so a developer's own env can't skew the run.
 unset SUBROSA_MIRROR SUBROSA_MIRROR_PASSPHRASE SUBROSA_DB 2>/dev/null || true
+unset SUBROSA_DISTILL 2>/dev/null || true
 mkdir -p "$SUBROSA_PROJECTS_DIR/-tmp-demo"
+mkdir -p "$SUBROSA_DIR"
+
+# Automatic checkpointing is opt-in. With an explicit fake command, the worker
+# must still stay off when the override says off, even when the queue is non-empty.
+DISTILL_MARKER="$ROOT/distill-ran"
+DISTILL_FAKE="$ROOT/fake-distill"
+printf '#!/bin/sh\ntouch "%s"\n' "$DISTILL_MARKER" > "$DISTILL_FAKE"
+chmod 700 "$DISTILL_FAKE"
+printf 'distill=%s\n' "$DISTILL_FAKE" > "$SUBROSA_DIR/config"
 
 fail() { echo "SMOKE FAIL: $1" >&2; exit 1; }
 
@@ -42,6 +52,9 @@ T="$SUBROSA_PROJECTS_DIR/-tmp-demo/smoke.jsonl"
 
 "$BIN" init >/dev/null
 "$BIN" ingest "$T" >/dev/null
+"$BIN" checkpoint-enqueue smoke >/dev/null
+SUBROSA_DISTILL=off "$BIN" distill --auto >/dev/null
+[ ! -e "$DISTILL_MARKER" ] || fail "distill ran while opted out"
 
 DUMP="$("$BIN" session smoke)"
 [ -n "$DUMP" ] || fail "session dump empty — ingest or session lookup broke"
@@ -120,11 +133,13 @@ rmdir "$MD/.budget"
 echo "smoke: budget override ok"
 
 # --- hooks always exit 0 ---
-printf '{"prompt":"ping xyzzycontrol","cwd":"/tmp/demo","session_id":"smoke"}\n' | "$BIN" hook user-prompt-submit >/dev/null || fail "user-prompt-submit hook exited non-zero"
-printf '{"transcript_path":"%s","session_id":"smoke"}\n' "$T" | "$BIN" hook stop >/dev/null || fail "stop hook exited non-zero"
-printf '{"transcript_path":"%s","session_id":"smoke"}\n' "$T" | "$BIN" hook session-end >/dev/null || fail "session-end hook exited non-zero"
+printf '{"prompt":"ping xyzzycontrol","cwd":"/tmp/demo","session_id":"smoke-live"}\n' | "$BIN" hook user-prompt-submit >/dev/null || fail "user-prompt-submit hook exited non-zero"
+LIVE_T="$SUBROSA_PROJECTS_DIR/-tmp-demo/smoke-live.jsonl"
+cp "$T" "$LIVE_T"
+printf '{"transcript_path":"%s","session_id":"smoke-live"}\n' "$LIVE_T" | "$BIN" hook stop >/dev/null || fail "stop hook exited non-zero"
+printf '{"transcript_path":"%s","session_id":"smoke-live"}\n' "$LIVE_T" | "$BIN" hook session-end >/dev/null || fail "session-end hook exited non-zero"
 deadline=$(($(date +%s) + 10))
-while ! "$BIN" pending | grep -q smoke; do
+while ! "$BIN" pending | grep -q smoke-live; do
   [ "$(date +%s)" -lt "$deadline" ] || fail "session-end worker did not queue smoke within 10 seconds"
   sleep 0.05
 done

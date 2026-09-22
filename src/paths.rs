@@ -271,6 +271,26 @@ pub fn config_set(key: &str, value: &str) -> std::io::Result<()> {
     write_control_file(&path, &(lines.join("\n") + "\n"))
 }
 
+/// A configured executable opts the worker in; absent, empty, or `off` opts it out.
+pub fn distill_path() -> Result<Option<PathBuf>, String> {
+    let raw = if let Ok(v) = std::env::var("SUBROSA_DISTILL") {
+        Some(v)
+    } else {
+        config_get("distill")
+            .map_err(|e| format!("cannot read {}: {e}", config_path().display()))?
+    };
+    let Some(raw) = raw else { return Ok(None) };
+    let value = raw.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("off") {
+        return Ok(None);
+    }
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err(format!("distill path must be absolute: {value}"));
+    }
+    Ok(Some(path))
+}
+
 /// Create a file that must not exist yet, owner-only from the start.
 /// `create_new` closes the check-then-write race an `exists()` test leaves open.
 #[cfg(unix)]
@@ -440,6 +460,19 @@ pub fn semantic_mode() -> Result<String, String> {
 /// finishes deletes it.
 pub fn embed_state_path() -> PathBuf {
     mem_dir().join("embed.state")
+}
+
+pub fn distill_state_path() -> PathBuf {
+    mem_dir().join("distill.state")
+}
+
+#[cfg(test)]
+pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 #[cfg(test)]

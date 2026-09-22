@@ -529,19 +529,6 @@ pub fn now_iso() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
     // The pre-v2 shape of the turns side: unstemmed FTS plus the insert trigger.
     const V1_DDL: &str = r#"
 CREATE TABLE turns (
@@ -572,7 +559,7 @@ END;
 
     #[test]
     fn migrate_rebuilds_fts_with_porter() {
-        let _guard = lock_env();
+        let _guard = crate::paths::test_env_lock();
         let p = std::env::temp_dir().join(format!("subrosa-mig-{}.db", std::process::id()));
         let _ = fs::remove_file(&p);
         let mut conn = Connection::open(&p).unwrap();
@@ -622,7 +609,7 @@ END;
 
     #[test]
     fn newer_schema_is_not_downgraded() {
-        let _guard = lock_env();
+        let _guard = crate::paths::test_env_lock();
         let p = std::env::temp_dir().join(format!("subrosa-newer-{}.db", std::process::id()));
         let _ = fs::remove_file(&p);
         let conn = Connection::open(&p).unwrap();
@@ -652,7 +639,7 @@ END;
 
     #[test]
     fn migrate_v3_backfills_session_tags() {
-        let _guard = lock_env();
+        let _guard = crate::paths::test_env_lock();
         let p = std::env::temp_dir().join(format!("subrosa-tagmig-{}.db", std::process::id()));
         let _ = fs::remove_file(&p);
         let mut conn = Connection::open(&p).unwrap();
@@ -711,7 +698,7 @@ END;
 
     #[test]
     fn trigram_index_substring_matches_and_stays_synced() {
-        let _guard = lock_env();
+        let _guard = crate::paths::test_env_lock();
         let p = std::env::temp_dir().join(format!("subrosa-tri-{}.db", std::process::id()));
         let _ = fs::remove_file(&p);
         let mut conn = Connection::open(&p).unwrap();
@@ -780,7 +767,7 @@ END;
     /// Only the first call writes at all; once the table is there it's a read.
     #[test]
     fn creating_the_embeddings_table_waits_for_a_writer_instead_of_failing() {
-        let _guard = lock_env();
+        let _guard = crate::paths::test_env_lock();
         let p = std::env::temp_dir().join(format!("subrosa-emb-busy-{}.db", std::process::id()));
         for suffix in ["", "-wal", "-shm"] {
             let _ = fs::remove_file(format!("{}{suffix}", p.display()));

@@ -2,8 +2,9 @@
 //! stdin, do the work, log to the data dir, and always exit 0 so a memory
 //! problem can never block a session. Stdout is reserved for intentional
 //! context injection (session-start nudge, the per-prompt checkpoint-backlog
-//! directive, recall hits); errors go to the log, never the session. Never
-//! spawns `claude` (recursion).
+//! directive, recall hits); errors go to the log, never the session. Hooks
+//! never spawn Claude; the detached distill worker may, only with `--bare` and
+//! a muted session id.
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -60,6 +61,7 @@ fn session_end_write(
         Ok(None) => {}
         Err(e) => log(&format!("session-end backup error: {e}")),
     }
+    crate::distill::spawn_if_due();
     Ok(())
 }
 
@@ -177,7 +179,7 @@ fn nudge_lines(input: &Value) -> Vec<String> {
                 ));
                 out.push(
                     "[subrosa] Run the /subrosa:checkpoint-backlog skill to do it (in-session; \
-                     nothing auto-runs, no daemon). It distills each queued session into that \
+                     nothing auto-runs unless `distill` is configured). It distills each queued session into that \
                      project's memory, and clears each one as it finishes."
                         .to_string(),
                 );

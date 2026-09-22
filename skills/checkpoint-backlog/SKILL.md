@@ -5,7 +5,7 @@ description: Check ended Claude Code sessions in subrosa's queue. Read the SQLit
 
 # checkpoint-backlog: checkpoint queued sessions
 
-When a session ends, `SessionEnd` adds it to the database queue. Older versions used `~/.claude/subrosa/pending-checkpoint.log`. This skill processes the queue **in-session**. It uses no background daemon or headless `claude` run. It applies the checkpoint skill to each *past* session.
+When a session ends, `SessionEnd` adds it to the database queue. Older versions used `~/.claude/subrosa/pending-checkpoint.log`. The queue may drain automatically when `distill` is configured; this skill processes anything still queued **in-session**. It applies the checkpoint skill to each *past* session.
 
 Follow the checkpoint skill's 4 types, rules, exclusions, and `subrosa fact upsert` to `subrosa generate` flow. Read `${CLAUDE_PLUGIN_ROOT}/skills/checkpoint/SKILL.md`. Apply these overrides.
 
