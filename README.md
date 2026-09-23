@@ -153,7 +153,7 @@ printf 'distill=/absolute/path/to/claude\n' >> ~/.claude/subrosa/config
 
 The child uses `--bare`, so it does not use a Claude subscription login; set `ANTHROPIC_API_KEY` in its environment.
 
-SessionEnd then starts `subrosa distill --auto`, up to 3 queued sessions per run. Each child uses `--bare`, `--model sonnet`, 40 turns, and a $1 budget. The worker compares leaf hashes and registered fact rows before dropping a queue row; a verified no-op also needs no changed leaf, the exact `SESSION_TOTAL: saved 0, updated 0` line, and an unchanged `max(seq)`. Set `SUBROSA_DISTILL=off` to disable it.
+SessionEnd then starts `subrosa distill --auto`, up to 3 queued sessions per run. Each child uses `--bare`, `--model sonnet`, 40 turns, and a $1 budget. The worker compares leaf hashes and registered fact rows before dropping a queue row; a verified no-op also needs no changed leaf, no deleted leaf, an exact `SESSION_TOTAL: saved 0, updated <digits>` line, and an unchanged `max(seq)`. Set `SUBROSA_DISTILL=off` to disable it.
 
 ## Make Claude use the archive itself
 

@@ -350,11 +350,16 @@ fn prove(
         return Err(Deferred("session grew during distill").into());
     }
     if changed.is_empty() {
+        if before.keys().any(|name| !after.contains_key(name)) {
+            return Ok(Proof::Rejected("leaf deleted during distill".into()));
+        }
         return Ok(
-            if stdout
-                .lines()
-                .any(|line| line == "SESSION_TOTAL: saved 0, updated 0")
-            {
+            if stdout.lines().any(|line| {
+                line.strip_prefix("SESSION_TOTAL: saved 0, updated ")
+                    .is_some_and(|count| {
+                        !count.is_empty() && count.bytes().all(|b| b.is_ascii_digit())
+                    })
+            }) {
                 Proof::NoOp
             } else {
                 Proof::Rejected("missing exact no-op report".into())
@@ -535,6 +540,42 @@ mod tests {
             .unwrap(),
             Proof::NoOp
         );
+        assert_eq!(
+            prove(
+                &conn,
+                "project",
+                "sid",
+                &memdir,
+                &BTreeMap::new(),
+                "2025-01-01",
+                "9999-01-01",
+                "SESSION_TOTAL: saved 0, updated 1",
+                1
+            )
+            .unwrap(),
+            Proof::NoOp
+        );
+        for report in [
+            "SESSION_TOTAL: saved 1, updated 0",
+            "SESSION_TOTAL: saved 0, updated ",
+            "SESSION_TOTAL: saved 0, updated 1x",
+        ] {
+            assert!(matches!(
+                prove(
+                    &conn,
+                    "project",
+                    "sid",
+                    &memdir,
+                    &BTreeMap::new(),
+                    "2025-01-01",
+                    "9999-01-01",
+                    report,
+                    1
+                )
+                .unwrap(),
+                Proof::Rejected(_)
+            ));
+        }
         assert!(matches!(
             prove(
                 &conn,
@@ -583,6 +624,28 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.downcast_ref::<Deferred>().is_some());
+    }
+
+    #[test]
+    fn deleted_leaf_is_rejected_as_noop() {
+        let (conn, memdir) = proof_db();
+        let mut before = BTreeMap::new();
+        before.insert("deleted.md".into(), [0; 32]);
+        assert!(matches!(
+            prove(
+                &conn,
+                "project",
+                "sid",
+                &memdir,
+                &before,
+                "2025-01-01",
+                "9999-01-01",
+                "SESSION_TOTAL: saved 0, updated 1",
+                1
+            )
+            .unwrap(),
+            Proof::Rejected(message) if message == "leaf deleted during distill"
+        ));
     }
 
     #[test]
