@@ -14,7 +14,7 @@ argon2 = { version = "0.5.3", default-features = false, features = ["alloc"] }
 # Pinned to 0.9: candle 0.10+ hard-depends on `tokenizers`, which pulls in
 # onig_sys (bundled C oniguruma). Check that before bumping — a guard test in
 # src/embed.rs fails if either name reappears in Cargo.lock.
-candle-core = "0.9"
+candle-core = "0.11"
 candle-nn = "0.9"
 candle-transformers = "0.9"
 chacha20poly1305 = "0.10.1"
