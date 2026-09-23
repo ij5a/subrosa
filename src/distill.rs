@@ -181,7 +181,7 @@ fn child_id() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 fn mute(conn: &Connection, sid: &str, child_id: &str) -> rusqlite::Result<i64> {
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let boundary = ingest::distilled_boundary(&tx, sid)?;
     tx.execute(
         "INSERT OR IGNORE INTO sessions(session_id, checkpointed_seq) VALUES (?, 9223372036854775807)",
@@ -410,6 +410,30 @@ mod tests {
         let memdir = root.join("memory");
         fs::create_dir_all(&memdir).unwrap();
         (conn, memdir)
+    }
+
+    #[test]
+    fn mute_waits_for_writer_lock() {
+        let (conn, _) = proof_db();
+        conn.execute_batch("PRAGMA journal_mode=WAL").unwrap();
+        let path = conn
+            .query_row("PRAGMA database_list", [], |row| row.get::<_, String>(2))
+            .unwrap();
+        let writer = Connection::open(path).unwrap();
+        writer.busy_timeout(Duration::from_secs(2)).unwrap();
+        conn.busy_timeout(Duration::from_secs(2)).unwrap();
+        writer
+            .execute_batch(
+                "BEGIN IMMEDIATE; UPDATE sessions SET last_seq=last_seq WHERE session_id='sid'",
+            )
+            .unwrap();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            writer.execute_batch("COMMIT").unwrap();
+        });
+
+        assert!(mute(&conn, "sid", "child").is_ok());
+        handle.join().unwrap();
     }
 
     #[test]
