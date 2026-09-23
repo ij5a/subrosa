@@ -845,6 +845,86 @@ fn queue_read_paths_use_the_database_queue() {
 }
 
 #[test]
+fn distill_session_start_is_quiet() {
+    let env = setup("distill-session-start");
+    fs::write(env.data.join("config"), "distill=/absolute/claude\n").unwrap();
+    let transcript = env.projects.join("-tmp-demo/queued.jsonl");
+    fs::write(
+        &transcript,
+        user_rec("2026-06-12T01:00:00Z", "u1", "queued") + "\n",
+    )
+    .unwrap();
+    run(&env, &["ingest", transcript.to_str().unwrap()], None);
+    run(&env, &["checkpoint-enqueue", "queued"], None);
+    let (out, err, ok) = run_env(
+        &env,
+        &["hook", "session-start"],
+        Some(r#"{"cwd":"/tmp/demo","session_id":"live"}"#),
+        &[("SUBROSA_DISTILL", "/absolute/claude")],
+    );
+    assert!(ok, "session-start failed: {err}");
+    assert_eq!(out, "[subrosa] Archive is updated.\n");
+}
+
+#[test]
+fn distill_session_start_suppresses_other_notices() {
+    let env = setup("distill-session-start-notices");
+    fs::write(env.data.join("config"), "distill=/absolute/claude\n").unwrap();
+    let memdir = env.projects.join("-tmp-demo").join("memory");
+    fs::create_dir_all(&memdir).unwrap();
+    fs::write(memdir.join("MEMORY.md"), "x".repeat(24_001)).unwrap();
+    let transcript = env.projects.join("-tmp-demo/queued.jsonl");
+    fs::write(
+        &transcript,
+        user_rec("2026-06-12T01:00:00Z", "u1", "queued") + "\n",
+    )
+    .unwrap();
+    run(&env, &["ingest", transcript.to_str().unwrap()], None);
+    run(&env, &["checkpoint-enqueue", "queued"], None);
+    let (disabled, err, ok) = run_env(
+        &env,
+        &["hook", "session-start"],
+        Some(r#"{"cwd":"/tmp/demo","session_id":"live-disabled"}"#),
+        &[("SUBROSA_DISTILL", "off"), ("SUBROSA_SEMANTIC", "off")],
+    );
+    assert!(ok, "disabled session-start failed: {err}");
+    assert!(
+        disabled.contains("MEMORY.md is"),
+        "notice missing: {disabled}"
+    );
+    let (out, err, ok) = run_env(
+        &env,
+        &["hook", "session-start"],
+        Some(r#"{"cwd":"/tmp/demo","session_id":"live"}"#),
+        &[("SUBROSA_DISTILL", "/absolute/claude")],
+    );
+    assert!(ok, "session-start failed: {err}");
+    assert_eq!(out, "[subrosa] Archive is updated.\n");
+}
+
+#[test]
+fn distill_user_prompt_has_no_backlog_line() {
+    let env = setup("distill-user-prompt");
+    fs::write(env.data.join("config"), "distill=/absolute/claude\n").unwrap();
+    let transcript = env.projects.join("-tmp-demo/queued.jsonl");
+    fs::write(
+        &transcript,
+        user_rec("2026-06-12T01:00:00Z", "u1", "queued") + "\n",
+    )
+    .unwrap();
+    run(&env, &["ingest", transcript.to_str().unwrap()], None);
+    run(&env, &["checkpoint-enqueue", "queued"], None);
+    let (out, err, ok) = run_env(
+        &env,
+        &["hook", "user-prompt-submit"],
+        Some(r#"{"prompt":"no recall","cwd":"/tmp/demo","session_id":"live"}"#),
+        &[("SUBROSA_DISTILL", "/absolute/claude")],
+    );
+    assert!(ok, "user-prompt-submit failed: {err}");
+    assert_eq!(out, "");
+}
+
+#[test]
 fn legacy_queue_import_runs_on_real_v4_upgrade_once() {
     let env = setup("legacy-upgrade");
     let db = env.data.join("memory.db");

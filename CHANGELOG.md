@@ -4,6 +4,13 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Hooks stay quiet when automatic distillation is enabled.
+- A growing or incomplete session stays queued without delaying the next distill run.
+
 ## [0.28.0] - 2026-09-23
 
 ### Added

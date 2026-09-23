@@ -9,7 +9,7 @@ Rust CLI and Claude Code plugin for persistent local memory. Read before changin
 - SessionStart catch-up-ingests changed transcripts and prints the checkpoint nudge.
 - SessionEnd starts a detached worker that archives, queues, retries SQLite contention for a bounded time, optionally drains up to 3 checkpoints, and backs up. The hook returns immediately. Sweep recovers a missed worker.
 - SessionStart and SessionEnd start detached `embed --auto`.
-- UserPromptSubmit injects past-session hits and repeats backlog directives.
+- UserPromptSubmit injects past-session hits and repeats backlog directives unless distill is enabled.
 - PreCompact archives before compaction and resets deduplication.
 - Stop ingests after each assistant turn from a saved byte offset. It does not enqueue or back up.
 - The live session is searchable before it ends. `subrosa fact` changes facts; `subrosa generate` writes byte-limited `MEMORY.md`.

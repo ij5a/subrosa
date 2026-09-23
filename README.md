@@ -138,8 +138,8 @@ subrosa setup                            # choose the backup mirror
 ## The memory workflow
 
 1. When a session ends, subrosa archives it and adds it to the checkpoint queue.
-2. At the next start, Claude receives an `ACTION REQUIRED` note for queued sessions. The note goes to Claude's context, not your chat window.
-3. The note repeats on each prompt until the queue clears. Set `checkpoint_nudge=quiet` or `off` to change the reminder.
+2. At the next start, Claude receives an `ACTION REQUIRED` note for queued sessions, or `[subrosa] Archive is updated.` when automatic distillation is enabled. The note goes to Claude's context, not your chat window.
+3. Without automatic distillation, the note repeats on each prompt until the queue clears; set `checkpoint_nudge=quiet` or `off` to change it.
 4. Run `/subrosa:checkpoint-backlog` to save durable facts from queued sessions. Run `/subrosa:checkpoint` before `/clear` or `/compact` to save the live session.
 5. `subrosa generate` builds `MEMORY.md` under a byte budget. Pinned facts and feedback win when space is limited. Other facts stay searchable in the archive.
 

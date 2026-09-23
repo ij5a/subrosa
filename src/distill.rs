@@ -66,9 +66,7 @@ fn run_worker() -> Result<(), Box<dyn std::error::Error>> {
     let mut failed = false;
     for sid in ids {
         if let Err(e) = distill_one(&program, &sid) {
-            failed = true;
-            crate::hook::log(&format!("distill {sid} failed: {e}"));
-            record_failure(failures, &e.to_string());
+            failed |= handle_error(&sid, e.as_ref(), failures);
         }
     }
     drop(lock);
@@ -76,6 +74,17 @@ fn run_worker() -> Result<(), Box<dyn std::error::Error>> {
         clear_failures();
     }
     Ok(())
+}
+
+fn handle_error(sid: &str, error: &(dyn std::error::Error + 'static), failures: u32) -> bool {
+    if error.downcast_ref::<Deferred>().is_some() {
+        crate::hook::log(&format!("distill {sid} deferred: {error}"));
+        false
+    } else {
+        crate::hook::log(&format!("distill {sid} failed: {error}"));
+        record_failure(failures, &error.to_string());
+        true
+    }
 }
 
 fn retry_pending() -> bool {
@@ -193,7 +202,7 @@ fn distill_one(program: &std::path::Path, sid: &str) -> Result<(), Box<dyn std::
         |r| r.get(0),
     )?;
     if incomplete != 0 {
-        return Err("session archive is incomplete".into());
+        return Err(Deferred("session archive is incomplete").into());
     }
     let start = db::now_iso();
     let memdir = conn
@@ -270,10 +279,21 @@ fn distill_one(program: &std::path::Path, sid: &str) -> Result<(), Box<dyn std::
         Proof::Rejected(reason) => return Err(reason.into()),
     };
     if !dropped {
-        return Err("finish re-check kept the session queued".into());
+        return Err(Deferred("session grew or archive remained incomplete").into());
     }
     Ok(())
 }
+
+#[derive(Debug)]
+struct Deferred(&'static str);
+
+impl std::fmt::Display for Deferred {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Deferred {}
 
 #[derive(Debug, PartialEq)]
 enum Proof {
@@ -327,7 +347,7 @@ fn prove(
         |r| r.get(0),
     )?;
     if max_seq != boundary {
-        return Ok(Proof::Rejected("session grew during distill".into()));
+        return Err(Deferred("session grew during distill").into());
     }
     if changed.is_empty() {
         return Ok(
@@ -526,21 +546,19 @@ mod tests {
             [],
         )
         .unwrap();
-        assert!(matches!(
-            prove(
-                &conn,
-                "project",
-                "sid",
-                &memdir,
-                &BTreeMap::new(),
-                "2025-01-01",
-                "9999-01-01",
-                "SESSION_TOTAL: saved 0, updated 0",
-                1
-            )
-            .unwrap(),
-            Proof::Rejected(_)
-        ));
+        let error = prove(
+            &conn,
+            "project",
+            "sid",
+            &memdir,
+            &BTreeMap::new(),
+            "2025-01-01",
+            "9999-01-01",
+            "SESSION_TOTAL: saved 0, updated 0",
+            1,
+        )
+        .unwrap_err();
+        assert!(error.downcast_ref::<Deferred>().is_some());
     }
 
     #[test]
@@ -559,6 +577,47 @@ mod tests {
         )
         .unwrap();
         assert!(!finish(&conn, "sid", 1).unwrap());
+    }
+
+    #[test]
+    fn deferred_growth_keeps_queue_without_retry_state() {
+        let _env = crate::paths::test_env_lock();
+        let root =
+            std::env::temp_dir().join(format!("subrosa-distill-test-{}", child_id().unwrap()));
+        fs::create_dir_all(&root).unwrap();
+        std::env::set_var("SUBROSA_DIR", &root);
+        let (conn, memdir) = proof_db();
+        conn.execute(
+            "INSERT INTO turns(session_id,seq,role,text) VALUES ('sid',2,'user','grown')",
+            [],
+        )
+        .unwrap();
+        assert!(!finish(&conn, "sid", 1).unwrap());
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM checkpoint_queue WHERE session_id='sid'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        let error = prove(
+            &conn,
+            "project",
+            "sid",
+            &memdir,
+            &BTreeMap::new(),
+            "2025-01-01",
+            "9999-01-01",
+            "SESSION_TOTAL: saved 0, updated 0",
+            1,
+        )
+        .unwrap_err();
+        assert!(!handle_error("sid", error.as_ref(), 1));
+        assert!(!paths::distill_state_path().exists());
+        std::env::remove_var("SUBROSA_DIR");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

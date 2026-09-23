@@ -148,6 +148,22 @@ fn queued_sessions() -> Result<Vec<String>, String> {
 /// unless there's something to act on: sessions awaiting checkpoint, or a
 /// project MEMORY.md approaching the always-loaded byte cap.
 fn nudge_lines(input: &Value) -> Vec<String> {
+    match paths::distill_path() {
+        Ok(Some(_)) => {
+            return match queued_sessions() {
+                Ok(order) if !order.is_empty() => {
+                    vec!["[subrosa] Archive is updated.".to_string()]
+                }
+                Ok(_) => Vec::new(),
+                Err(e) => {
+                    log(&format!("session-start checkpoint queue error: {e}"));
+                    Vec::new()
+                }
+            };
+        }
+        Ok(None) => {}
+        Err(e) => log(&format!("session-start distill config error: {e}")),
+    }
     let mut out = Vec::new();
     let order = match queued_sessions() {
         Ok(order) => order,
@@ -339,6 +355,11 @@ fn stop(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
 /// Prefixed "[subrosa]" so ingest's NOISE_PREFIXES drops it and it never feeds
 /// back into the archive. Honors checkpoint_nudge_mode ("off" silences it).
 fn backlog_directive() -> Option<String> {
+    match paths::distill_path() {
+        Ok(Some(_)) => return None,
+        Ok(None) => {}
+        Err(e) => log(&format!("user-prompt-submit distill config error: {e}")),
+    }
     let n = match queued_sessions() {
         Ok(order) => order.len(),
         // The queue is unreadable, so the backlog is unknown, not zero.
