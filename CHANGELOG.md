@@ -4,6 +4,14 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0] - 2026-10-01
+
+### Added
+
+- Recall can show up to 2 saved facts that did not fit in `MEMORY.md`. A fact shows only when the prompt names it clearly, with rare words, an identifier, and a title or name match. Each fact shows once per session, and again after compaction. A strong match now adds about 200 estimated tokens, up from about 180.
+- A new session or `/clear` starts with a 2-line card about the last session in the same project: its date, id, first prompt, last reply, and the `subrosa session` command for the full text. It adds about 82 estimated tokens once per session.
+- When a fact's description changes, `fact upsert` updates its index line if that line only copied the old description. A hand-written line stays, and upsert prints a note to pass `--hook`. `fact doctor` warns when a description changed since the last upsert.
+
 ## [0.28.4] - 2026-10-01
 
 ### Changed
@@ -376,6 +384,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [0.15.0]: https://github.com/ij5a/subrosa/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/ij5a/subrosa/compare/v0.14.0...v0.14.1
 [0.28.1]: https://github.com/ij5a/subrosa/compare/v0.28.0...v0.28.1
+[0.29.0]: https://github.com/ij5a/subrosa/compare/v0.28.4...v0.29.0
 [0.28.4]: https://github.com/ij5a/subrosa/compare/v0.28.3...v0.28.4
 [0.28.3]: https://github.com/ij5a/subrosa/compare/v0.28.2...v0.28.3
 [0.28.2]: https://github.com/ij5a/subrosa/compare/v0.28.1...v0.28.2
