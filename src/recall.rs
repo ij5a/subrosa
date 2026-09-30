@@ -14,6 +14,8 @@
 //! Scoped to the current project; the live session is excluded. Source
 //! sessions already injected into this live session are skipped
 //! (recall-seen.log) so a same-topic conversation doesn't re-inject them.
+//! Hidden saved facts use the same strong relevance gate and share the 3-line cap.
+//! They appear before past-session snippets and link back to their leaf files.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -24,6 +26,9 @@ use serde_json::Value;
 use crate::{db, paths, text, timeutil};
 
 const MAX_INJECT: usize = 3;
+const MAX_FACTS: usize = 2;
+const FACT_DF_MAX: usize = 5;
+const FACT_HEADER: &str = "[subrosa recall] Saved facts left out of MEMORY.md; read the linked file before relying on one:";
 // Hard cap on the rendered snippet: holds recall at the documented ~180 tokens/prompt
 // even though the snippet is now match-centered, not the turn's first 160 chars.
 const SNIPPET_CHARS: usize = 160;
@@ -211,6 +216,131 @@ struct Candidate {
     bm25: f64,
 }
 
+struct FactCandidate {
+    leaf_path: String,
+    title: String,
+    hook: String,
+    bm25: f64,
+}
+
+fn hidden_facts(
+    conn: &rusqlite::Connection,
+    fts_match: &str,
+    fts_terms: &[&String],
+    full_term_count: usize,
+    cwd: &str,
+) -> Vec<FactCandidate> {
+    if cwd.is_empty() {
+        return Vec::new();
+    }
+    // NOTE: no SQL LIMIT: rarity needs every candidate, and one project has at most 472 today.
+    let mut stmt = match conn.prepare(
+        "SELECT f.leaf_path, f.title, f.name, f.hook, f.description, bm25(facts_fts) \
+         FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid \
+         WHERE facts_fts MATCH ?1 AND f.project = ?2 AND f.status = 'active' \
+         AND f.superseded_at IS NULL ORDER BY bm25(facts_fts)",
+    ) {
+        Ok(stmt) => stmt,
+        Err(_) => return Vec::new(),
+    };
+    let rows: Vec<(String, String, String, String, String, f64)> =
+        match stmt.query_map(rusqlite::params![fts_match, db::encode_cwd(cwd)], |r| {
+            Ok((
+                r.get(0)?,
+                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                r.get(5)?,
+            ))
+        }) {
+            Ok(rows) => rows.flatten().collect(),
+            Err(_) => return Vec::new(),
+        };
+    let terms: Vec<(String, bool)> = fts_terms
+        .iter()
+        .map(|term| {
+            let term = term.trim_end_matches('.');
+            (term.to_lowercase(), text::is_identifier(term))
+        })
+        .filter(|(term, _)| !term.is_empty())
+        .fold(Vec::new(), |mut out, item| {
+            if !out.iter().any(|(term, _)| term == &item.0) {
+                out.push(item);
+            }
+            out
+        });
+    let mut candidates = Vec::new();
+    let mut df = vec![0usize; terms.len()];
+    for (leaf_path, title, name, hook, description, bm25) in rows {
+        if leaf_path.is_empty() {
+            continue;
+        }
+        let body_text = format!("{title} {hook} {description}").to_lowercase();
+        let head_text = format!("{title} {name}").to_lowercase();
+        let body = text::turn_tokens(&body_text);
+        let head: Vec<String> = text::turn_tokens(&head_text)
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let matched: Vec<usize> = terms
+            .iter()
+            .enumerate()
+            .filter(|(_, (term, _))| body.iter().any(|tok| text::token_matches_loose(tok, term)))
+            .map(|(i, _)| i)
+            .collect();
+        for i in &matched {
+            df[*i] += 1;
+        }
+        candidates.push((leaf_path, title, hook, bm25, matched, head));
+    }
+    let min_required = min_required_terms(full_term_count);
+    let memory_path = paths::projects_dir()
+        .join(db::encode_cwd(cwd))
+        .join("memory")
+        .join("MEMORY.md");
+    let memory = match paths::read_control_file(&memory_path, paths::CONTROL_FILE_MAX) {
+        Ok(Some(text)) => text
+            .lines()
+            .take(crate::generate::CC_LOAD_LINES)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Ok(None) => String::new(),
+        Err(_) => return Vec::new(),
+    };
+    let mut qualified = candidates
+        .into_iter()
+        .filter(|(leaf, _, _, _, matched, head)| {
+            let rare = matched
+                .iter()
+                .filter(|i| df[**i] <= FACT_DF_MAX)
+                .copied()
+                .collect::<Vec<_>>();
+            rare.len() >= min_required
+                && rare.iter().any(|i| terms[*i].1)
+                && rare.iter().any(|i| {
+                    head.iter()
+                        .any(|tok| text::token_matches_loose(tok, &terms[*i].0))
+                })
+                && !memory.contains(&format!("]({leaf})"))
+        })
+        .map(|(leaf_path, title, hook, bm25, _, _)| FactCandidate {
+            leaf_path,
+            title,
+            hook,
+            bm25,
+        })
+        .collect::<Vec<_>>();
+    let best = qualified
+        .iter()
+        .map(|f| f.bm25)
+        .fold(f64::INFINITY, f64::min);
+    if let Some(floor) = floor_threshold(best) {
+        qualified.retain(|f| f.bm25 <= floor);
+    }
+    qualified
+}
+
 /// The bm25 cutoff for the floor (#3): drop candidates worse than `best / FACTOR`.
 /// `best` is the most-negative (best) score. Returns None when scores are
 /// degenerate (best >= 0 or NaN) — meaning "no floor, keep all".
@@ -287,7 +417,7 @@ pub fn run(input: &Value) -> Option<String> {
          FROM turns_fts JOIN turns t ON t.id = turns_fts.rowid \
          WHERE turns_fts MATCH ?",
     );
-    let mut binds: Vec<String> = vec![fts_match];
+    let mut binds: Vec<String> = vec![fts_match.clone()];
     if !cwd.is_empty() {
         sql.push_str(" AND t.project = ?");
         binds.push(db::encode_cwd(cwd));
@@ -336,10 +466,6 @@ pub fn run(input: &Value) -> Option<String> {
         }
         qualified.push(c);
     }
-    if qualified.is_empty() {
-        return None;
-    }
-
     // #3 relative bm25 floor on raw scores: keep candidates within FACTOR of the best
     // (scores negative, lower = better). best >= 0 or NaN is degenerate → keep all.
     let best = qualified
@@ -359,6 +485,8 @@ pub fn run(input: &Value) -> Option<String> {
         .collect();
     ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
 
+    let facts = hidden_facts(&conn, &fts_match, &fts_terms, terms.len(), cwd);
+
     // One hit per session; skip sources already injected into this live session; top 3.
     let seen_log = paths::recall_seen_log();
     let seen_text = match paths::read_control_file(&seen_log, paths::CONTROL_FILE_MAX) {
@@ -373,6 +501,16 @@ pub fn run(input: &Value) -> Option<String> {
         }
     };
     let already = already_injected(&seen_text, cur_session);
+    let mut picked_facts = Vec::new();
+    for fact in facts {
+        if already.contains(&fact.leaf_path) {
+            continue;
+        }
+        picked_facts.push(fact);
+        if picked_facts.len() >= MAX_FACTS {
+            break;
+        }
+    }
     let mut picked: Vec<Candidate> = Vec::new();
     let mut seen_sessions = HashSet::new();
     for (_, c) in ranked {
@@ -380,19 +518,41 @@ pub fn run(input: &Value) -> Option<String> {
             continue;
         }
         picked.push(c);
-        if picked.len() >= MAX_INJECT {
+        if picked.len() + picked_facts.len() >= MAX_INJECT {
             break;
         }
     }
-    if picked.is_empty() {
+    if picked.is_empty() && picked_facts.is_empty() {
         return None;
     }
 
     // #1 render from the FTS match-centered snippet, whitespace-collapsed, hard-capped.
-    let mut lines = vec![String::from(
-        "[subrosa recall] Possibly relevant past sessions from the local archive — verify before \
-         relying on them; run `subrosa search` for the full text:",
-    )];
+    let mut lines = Vec::new();
+    if !picked_facts.is_empty() {
+        lines.push(FACT_HEADER.to_string());
+        for fact in &picked_facts {
+            let prefix = format!(
+                "- [{}]({}) — ",
+                text::collapse_ws(&fact.title),
+                fact.leaf_path
+            );
+            let hook = text::collapse_ws(&fact.hook);
+            let room = SNIPPET_CHARS.saturating_sub(prefix.chars().count());
+            let hook: String = if hook.chars().count() > room {
+                let take = room.saturating_sub(1);
+                format!("{}…", hook.chars().take(take).collect::<String>())
+            } else {
+                hook
+            };
+            lines.push(format!("{prefix}{hook}"));
+        }
+    }
+    if !picked.is_empty() {
+        lines.push(String::from(
+            "[subrosa recall] Possibly relevant past sessions from the local archive — verify before \
+             relying on them; run `subrosa search` for the full text:",
+        ));
+    }
     for c in &picked {
         let snip: String = text::collapse_ws(c.snippet.as_deref().unwrap_or_default())
             .chars()
@@ -417,7 +577,10 @@ pub fn run(input: &Value) -> Option<String> {
         &seen_log,
         &seen_text,
         cur_session,
-        picked.iter().map(|c| c.session_id.as_str()),
+        picked
+            .iter()
+            .map(|c| c.session_id.as_str())
+            .chain(picked_facts.iter().map(|f| f.leaf_path.as_str())),
     );
     Some(lines.join("\n"))
 }

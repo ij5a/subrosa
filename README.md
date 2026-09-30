@@ -16,13 +16,13 @@ subrosa archives every Claude Code session in a local SQLite database. Search it
 
 A plain `subrosa search` retries semantic search after zero keyword hits when automatic indexing is on and its local model and index are available. Use `--raw` to skip that retry. Plain search never starts the one-time model download.
 
-Prompt recall is keyword-only. It adds up to 3 relevant snippets when the match is strong.
+Prompt recall is keyword-only. It adds up to 3 lines when the match is strong: up to 2 saved facts left out of `MEMORY.md`, then past-session snippets.
 
 - Saving uses plain-text parsing. It makes no model call and uses 0 model tokens.
 - The project has 11 direct crates and one static binary of about 5 MB. SessionEnd starts a short-lived detached archival worker.
 - The binary opens no sockets by default. A system `curl` child makes the one-time model download. Optional automatic checkpointing runs a configured Claude child and sends redacted transcript text to Anthropic.
 - Nothing you type, save, or search is uploaded unless you explicitly opt in to automatic checkpointing. Secret shapes are masked before storage.
-- Recall adds about 180 estimated tokens on a strong match in the benchmark fixture. The estimate divides response bytes by 3.8; it is not a runtime cap. `MEMORY.md` uses at most 23 KB by default.
+- Recall adds about 200 estimated tokens on a strong match in the benchmark fixture. The estimate divides response bytes by 3.8; it is not a runtime cap. `MEMORY.md` uses at most 23 KB by default.
 - Keyword hits take about 5 to 11 ms over 50,000 turns. A semantic fallback scans indexed turns linearly, so a miss gets slower as the index grows.
 
 The [FAQ](docs/faq.md) covers data paths, privacy limits, tokens, semantic search, proof commands, and performance.

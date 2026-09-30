@@ -9,7 +9,7 @@ Rust CLI and Claude Code plugin for persistent local memory. Read before changin
 - SessionStart catch-up-ingests changed transcripts and prints the checkpoint nudge.
 - SessionEnd starts a detached worker that archives, queues, retries SQLite contention for a bounded time, optionally drains up to 3 checkpoints, and backs up. The hook returns immediately. Sweep recovers a missed worker.
 - SessionStart and SessionEnd start detached `embed --auto`.
-- UserPromptSubmit injects past-session hits and repeats backlog directives unless distill is enabled.
+- UserPromptSubmit injects hidden fact lines and past-session hits and repeats backlog directives unless distill is enabled.
 - PreCompact archives before compaction and resets deduplication.
 - Stop ingests after each assistant turn from a saved byte offset. It does not enqueue or back up.
 - The live session is searchable before it ends. `subrosa fact` changes facts; `subrosa generate` writes byte-limited `MEMORY.md`.
@@ -27,8 +27,8 @@ Rust CLI and Claude Code plugin for persistent local memory. Read before changin
 | `search.rs` | FTS5 queries and output with `--after`, `--before`, and `--tag`; semantic ranking; and `subrosa embed` backfill. Backfill uses newest-first slabs, one thread per core, deduplication, one shared `Embedder`, and one DB writer. `--auto` uses half the cores, with a floor of 2 and a cap at the core count. A 2 or 3 core machine uses 2 cores. A 1 core machine uses 1. |
 | `sessions.rs` | `sessions`: list sessions newest-first and filter by project, date, or tag |
 | `related.rs` | `related`: co-occurrence from an anchor to terms and sessions, with FTS-count IDF down-weighting |
-| `recall.rs` | UserPromptSubmit relevance gate and context injection |
-| `text.rs` | Shared tokenizer and term-quality helpers: `STOPWORDS`, `extract_terms`, `is_anchor`, `turn_tokens`, and `token_matches`. Recall, related, and tags use them. |
+| `recall.rs` | UserPromptSubmit relevance gate, hidden fact lookup, and context injection |
+| `text.rs` | Shared tokenizer and term-quality helpers: `STOPWORDS`, `extract_terms`, `is_identifier`, `is_anchor`, `turn_tokens`, and `token_matches`. Recall, related, and tags use them. |
 | `tags.rs` | Deterministic, read-only `tool:`, `ext:`, and `topic:` tags. `derive_tags` runs at ingest, and `backfill` runs at schema v3. |
 | `facts.rs` | Curated facts CRUD, frontmatter parsing, type weights, `fact link` `[[name]]` graph reads, and read-only `fact doctor` leaf and row checks |
 | `generate.rs` | Byte-budgeted `MEMORY.md`. It supports `<memdir>/.budget` and stops at Claude Code's 200-line load limit. |
@@ -94,7 +94,7 @@ Gates 1 through 4 are hard release requirements wrapped by `scripts/release-chec
 
 1. **Regression:** Run `cargo test --locked`. It runs unit and golden tests. A red test blocks the commit. Golden changes need a decision.
 2. **Performance:** Run `scripts/bench.sh`. It needs `hyperfine` and covers recall, search, ingest, and startup. The README and FAQ promise its latency numbers. Run it before push or release and after changes to `recall.rs`, `search.rs`, `ingest.rs`, or the FTS schema.
-3. **Token usage:** `scripts/bench.sh` measures recall injection with a bytes/3.8 estimate from 1 fixture. The 220 estimate is a benchmark guard, not a runtime limit. Keep it separate because per-prompt cost is a product requirement.
+3. **Token usage:** `scripts/bench.sh` measures recall injection with a bytes/3.8 estimate from 1 fixture. The 220 estimate is a benchmark guard behind the about-200 estimate, not a runtime limit. Keep it separate because per-prompt cost is a product requirement.
 4. **Smoke:** Run `scripts/smoke.sh` with the built binary. It uses a throwaway directory and checks redaction of stored turns, encrypted-mirror and restore paths, a fail-closed budget override, and hook exit 0. Unit tests do not replace it.
    - Run `scripts/detach-test.sh` by hand after spawn-path changes. It needs shell job control and is not part of `scripts/release-check.sh`. It proves the background indexer survives the session that starts it.
 5. **Security review:** Run `cargo audit` and `/security-review` over the branch diff before pushing code and every release because the repository is public.

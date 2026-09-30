@@ -177,12 +177,15 @@ pub(crate) fn extract_terms(text: &str) -> Vec<String> {
 /// Anchor-grade terms justify an injection: identifier-like (digit, `_`, `-`,
 /// `.`, or ALL-CAPS) or 6+ chars. Two short generic words never fire alone.
 pub(crate) fn is_anchor(tok: &str) -> bool {
+    is_identifier(tok) || tok.chars().count() >= 6
+}
+
+pub(crate) fn is_identifier(tok: &str) -> bool {
     tok.chars()
         .any(|c| c.is_ascii_digit() || c == '_' || c == '-' || c == '.')
         || (tok.len() >= 2
             && tok.chars().any(|c| c.is_ascii_uppercase())
             && !tok.chars().any(|c| c.is_ascii_lowercase()))
-        || tok.chars().count() >= 6
 }
 
 /// Split a turn into lowercase tokens, keeping `_` and `-` so identifiers like

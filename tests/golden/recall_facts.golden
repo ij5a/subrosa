@@ -1,0 +1,4 @@
+[subrosa recall] Saved facts left out of MEMORY.md; read the linked file before relying on one:
+- [cache-prod-rollout-runbook](project_cache_prod_rollout.md) — TICKET-123 showed the cache-prod rollout needs a warm cache before traffic moves, then a slow c…
+[subrosa recall] Possibly relevant past sessions from the local archive — verify before relying on them; run `subrosa search` for the full text:
+- 2026-06-12 (7mo old) · aaaa-bbb: «TICKET-123» «cache-prod» «rollout» finished, latency back to normal

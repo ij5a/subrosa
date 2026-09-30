@@ -27,7 +27,7 @@ Every code change must pass 6 gates before commit, push, or release. The pre-com
 
 1. **Tests:** Run `cargo test --locked`. It runs unit and golden tests in `tests/`. A failure blocks the commit.
 2. **Performance:** Run `scripts/bench.sh` with [`hyperfine`](https://github.com/sharkdp/hyperfine). It measures recall, search, ingest, and startup. README latency numbers are promises. A slowdown is a bug. Run it before push or release and after changes to `recall.rs`, `search.rs`, `ingest.rs`, or the FTS schema.
-3. **Token usage:** `scripts/bench.sh` measures recall injection with a bytes/3.8 token estimate from 1 fixture. It fails above the 220-estimate guard behind the about-180 estimate.
+3. **Token usage:** `scripts/bench.sh` measures recall injection with a bytes/3.8 token estimate from 1 fixture. It fails above the 220-estimate guard behind the about-200 estimate.
 4. **Smoke:** Run `scripts/smoke.sh` with the built binary. It uses a throwaway directory and checks redaction, encrypted-mirror and restore paths, a fail-closed budget override, and hook exit 0.
 5. **Security:** Run `cargo audit` and `/security-review` over the branch diff. CI also runs the audit. Run both before every push and release.
 6. **Docs:** Update affected Markdown files, including `README.md`, `docs/*.md`, `CLAUDE.md`, and skill docs. Documented numbers, flags, and limits must match the code. A code change without its docs is unfinished.

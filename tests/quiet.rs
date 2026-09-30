@@ -1152,6 +1152,69 @@ fn recall_injects_each_source_session_once() {
 }
 
 #[test]
+fn recall_shows_a_hidden_fact_once() {
+    let env = setup("hidden-fact");
+    let memdir = env.projects.join("-tmp-demo/memory");
+    fs::create_dir_all(&memdir).unwrap();
+    fs::write(memdir.join("project_cache_prod_rollout.md"), "---\nname: cache-prod-rollout-runbook\ndescription: TICKET-123 cache-prod rollout needs a warm cache first\ntype: project\n---\nbody\n").unwrap();
+    run(
+        &env,
+        &[
+            "fact",
+            "upsert",
+            "--leaf",
+            "project_cache_prod_rollout.md",
+            "--memdir",
+            memdir.to_str().unwrap(),
+        ],
+        None,
+    );
+    fs::write(memdir.join("MEMORY.md"), "# Memory Index\n\n").unwrap();
+    let payload = |session: &str, prompt: &str| {
+        format!(r#"{{"prompt":"{prompt}","cwd":"/tmp/demo","session_id":"{session}"}}"#)
+    };
+    let (first, _) = run(
+        &env,
+        &["hook", "user-prompt-submit"],
+        Some(&payload(
+            "live-1",
+            "status of the cache-prod TICKET-123 rollout",
+        )),
+    );
+    assert!(first.starts_with("[subrosa recall] Saved facts"));
+    assert!(first.contains("(project_cache_prod_rollout.md)"));
+    let (second, _) = run(
+        &env,
+        &["hook", "user-prompt-submit"],
+        Some(&payload(
+            "live-1",
+            "status of the cache-prod TICKET-123 rollout",
+        )),
+    );
+    assert_eq!(second, "");
+    let (decoy, _) = run(
+        &env,
+        &["hook", "user-prompt-submit"],
+        Some(&payload("live-2", "how do we handle a rollout")),
+    );
+    assert_eq!(decoy, "");
+    run(
+        &env,
+        &["generate", "--memdir", memdir.to_str().unwrap()],
+        None,
+    );
+    let (listed, _) = run(
+        &env,
+        &["hook", "user-prompt-submit"],
+        Some(&payload(
+            "live-3",
+            "status of the cache-prod TICKET-123 rollout",
+        )),
+    );
+    assert_eq!(listed, "");
+}
+
+#[test]
 fn nudge_text_never_archived() {
     let env = setup("nudge");
     ingest(

@@ -455,6 +455,30 @@ fn recall_matches_golden() {
 }
 
 #[test]
+fn recall_hidden_fact_matches_golden() {
+    let env = setup("recall-facts");
+    ingest_golden_transcript(&env);
+    let memdir = env.projects.join("-tmp-demo/memory");
+    fs::create_dir_all(&memdir).unwrap();
+    for (leaf, name, description, type_) in [
+        ("project_cache_prod_rollout.md", "cache-prod-rollout-runbook", "TICKET-123 showed the cache-prod rollout needs a warm cache before traffic moves, then a slow canary over 30 minutes; skipping the warm step caused the latency spike", "project"),
+        ("project_rollout_notes.md", "rollout-handling-notes", "How we handle a rollout, announce it, watch the dashboards, and write a short summary afterward", "project"),
+        ("reference_cache_prod.md", "cache-prod-endpoints", "TICKET-123 cache-prod endpoints and the rollout owner", "reference"),
+    ] {
+        fs::write(memdir.join(leaf), format!("---\nname: {name}\ndescription: {description}\ntype: {type_}\n---\nbody\n")).unwrap();
+        run(&env, &["fact", "upsert", "--leaf", leaf, "--memdir", memdir.to_str().unwrap()], None);
+    }
+    fs::write(memdir.join("MEMORY.md"), "# Memory Index\n\n- [cache-prod-endpoints](reference_cache_prod.md) — TICKET-123 cache-prod endpoints and the rollout owner\n").unwrap();
+    let payload = r#"{"prompt":"how did we handle the cache-prod TICKET-123 rollout?","cwd":"/tmp/demo","session_id":"zzzz-9999"}"#;
+    let out = run(&env, &["hook", "user-prompt-submit"], Some(payload));
+    assert!(out.starts_with("[subrosa recall] Saved facts"));
+    assert!(out.contains("project_cache_prod_rollout.md"));
+    assert!(!out.contains("project_rollout_notes.md"));
+    assert!(!out.contains("reference_cache_prod.md"));
+    assert_eq!(out.lines().count(), 4);
+}
+
+#[test]
 fn redaction_and_noise_filtering_hold() {
     let env = setup("filter");
     ingest_golden_transcript(&env);

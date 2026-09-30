@@ -116,6 +116,29 @@ fi
 echo "archive: $TURNS_TOTAL turns, $((DB_KB / 1024))MB"
 echo
 
+FACT_PROJECT="$SUBROSA_PROJECTS_DIR/-tmp-bench-proj3"
+FACT_MEMDIR="$FACT_PROJECT/memory"
+mkdir -p "$FACT_MEMDIR"
+awk 'BEGIN {
+  seed = 42
+  nw = split("deploy rollout cluster ingress gateway terraform module bucket lambda queue retry timeout migration schema index vacuum replica failover snapshot backup latency throughput budget alert dashboard pipeline runner artifact release candidate incident postmortem rollback canary traffic shard partition broker", words, " ")
+  for (n = 0; n < 500; n++) {
+    path = "'"$FACT_MEMDIR"'/reference_bench_" n ".md"
+    printf "---\nname: bench-fact-%03d\ndescription: ", n > path
+    seed = (seed * 16807) % 2147483647; k = 8 + (seed % 13)
+    for (i = 0; i < k; i++) { seed = (seed * 16807) % 2147483647; pick = seed % nw; printf "%s%s", i ? " " : "", words[pick + 1] > path }
+    printf "\ntype: reference\n---\nbody\n" > path
+    close(path)
+  }
+  for (n = 0; n < 2; n++) {
+    path = "'"$FACT_MEMDIR"'/project-cache-gateway-prod-" n ".md"
+    printf "---\nname: cache-gateway-prod-runbook-%03d\ndescription: TICKET-1012 cache-gateway-prod deploy rollout requires a warm cache, staged canary, and owner approval before traffic moves through the gateway; this fixture continues beyond the line cap to exercise fact rendering safely\ntype: project\n---\nbody\n", n > path
+    close(path)
+  }
+}'
+printf '# Memory Index\n\n' > "$FACT_MEMDIR/MEMORY.md"
+"$BIN" import "$FACT_MEMDIR" --no-backup >/dev/null
+
 HIT='{"prompt":"how did the cache-gateway-prod TICKET-1012 deploy rollout go","cwd":"/tmp/bench/proj3","session_id":"bench-live"}'
 MISS='{"prompt":"zxqv-flurble-9921 quuxotic zebra contraption rebalance","cwd":"/tmp/bench/proj3","session_id":"bench-live"}'
 
@@ -125,7 +148,7 @@ hyperfine --warmup 5 --runs 50 \
   -n "recall (match + inject)" "printf '%s' '$HIT' | '$BIN' hook user-prompt-submit" \
   -n "recall (no match, silent)" "printf '%s' '$MISS' | '$BIN' hook user-prompt-submit"
 
-# Recall injection size: the per-prompt token cost behind the "~180 tokens" promise.
+# Recall injection size: 2 hidden fact lines and 1 turn line, about 200 tokens measured 2026-10-01.
 # hyperfine (above) times the hook; this weighs what it actually emits into context.
 echo "== recall injection: token cost of a strong match =="
 rm -f "$SUBROSA_DIR/recall-seen.log"   # the timed runs above logged this session; clear it or dedup hides the hit
@@ -136,7 +159,7 @@ ISNIPS=$(printf '%s\n' "$INJECT" | grep -c '^- ' || true)
 ITOK=$(awk -v b="$IBYTES" 'BEGIN { printf "%.0f", b / 3.8 }')
 echo "injected $ISNIPS snippet(s), $IBYTES bytes ~= $ITOK tokens (est., bytes/3.8 — not a tokenizer)"
 printf '%s\n' "$INJECT" | sed 's/^/    | /'
-# Gross-regression guard: the MAX_INJECT x SNIPPET_CHARS cap should hold recall near ~180 tokens.
+# Gross-regression guard: the 2 fact lines plus 1 turn line should stay near about 180 tokens.
 # This trips only if the cap logic breaks (e.g. SNIPPET_CHARS bumped); it sits above the heavy-match
 # worst case (~199 tok with full match-marked snippets, measured 2026-06-16), so real hits never trip it.
 CEILING_TOKENS=220

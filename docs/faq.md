@@ -68,19 +68,19 @@ A passphrase set outside `subrosa setup` applies at the next backup. The first e
 
 Ended sessions start a detached worker and return. It archives the transcript, adds it to the SQLite queue, retries database contention for a bounded time, and lets a later sweep recover missed work. `/subrosa:checkpoint-backlog` saves queued facts. `/subrosa:checkpoint` saves facts before `/clear` or `/compact`.
 
-Each fact has a Markdown file and database row. `subrosa generate` writes `MEMORY.md`. Facts outside the byte budget stay searchable.
+Each fact has a Markdown file and database row. `subrosa generate` writes `MEMORY.md`. Facts outside the byte budget stay searchable, and recall shows one when a prompt names it clearly.
 
 ## How many tokens does it cost?
 
 Recall search and its relevance gate are local. They add `0` tokens and make no model call.
 
-A strong match adds about `180` estimated tokens from up to 3 snippets. The benchmark uses response bytes divided by `3.8` as an estimate from one fixture; it is not a runtime token cap. Unicode text can exceed `220` by that estimate. It injects snippet lines, not full sessions; use `subrosa search` for full text.
+A strong match adds about `200` estimated tokens from up to 3 lines: up to 2 saved facts left out of `MEMORY.md`, then past-session snippets. The benchmark uses response bytes divided by `3.8` as an estimate from one fixture; it is not a runtime token cap. Unicode text can exceed `220` by that estimate. It injects linked fact lines and snippet lines, not full sessions; use `subrosa search` for full text.
 
 `MEMORY.md` loads once per session at up to 23 KB by default, about 6,000 tokens. Set a per-project budget with `echo 24500 > <memdir>/.budget`; it caps output at about 25,000 bytes or line 200. Extra output is not loaded. Saving and tag derivation add `0` tokens.
 
 ## Does it slow as the archive grows?
 
-Saving always costs `0` tokens. A strong match adds about `180` estimated tokens in the benchmark fixture; a miss adds `0`, whether the archive has 100 sessions or 100,000.
+Saving always costs `0` tokens. A strong match adds about `200` estimated tokens in the benchmark fixture; a miss adds `0`, whether the archive has 100 sessions or 100,000.
 
 Keyword search uses an FTS5 index. A keyword hit takes about 5 to 11 ms over a 50,000-turn archive. A semantic fallback scans indexed turns linearly, so a miss gets slower as indexed turns grow.
 

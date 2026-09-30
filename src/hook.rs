@@ -400,7 +400,7 @@ fn user_prompt_submit(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
         println!("{text}");
         log(&format!(
             "user-prompt-submit recall: {} hit(s)",
-            text.lines().count().saturating_sub(1)
+            text.lines().filter(|line| line.starts_with("- ")).count()
         ));
     }
     Ok(())
