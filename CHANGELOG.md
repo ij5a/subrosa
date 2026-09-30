@@ -4,6 +4,14 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.4] - 2026-10-01
+
+### Changed
+
+- The encryption crates move to `chacha20poly1305` 0.11.0 and `argon2` 0.6.0. Encrypted mirrors keep the same format, so mirrors from older versions still restore.
+- The cipher still wipes its key from memory when it finishes. `chacha20poly1305` 0.11 makes this optional, so subrosa turns it on.
+- Automatic dependency updates no longer offer candle 0.10 or later, which brings in C code.
+
 ## [0.28.3] - 2026-09-23
 
 ### Fixed
@@ -368,6 +376,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [0.15.0]: https://github.com/ij5a/subrosa/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/ij5a/subrosa/compare/v0.14.0...v0.14.1
 [0.28.1]: https://github.com/ij5a/subrosa/compare/v0.28.0...v0.28.1
+[0.28.4]: https://github.com/ij5a/subrosa/compare/v0.28.3...v0.28.4
 [0.28.3]: https://github.com/ij5a/subrosa/compare/v0.28.2...v0.28.3
 [0.28.2]: https://github.com/ij5a/subrosa/compare/v0.28.1...v0.28.2
 [0.28.0]: https://github.com/ij5a/subrosa/compare/v0.27.2...v0.28.0
