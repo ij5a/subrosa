@@ -1136,6 +1136,21 @@ fn recall_needs_an_anchor_term() {
 }
 
 #[test]
+fn recall_miss_does_not_heal_seen_log() {
+    let env = setup("miss-seen-log");
+    let log = env.data.join("recall-seen.log");
+    const CONTROL_FILE_MAX: usize = 1 << 20;
+    fs::write(&log, vec![b'x'; CONTROL_FILE_MAX + 1]).unwrap();
+    let payload = r#"{"prompt":"zxqv-flurble-9921 quuxotic zebra contraption rebalance","cwd":"/tmp/demo","session_id":"live-miss"}"#;
+    let (out, _) = run(&env, &["hook", "user-prompt-submit"], Some(payload));
+    assert_eq!(out, "");
+    assert_eq!(
+        fs::metadata(log).unwrap().len(),
+        (CONTROL_FILE_MAX + 1) as u64
+    );
+}
+
+#[test]
 fn recall_injects_each_source_session_once() {
     let env = setup("dedup");
     ingest(

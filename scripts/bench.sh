@@ -167,8 +167,7 @@ hyperfine --warmup 3 --runs 25 \
   -n no-card "printf '{\"cwd\":\"/tmp/bench/proj3\",\"session_id\":\"bench-live\"}' | '$BIN' hook session-start" \
   -n card "printf '%s' '$START' | '$BIN' hook session-start"
 # Gross-regression guard: the 2 fact lines plus 1 turn line should stay near about 200 tokens.
-# This trips only if the cap logic breaks (e.g. SNIPPET_CHARS bumped); it sits above the heavy-match
-# worst case (~199 tok with full match-marked snippets, measured 2026-06-16), so real hits never trip it.
+
 CEILING_TOKENS=220
 if [ "$ITOK" -gt "$CEILING_TOKENS" ]; then
   echo "bench: recall injection ${ITOK} tokens exceeds the ${CEILING_TOKENS}-token guard — recall cap regressed?" >&2

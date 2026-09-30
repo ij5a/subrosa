@@ -252,6 +252,7 @@ fn hidden_facts(
     if cwd.is_empty() {
         return Vec::new();
     }
+
     // NOTE: no SQL LIMIT: rarity needs every candidate, and one project has at most 472 today.
     let mut stmt = match conn.prepare(
         "SELECT f.leaf_path, f.title, f.name, f.hook, f.description, bm25(facts_fts) \
@@ -509,6 +510,10 @@ pub fn run(input: &Value) -> Option<String> {
     ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
 
     let facts = hidden_facts(&conn, &fts_match, &fts_terms, terms.len(), cwd);
+
+    if ranked.is_empty() && facts.is_empty() {
+        return None;
+    }
 
     // One hit per session; skip sources already injected into this live session; top 3.
     let seen_log = paths::recall_seen_log();
