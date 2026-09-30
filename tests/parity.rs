@@ -733,6 +733,31 @@ fn fact_doctor_matches_golden() {
     );
     fs::write(memdir.join("reference_drift.md"), drift("renamed-thing")).unwrap();
 
+    fs::write(
+        memdir.join("reference_stale_hook.md"),
+        "---\nname: stale-hook\ndescription: Old wording\ntype: reference\n---\nBody.\n",
+    )
+    .unwrap();
+    run(
+        &env,
+        &[
+            "fact",
+            "upsert",
+            "--leaf",
+            "reference_stale_hook.md",
+            "--memdir",
+            md,
+            "--hook",
+            "hand line",
+        ],
+        None,
+    );
+    fs::write(
+        memdir.join("reference_stale_hook.md"),
+        "---\nname: stale-hook\ndescription: New wording\ntype: reference\n---\nBody.\n",
+    )
+    .unwrap();
+
     // Two active rows left holding one stored slug after both leaves were renamed
     // apart. The leaves no longer collide, but the rows still shadow each other in
     // the link map — frontmatter alone can't see this.
@@ -843,6 +868,98 @@ fn fact_doctor_clean_then_warning_only_stay_exit_zero() {
         warned.status.code(),
         Some(0),
         "warnings alone stay exit 0, got:\n{text}"
+    );
+}
+
+#[test]
+fn fact_upsert_follows_a_default_hook_and_keeps_a_hand_one() {
+    let env = setup("factupserthook");
+    let memdir = env.data.join("memdir");
+    fs::create_dir_all(&memdir).unwrap();
+    let md = memdir.to_str().unwrap();
+    let write_leaf = |leaf: &str, name: &str, description: &str| {
+        fs::write(
+            memdir.join(leaf),
+            format!("---\nname: {name}\ndescription: {description}\ntype: reference\n---\nBody.\n"),
+        )
+        .unwrap();
+    };
+
+    write_leaf("reference_default.md", "default", "Old default words");
+    run(
+        &env,
+        &[
+            "fact",
+            "upsert",
+            "--leaf",
+            "reference_default.md",
+            "--memdir",
+            md,
+        ],
+        None,
+    );
+    write_leaf("reference_default.md", "default", "New default words");
+    run(
+        &env,
+        &[
+            "fact",
+            "upsert",
+            "--leaf",
+            "reference_default.md",
+            "--memdir",
+            md,
+        ],
+        None,
+    );
+    let index = run(&env, &["generate", "--memdir", md, "--dry-run"], None);
+    assert!(index.contains("New default words"));
+    assert!(!index.contains("Old default words"));
+
+    write_leaf("reference_hand.md", "hand", "Old hand words");
+    run(
+        &env,
+        &[
+            "fact",
+            "upsert",
+            "--leaf",
+            "reference_hand.md",
+            "--memdir",
+            md,
+            "--hook",
+            "hand line",
+        ],
+        None,
+    );
+    write_leaf("reference_hand.md", "hand", "New hand words");
+    let kept = run_full(
+        &env,
+        &[
+            "fact",
+            "upsert",
+            "--leaf",
+            "reference_hand.md",
+            "--memdir",
+            md,
+        ],
+        None,
+    );
+    assert!(String::from_utf8_lossy(&kept.stderr).contains("kept the hand-written index line"));
+    let index = run(&env, &["generate", "--memdir", md, "--dry-run"], None);
+    assert!(index.contains("hand line"));
+    let unchanged = run_full(
+        &env,
+        &[
+            "fact",
+            "upsert",
+            "--leaf",
+            "reference_hand.md",
+            "--memdir",
+            md,
+        ],
+        None,
+    );
+    assert!(
+        !String::from_utf8_lossy(&unchanged.stderr).contains("kept the hand-written index line")
     );
 }
 

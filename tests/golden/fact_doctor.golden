@@ -15,5 +15,6 @@ error reference_dupe_b.md: duplicate name `shared-slug` — reference_dupe_a.md 
 error reference_gone.md: leaf file is gone but the fact still loads — restore it, or `subrosa fact archive --leaf reference_gone.md`
 warn  reference_links.md: dangling link [[nope-missing]] — fix the slug or write that leaf
 warn  reference_orphan.md: not registered — `subrosa fact upsert --leaf reference_orphan.md`
+warn  reference_stale_hook.md: description changed since the last upsert, so its index line may be stale; run `subrosa fact upsert --leaf reference_stale_hook.md`, with `--hook` if that line was written by hand
 
-[subrosa] doctor: 7 error(s), 10 warning(s)
+[subrosa] doctor: 7 error(s), 11 warning(s)

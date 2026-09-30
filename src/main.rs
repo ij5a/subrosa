@@ -202,7 +202,7 @@ enum Cmd {
         /// Index title (default: stored value, then name slug)
         #[arg(long)]
         title: Option<String>,
-        /// One-line index hook (default: stored value, then description)
+        /// One-line index hook (default: stored value; a hook that matched the old description follows the new one)
         #[arg(long)]
         hook: Option<String>,
         /// Force always-loaded regardless of budget

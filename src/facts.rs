@@ -239,14 +239,30 @@ fn upsert(
                 })
                 .replace('_', " ")
         });
+    let old_description = row.as_ref().and_then(|r| r.description.as_deref());
+    let stored_hook = row
+        .as_ref()
+        .and_then(|r| r.hook.as_deref())
+        .filter(|s| !s.is_empty());
+    let default_hook = stored_hook
+        .zip(old_description)
+        .is_some_and(|(stored, description)| stored == cap_hook(description));
+    let kept_hand_hook = hook.is_none() && stored_hook.is_some() && !default_hook;
     let hook = hook
         .map(str::to_string)
         .or_else(|| {
-            row.as_ref()
-                .and_then(|r| r.hook.clone())
-                .filter(|s| !s.is_empty())
+            if default_hook && fm_get(&fm, "description").is_some() {
+                None
+            } else {
+                stored_hook.map(str::to_string)
+            }
         })
         .unwrap_or_else(|| fm.get("description").cloned().unwrap_or_default());
+    if kept_hand_hook && description_drifted(fm_get(&fm, "description"), old_description) {
+        eprintln!(
+            "[subrosa] kept the hand-written index line for {leaf}; its description changed, so pass --hook to update it"
+        );
+    }
     let capped = cap_hook(&hook);
     if capped != hook {
         eprintln!("[subrosa] hook truncated to {HOOK_MAX_CHARS} chars — index lines stay short");
@@ -438,12 +454,13 @@ fn search_facts(
     ExitCode::SUCCESS
 }
 
-/// One curated fact, reduced to what `fact link` needs.
+/// One fact row used by `fact link` and the read-only doctor checks.
 struct LinkFact {
     name: Option<String>,
     type_: Option<String>,
     title: Option<String>,
     hook: Option<String>,
+    description: Option<String>,
     leaf_path: String,
     status: String,
 }
@@ -487,7 +504,7 @@ fn link_key(s: &str) -> String {
 
 fn load_link_facts(conn: &Connection, project: &str) -> rusqlite::Result<Vec<LinkFact>> {
     let mut stmt = conn.prepare(
-        "SELECT name, type, title, hook, leaf_path, status FROM facts \
+        "SELECT name, type, title, hook, description, leaf_path, status FROM facts \
          WHERE project=? AND leaf_path IS NOT NULL \
          ORDER BY index_seq IS NULL, index_seq, leaf_path",
     )?;
@@ -498,9 +515,10 @@ fn load_link_facts(conn: &Connection, project: &str) -> rusqlite::Result<Vec<Lin
                 type_: r.get(1)?,
                 title: r.get(2)?,
                 hook: r.get(3)?,
-                leaf_path: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                description: r.get(4)?,
+                leaf_path: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
                 status: r
-                    .get::<_, Option<String>>(5)?
+                    .get::<_, Option<String>>(6)?
                     .unwrap_or_else(|| "active".into()),
             })
         })?
@@ -641,6 +659,15 @@ fn render_links(
 /// A frontmatter value, trimmed — `None` when the key is absent or blank.
 fn fm_get<'a>(fm: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
     fm.get(key).map(|s| s.trim()).filter(|s| !s.is_empty())
+}
+
+fn description_drifted(leaf: Option<&str>, row: Option<&str>) -> bool {
+    match (leaf, row) {
+        (Some(leaf), Some(row)) if !leaf.trim().is_empty() && !row.trim().is_empty() => {
+            unquote(leaf) != unquote(row)
+        }
+        _ => false,
+    }
 }
 
 /// Body lines outside fenced code, blanks dropped. Both ``` and ~~~ fences count,
@@ -924,6 +951,23 @@ fn doctor(project: Option<String>, memdir: Option<PathBuf>) -> ExitCode {
                     ),
                 ));
             }
+        }
+
+        // NOTE: this sees a changed description only until the next upsert. A stored
+        // hook-basis column would keep a hand-written line flagged after that.
+        if ours
+            && description_drifted(
+                fm_get(fm, "description"),
+                row.and_then(|f| f.description.as_deref()),
+            )
+        {
+            findings.push(finding(
+                false,
+                leaf,
+                format!(
+                    "description changed since the last upsert, so its index line may be stale; run `subrosa fact upsert --leaf {leaf}`, with `--hook` if that line was written by hand"
+                ),
+            ));
         }
 
         // A leaf claims a slug twice over: through its frontmatter and through the
@@ -1213,5 +1257,16 @@ mod tests {
         let leaf = "---\nname: foo\ndescription: x\n---\nbody [[bar]] here\n";
         assert_eq!(body_after_frontmatter(leaf), "body [[bar]] here\n");
         assert_eq!(body_after_frontmatter("plain [[bar]]"), "plain [[bar]]");
+    }
+
+    #[test]
+    fn description_drifted_compares_nonempty_unquoted_values() {
+        assert!(!description_drifted(Some("same"), Some("same")));
+        assert!(!description_drifted(Some(" \"same\" "), Some("same")));
+        assert!(!description_drifted(Some("'same'"), Some(" same ")));
+        assert!(!description_drifted(None, Some("same")));
+        assert!(!description_drifted(Some(""), Some("same")));
+        assert!(!description_drifted(Some("same"), None));
+        assert!(description_drifted(Some("new"), Some("old")));
     }
 }
