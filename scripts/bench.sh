@@ -142,6 +142,8 @@ printf '# Memory Index\n\n' > "$FACT_MEMDIR/MEMORY.md"
 HIT='{"prompt":"how did the cache-gateway-prod TICKET-1012 deploy rollout go","cwd":"/tmp/bench/proj3","session_id":"bench-live"}'
 MISS='{"prompt":"zxqv-flurble-9921 quuxotic zebra contraption rebalance","cwd":"/tmp/bench/proj3","session_id":"bench-live"}'
 
+START='{"cwd":"/tmp/bench/proj3","session_id":"bench-live","source":"startup","transcript_path":"'$SUBROSA_PROJECTS_DIR'/-tmp-bench-proj3/bench-live.jsonl"}'
+
 echo "== hook user-prompt-submit (recall): every-prompt hot path =="
 hyperfine --warmup 5 --runs 50 \
   --prepare "rm -f '$SUBROSA_DIR/recall-seen.log'" \
@@ -159,6 +161,11 @@ ISNIPS=$(printf '%s\n' "$INJECT" | grep -c '^- ' || true)
 ITOK=$(awk -v b="$IBYTES" 'BEGIN { printf "%.0f", b / 3.8 }')
 echo "injected $ISNIPS snippet(s), $IBYTES bytes ~= $ITOK tokens (est., bytes/3.8 — not a tokenizer)"
 printf '%s\n' "$INJECT" | sed 's/^/    | /'
+
+echo "== hook session-start (last-session card) =="
+hyperfine --warmup 3 --runs 25 \
+  -n no-card "printf '{\"cwd\":\"/tmp/bench/proj3\",\"session_id\":\"bench-live\"}' | '$BIN' hook session-start" \
+  -n card "printf '%s' '$START' | '$BIN' hook session-start"
 # Gross-regression guard: the 2 fact lines plus 1 turn line should stay near about 180 tokens.
 # This trips only if the cap logic breaks (e.g. SNIPPET_CHARS bumped); it sits above the heavy-match
 # worst case (~199 tok with full match-marked snippets, measured 2026-06-16), so real hits never trip it.

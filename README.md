@@ -89,6 +89,7 @@ subrosa          # open the dashboard
 
 - Archives sessions when Claude Code ends them with quit, `/clear`, or logout. SessionEnd returns after starting a detached worker. The worker retries ordinary SQLite contention, and a start-up sweep catches a worker that never ran.
 - Archives the live session after each assistant turn. The current session becomes searchable before it ends.
+- On a new session or after `/clear`, shows Claude the newest earlier session in the same project: date, id, first prompt, and last reply. It uses about 82 tokens once per session in Claude's context, not the chat window.
 - Adds up to 3 strong keyword matches from the same project to each prompt. It skips weak matches and the current session.
 - Searches with FTS5. Use `--project`, `--after`, `--before`, `--tag`, `--context`, `--exclude`, `--any`, and `--fuzzy` to narrow results.
 - Supports semantic search with `subrosa search --semantic`. Automatic semantic search runs only after a plain search has zero hits and the local model and index are ready.

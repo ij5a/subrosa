@@ -79,7 +79,7 @@ fn to_json_spaced(v: &Value) -> String {
 }
 
 /// Char-based truncation so multi-byte text never splits mid-codepoint.
-fn cap(s: &str, n: usize) -> String {
+pub(crate) fn cap(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
     } else {

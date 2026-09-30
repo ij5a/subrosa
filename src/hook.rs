@@ -1,8 +1,8 @@
 //! Claude Code hook entrypoints. Mechanical only — read the hook JSON on
 //! stdin, do the work, log to the data dir, and always exit 0 so a memory
 //! problem can never block a session. Stdout is reserved for intentional
-//! context injection (session-start nudge, the per-prompt checkpoint-backlog
-//! directive, recall hits); errors go to the log, never the session. Hooks
+//! context injection (session-start nudge and last-session card, the per-prompt
+//! checkpoint-backlog directive, recall hits); errors go to the log, never the session. Hooks
 //! never spawn Claude; the detached distill worker may, only with `--bare` and
 //! a muted session id.
 
@@ -11,9 +11,12 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 use std::time::Duration;
 
+use rusqlite::OptionalExtension;
 use serde_json::Value;
 
-use crate::{db, embed, generate, ingest, paths, recall, HookEvent};
+use crate::{db, embed, generate, ingest, paths, recall, text, timeutil, HookEvent};
+
+const CARD_SNIPPET_CHARS: usize = 80;
 
 pub fn session_end_worker(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
     let transcript = input
@@ -100,7 +103,7 @@ pub fn run(event: HookEvent) -> ExitCode {
 }
 
 /// Catch-up ingest of any transcript that grew since the last archive
-/// (covers a missed or hard-killed SessionEnd), then print the nudge.
+/// (covers a missed or hard-killed SessionEnd), then print the nudge and card.
 fn session_start(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
     let sweep_result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let conn = db::connect()?;
@@ -111,16 +114,116 @@ fn session_start(input: &Value) -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     })();
     // The nudge is independent of sweep health — print whatever applies.
-    let lines = nudge_lines(input);
+    let mut lines = nudge_lines(input);
+    let nudge_count = lines.len();
+    let card_lines = match last_session_card(input) {
+        Ok(card) => card,
+        Err(e) => {
+            log(&format!("session-start card error: {e}"));
+            Vec::new()
+        }
+    };
+    if let Some(sid) = card_lines
+        .first()
+        .and_then(|line| line.split("subrosa session ").nth(1))
+        .and_then(|sid| sid.split('`').next())
+    {
+        log(&format!("session-start card: {sid}"));
+    }
+    lines.extend(card_lines);
     if !lines.is_empty() {
         println!("{}", lines.join("\n"));
-        log(&format!("session-start nudge: {} line(s)", lines.len()));
+        log(&format!("session-start nudge: {} line(s)", nudge_count));
     }
     // Detached, so the index keeps itself current without a hook ever waiting
     // on it — Claude Code stops a hook at 120s and a first backfill takes far
     // longer than that.
     embed::spawn_if_due();
     sweep_result
+}
+
+fn last_session_card(input: &Value) -> rusqlite::Result<Vec<String>> {
+    let source = input
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !matches!(source, "startup" | "clear") {
+        return Ok(Vec::new());
+    }
+    let project = input
+        .get("transcript_path")
+        .and_then(Value::as_str)
+        .and_then(|path| Path::new(path).parent())
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let current = input
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let conn = db::connect_readonly()?;
+    let row = conn
+        .query_row(
+            "SELECT session_id, last_ts, first_prompt, last_reply FROM (
+               SELECT s.session_id, s.last_ts,
+                 (SELECT t.text FROM turns t
+                  WHERE t.session_id = s.session_id AND t.role = 'user' AND t.is_sidechain = 0
+                    AND t.text NOT LIKE '↪%' AND t.text NOT LIKE '<%'
+                    AND t.text NOT LIKE '[Request interrupted%'
+                    AND t.text NOT LIKE 'This session is being continued%'
+                  ORDER BY t.seq LIMIT 1) AS first_prompt,
+                 (SELECT t.text FROM turns t
+                  WHERE t.session_id = s.session_id AND t.role = 'assistant' AND t.is_sidechain = 0
+                    AND t.text NOT LIKE '⚙%'
+                  ORDER BY t.seq DESC LIMIT 1) AS last_reply
+               FROM sessions s
+               WHERE s.project = ?1 AND s.session_id <> ?2
+             )
+             WHERE first_prompt IS NOT NULL
+             ORDER BY last_ts DESC
+             LIMIT 1",
+            rusqlite::params![project, current],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((session_id, last_ts, first_prompt, last_reply)) = row else {
+        return Ok(Vec::new());
+    };
+    let last_ts = last_ts.unwrap_or_default();
+    let date = last_ts.get(..10).unwrap_or("?");
+    let age = timeutil::parse_ts(&last_ts)
+        .map(|epoch| timeutil::age_suffix(timeutil::now_unix() - epoch))
+        .unwrap_or_default();
+    let snippet = |value: &str| {
+        ingest::cap(
+            &text::collapse_ws(
+                value
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or(""),
+            ),
+            CARD_SNIPPET_CHARS,
+        )
+    };
+    let first = snippet(&first_prompt);
+    let mut lines = vec![format!(
+        "[subrosa] Last session in this project: {date}{age}. Full text: `subrosa session {}`",
+        text::sid8(&session_id)
+    )];
+    match last_reply.as_deref().map(snippet) {
+        Some(last) if !last.is_empty() => lines.push(format!(
+            "[subrosa] First prompt: \"{first}\". Last reply: \"{last}\""
+        )),
+        _ => lines.push(format!("[subrosa] First prompt: \"{first}\"")),
+    }
+    Ok(lines)
 }
 
 /// Unique session ids waiting in the checkpoint queue, ordered newest→oldest

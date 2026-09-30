@@ -867,6 +867,36 @@ fn distill_session_start_is_quiet() {
 }
 
 #[test]
+fn distill_session_start_keeps_the_card() {
+    let env = setup("distill-session-start-card");
+    fs::write(env.data.join("config"), "distill=/absolute/claude\n").unwrap();
+    let transcript = env.projects.join("-tmp-demo/queued.jsonl");
+    fs::write(
+        &transcript,
+        user_rec("2026-06-12T01:00:00Z", "u1", "queued") + "\n",
+    )
+    .unwrap();
+    run(&env, &["ingest", transcript.to_str().unwrap()], None);
+    run(&env, &["checkpoint-enqueue", "queued"], None);
+    let transcript_path = env.projects.join("-tmp-demo/live.jsonl");
+    let payload = format!(
+        r#"{{"cwd":"/tmp/demo","session_id":"live","source":"startup","transcript_path":"{}"}}"#,
+        transcript_path.display()
+    );
+    let (out, err, ok) = run_env(
+        &env,
+        &["hook", "session-start"],
+        Some(&payload),
+        &[("SUBROSA_NOW", "1799712000")],
+    );
+    assert!(ok, "session-start failed: {err}");
+    assert_eq!(
+        out,
+        "[subrosa] Archive is updated.\n[subrosa] Last session in this project: 2026-06-12 (7mo old). Full text: `subrosa session queued`\n[subrosa] First prompt: \"queued\"\n"
+    );
+}
+
+#[test]
 fn distill_session_start_suppresses_other_notices() {
     let env = setup("distill-session-start-notices");
     fs::write(env.data.join("config"), "distill=/absolute/claude\n").unwrap();

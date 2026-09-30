@@ -76,6 +76,8 @@ Recall search and its relevance gate are local. They add `0` tokens and make no 
 
 A strong match adds about `200` estimated tokens from up to 3 lines: up to 2 saved facts left out of `MEMORY.md`, then past-session snippets. The benchmark uses response bytes divided by `3.8` as an estimate from one fixture; it is not a runtime token cap. Unicode text can exceed `220` by that estimate. It injects linked fact lines and snippet lines, not full sessions; use `subrosa search` for full text.
 
+A new session or `/clear` adds about `82` estimated tokens once for the last-session card, based on bytes divided by `3.8`.
+
 `MEMORY.md` loads once per session at up to 23 KB by default, about 6,000 tokens. Set a per-project budget with `echo 24500 > <memdir>/.budget`; it caps output at about 25,000 bytes or line 200. Extra output is not loaded. Saving and tag derivation add `0` tokens.
 
 ## Does it slow as the archive grows?

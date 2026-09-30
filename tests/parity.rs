@@ -455,6 +455,44 @@ fn recall_matches_golden() {
 }
 
 #[test]
+fn session_start_card_matches_golden() {
+    let env = setup("session-start-card");
+    ingest_golden_transcript(&env);
+    for source in ["startup", "clear"] {
+        let payload = format!(
+            r#"{{"cwd":"/tmp/demo","session_id":"zzzz-9999","source":"{source}","transcript_path":"{}/-tmp-demo/zzzz-9999.jsonl"}}"#,
+            env.projects.display()
+        );
+        assert_eq!(
+            run(&env, &["hook", "session-start"], Some(&payload)),
+            golden("session_start_card.golden")
+        );
+    }
+    for source in ["resume", "compact", "fork"] {
+        let payload = format!(
+            r#"{{"cwd":"/tmp/demo","session_id":"zzzz-9999","source":"{source}","transcript_path":"{}/-tmp-demo/zzzz-9999.jsonl"}}"#,
+            env.projects.display()
+        );
+        assert!(run(&env, &["hook", "session-start"], Some(&payload)).is_empty());
+    }
+    let no_source = format!(
+        r#"{{"cwd":"/tmp/demo","session_id":"zzzz-9999","transcript_path":"{}/-tmp-demo/zzzz-9999.jsonl"}}"#,
+        env.projects.display()
+    );
+    assert!(run(&env, &["hook", "session-start"], Some(&no_source)).is_empty());
+    let live = format!(
+        r#"{{"cwd":"/tmp/demo","session_id":"aaaa-bbbb-1111","source":"startup","transcript_path":"{}/-tmp-demo/aaaa-bbbb-1111.jsonl"}}"#,
+        env.projects.display()
+    );
+    assert!(run(&env, &["hook", "session-start"], Some(&live)).is_empty());
+    let other = format!(
+        r#"{{"cwd":"/tmp/other","session_id":"zzzz-9999","source":"startup","transcript_path":"{}/-tmp-other/zzzz-9999.jsonl"}}"#,
+        env.projects.display()
+    );
+    assert!(run(&env, &["hook", "session-start"], Some(&other)).is_empty());
+}
+
+#[test]
 fn recall_hidden_fact_matches_golden() {
     let env = setup("recall-facts");
     ingest_golden_transcript(&env);
