@@ -480,12 +480,23 @@ fn session_start_card_matches_golden() {
         env.projects.display()
     );
     assert!(run(&env, &["hook", "session-start"], Some(&no_source)).is_empty());
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    db.execute(
+        "UPDATE sessions SET project = '' WHERE session_id = 'aaaa-bbbb-1111'",
+        [],
+    )
+    .unwrap();
     assert!(run(
         &env,
         &["hook", "session-start"],
         Some(r#"{"cwd":"/tmp/demo","session_id":"zzzz-9999","source":"startup"}"#)
     )
     .is_empty());
+    db.execute(
+        "UPDATE sessions SET project = '-tmp-demo' WHERE session_id = 'aaaa-bbbb-1111'",
+        [],
+    )
+    .unwrap();
     let live = format!(
         r#"{{"cwd":"/tmp/demo","session_id":"aaaa-bbbb-1111","source":"startup","transcript_path":"{}/-tmp-demo/aaaa-bbbb-1111.jsonl"}}"#,
         env.projects.display()

@@ -1138,6 +1138,7 @@ fn recall_needs_an_anchor_term() {
 #[test]
 fn recall_miss_does_not_heal_seen_log() {
     let env = setup("miss-seen-log");
+    run(&env, &["init"], None);
     let log = env.data.join("recall-seen.log");
     const CONTROL_FILE_MAX: usize = 1 << 20;
     fs::write(&log, vec![b'x'; CONTROL_FILE_MAX + 1]).unwrap();
