@@ -8,6 +8,12 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+
+    # candle stays on 0.9: 0.10+ pulls tokenizers and C oniguruma (see Cargo.toml).
+    ignore:
+      - dependency-name: "candle-*"
+        versions: [">= 0.10"]
+
     groups:
       cargo:
         patterns: ["*"]
