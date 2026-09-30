@@ -480,6 +480,12 @@ fn session_start_card_matches_golden() {
         env.projects.display()
     );
     assert!(run(&env, &["hook", "session-start"], Some(&no_source)).is_empty());
+    assert!(run(
+        &env,
+        &["hook", "session-start"],
+        Some(r#"{"cwd":"/tmp/demo","session_id":"zzzz-9999","source":"startup"}"#)
+    )
+    .is_empty());
     let live = format!(
         r#"{{"cwd":"/tmp/demo","session_id":"aaaa-bbbb-1111","source":"startup","transcript_path":"{}/-tmp-demo/aaaa-bbbb-1111.jsonl"}}"#,
         env.projects.display()
@@ -509,6 +515,7 @@ fn recall_hidden_fact_matches_golden() {
     fs::write(memdir.join("MEMORY.md"), "# Memory Index\n\n- [cache-prod-endpoints](reference_cache_prod.md) — TICKET-123 cache-prod endpoints and the rollout owner\n").unwrap();
     let payload = r#"{"prompt":"how did we handle the cache-prod TICKET-123 rollout?","cwd":"/tmp/demo","session_id":"zzzz-9999"}"#;
     let out = run(&env, &["hook", "user-prompt-submit"], Some(payload));
+    assert_eq!(out, golden("recall_facts.golden"));
     assert!(out.starts_with("[subrosa recall] Saved facts"));
     assert!(out.contains("project_cache_prod_rollout.md"));
     assert!(!out.contains("project_rollout_notes.md"));

@@ -90,7 +90,7 @@ Disk use grows with archived text and semantic vectors. Run [`scripts/bench.sh`]
 
 ## Performance
 
-These measurements use `scripts/bench.sh`, a synthetic 50,000-turn archive, and an Apple M3 Max. Recall takes about 4 ms without a match or 14 ms with one. The full hook usually stays under 10 ms without a match. Live ingest takes about 7 ms per turn. Archiving 50,000 turns takes about 1.5 seconds.
+These measurements use `scripts/bench.sh`, a synthetic 50,000-turn archive, and an Apple M3 Max. Recall takes about 7 ms without a match or 18 ms with one. The full hook usually stays under 10 ms without a match. Live ingest takes about 7 ms per turn. Archiving 50,000 turns takes about 1.5 seconds.
 
 The static binary is about 5 MB with no runtime dependencies. Semantic search adds a 133 MB model and one finite background index pass.
 

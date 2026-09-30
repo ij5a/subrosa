@@ -223,6 +223,25 @@ struct FactCandidate {
     bm25: f64,
 }
 
+fn fact_line(fact: &FactCandidate) -> Option<String> {
+    let prefix = format!(
+        "- [{}]({}) — ",
+        text::collapse_ws(&fact.title),
+        fact.leaf_path
+    );
+    if prefix.chars().count() + 1 > SNIPPET_CHARS {
+        return None;
+    }
+    let hook = text::collapse_ws(&fact.hook);
+    let room = SNIPPET_CHARS - prefix.chars().count();
+    let hook = if hook.chars().count() > room {
+        format!("{}…", hook.chars().take(room - 1).collect::<String>())
+    } else {
+        hook
+    };
+    Some(format!("{prefix}{hook}"))
+}
+
 fn hidden_facts(
     conn: &rusqlite::Connection,
     fts_match: &str,
@@ -295,19 +314,6 @@ fn hidden_facts(
         candidates.push((leaf_path, title, hook, bm25, matched, head));
     }
     let min_required = min_required_terms(full_term_count);
-    let memory_path = paths::projects_dir()
-        .join(db::encode_cwd(cwd))
-        .join("memory")
-        .join("MEMORY.md");
-    let memory = match paths::read_control_file(&memory_path, paths::CONTROL_FILE_MAX) {
-        Ok(Some(text)) => text
-            .lines()
-            .take(crate::generate::CC_LOAD_LINES)
-            .collect::<Vec<_>>()
-            .join("\n"),
-        Ok(None) => String::new(),
-        Err(_) => return Vec::new(),
-    };
     let mut qualified = candidates
         .into_iter()
         .filter(|(leaf, _, _, _, matched, head)| {
@@ -322,7 +328,7 @@ fn hidden_facts(
                     head.iter()
                         .any(|tok| text::token_matches_loose(tok, &terms[*i].0))
                 })
-                && !memory.contains(&format!("]({leaf})"))
+                && !leaf.is_empty()
         })
         .map(|(leaf_path, title, hook, bm25, _, _)| FactCandidate {
             leaf_path,
@@ -331,6 +337,23 @@ fn hidden_facts(
             bm25,
         })
         .collect::<Vec<_>>();
+    if qualified.is_empty() {
+        return qualified;
+    }
+    let memory_path = paths::projects_dir()
+        .join(db::encode_cwd(cwd))
+        .join("memory")
+        .join("MEMORY.md");
+    let memory = match paths::read_control_file(&memory_path, paths::CONTROL_FILE_MAX) {
+        Ok(Some(text)) => text
+            .lines()
+            .take(crate::generate::CC_LOAD_LINES)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Ok(None) => String::new(),
+        Err(_) => return Vec::new(),
+    };
+    qualified.retain(|fact| !memory.contains(&format!("]({})", fact.leaf_path)));
     let best = qualified
         .iter()
         .map(|f| f.bm25)
@@ -506,6 +529,9 @@ pub fn run(input: &Value) -> Option<String> {
         if already.contains(&fact.leaf_path) {
             continue;
         }
+        if fact_line(&fact).is_none() {
+            continue;
+        }
         picked_facts.push(fact);
         if picked_facts.len() >= MAX_FACTS {
             break;
@@ -531,20 +557,7 @@ pub fn run(input: &Value) -> Option<String> {
     if !picked_facts.is_empty() {
         lines.push(FACT_HEADER.to_string());
         for fact in &picked_facts {
-            let prefix = format!(
-                "- [{}]({}) — ",
-                text::collapse_ws(&fact.title),
-                fact.leaf_path
-            );
-            let hook = text::collapse_ws(&fact.hook);
-            let room = SNIPPET_CHARS.saturating_sub(prefix.chars().count());
-            let hook: String = if hook.chars().count() > room {
-                let take = room.saturating_sub(1);
-                format!("{}…", hook.chars().take(take).collect::<String>())
-            } else {
-                hook
-            };
-            lines.push(format!("{prefix}{hook}"));
+            lines.push(fact_line(fact).expect("picked facts fit the line cap"));
         }
     }
     if !picked.is_empty() {
@@ -660,5 +673,28 @@ mod tests {
             3,
             "clamped, not 10, on a pasted wall"
         );
+    }
+
+    #[test]
+    fn fact_lines_stay_within_the_character_cap() {
+        let long = FactCandidate {
+            leaf_path: "leaf.md".into(),
+            title: "x".repeat(SNIPPET_CHARS),
+            hook: "hook".into(),
+            bm25: -1.0,
+        };
+        assert!(fact_line(&long).is_none());
+
+        let fixed_prefix = "- [](leaf.md) — ".chars().count();
+        let prefix_len = SNIPPET_CHARS - 1;
+        let exact = FactCandidate {
+            leaf_path: "leaf.md".into(),
+            title: "x".repeat(prefix_len - fixed_prefix),
+            hook: "hook".into(),
+            bm25: -1.0,
+        };
+        let line = fact_line(&exact).expect("prefix plus ellipsis fits");
+        assert_eq!(line.chars().count(), SNIPPET_CHARS);
+        assert!(line.ends_with('…'));
     }
 }

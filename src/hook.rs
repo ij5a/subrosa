@@ -157,6 +157,9 @@ fn last_session_card(input: &Value) -> rusqlite::Result<Vec<String>> {
         .and_then(Path::file_name)
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
+    if project.is_empty() {
+        return Ok(Vec::new());
+    }
     let current = input
         .get("session_id")
         .and_then(Value::as_str)
