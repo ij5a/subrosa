@@ -15,9 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use argon2::{Algorithm, Argon2, Params, Version};
-use chacha20poly1305::aead::rand_core::RngCore;
-use chacha20poly1305::aead::{AeadInPlace, KeyInit, OsRng};
-use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+use chacha20poly1305::aead::Generate;
+use chacha20poly1305::{AeadInOut, KeyInit, XChaCha20Poly1305, XNonce};
 
 use crate::paths;
 
@@ -57,10 +56,8 @@ fn derive_key(passphrase: &str, salt: &[u8], m: u32, t: u32, p: u32) -> Result<[
 /// exits 0 and all that's lost is one snapshot. If archives ever reach GBs,
 /// move to the AEAD STREAM construction and encrypt in chunks.
 pub fn encrypt(passphrase: &str, plaintext: Vec<u8>) -> Result<Vec<u8>, String> {
-    let mut salt = [0u8; 16];
-    let mut nonce = [0u8; 24];
-    OsRng.fill_bytes(&mut salt);
-    OsRng.fill_bytes(&mut nonce);
+    let salt = <[u8; 16]>::try_generate().map_err(|e| format!("random source failed: {e}"))?;
+    let nonce = <[u8; 24]>::try_generate().map_err(|e| format!("random source failed: {e}"))?;
 
     let mut out = Vec::with_capacity(HEADER_LEN + plaintext.len() + 16);
     out.extend_from_slice(MAGIC);
@@ -76,7 +73,7 @@ pub fn encrypt(passphrase: &str, plaintext: Vec<u8>) -> Result<Vec<u8>, String> 
     let cipher = XChaCha20Poly1305::new_from_slice(&key).map_err(|e| e.to_string())?;
     let (header, body) = out.split_at_mut(HEADER_LEN);
     let tag = cipher
-        .encrypt_in_place_detached(XNonce::from_slice(&nonce), &header[..], body)
+        .encrypt_inout_detached(&XNonce::from(nonce), &header[..], body.into())
         .map_err(|_| "encryption failed".to_string())?;
     out.extend_from_slice(&tag);
     Ok(out)
@@ -109,7 +106,7 @@ pub fn decrypt(passphrase: &str, blob: &[u8]) -> Result<Vec<u8>, String> {
     // AEAD cannot tell a wrong key from a damaged file, so both get one error.
     // Don't try to split them — the attempt is where padding-oracle bugs start.
     cipher
-        .decrypt_in_place(XNonce::from_slice(&nonce), header, &mut body)
+        .decrypt_in_place(&XNonce::from(nonce), header, &mut body)
         .map_err(|_| "wrong passphrase or corrupted file".to_string())?;
     Ok(body)
 }
