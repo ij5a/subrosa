@@ -1,9 +1,9 @@
 #!/bin/sh
 # Find the subrosa binary and run the given hook event. If no binary exists yet,
-# bootstrap the release pinned in hooks/binary-version for this platform —
-# sha256-verified against hooks/sha256sums.txt committed in this repo — into the
-# data dir. Everything is best-effort and quiet: a failed download must never
-# break a Claude Code session.
+# or at session start the data-dir binary does not match hooks/binary-version,
+# download that release for this platform, sha256-verified against
+# hooks/sha256sums.txt committed in this repo, into the data dir. Everything is
+# best-effort and quiet: a failed download must never break a Claude Code session.
 EVENT="$1"
 [ -n "$EVENT" ] || exit 0
 
@@ -60,13 +60,24 @@ bootstrap() {
     return 1
   fi
   mkdir -p "$DATA/bin" && chmod 700 "$DATA" "$DATA/bin" 2>/dev/null
-  tar -xzf "$TMP/$ARCHIVE" -C "$DATA/bin" subrosa && chmod 755 "$DATA/bin/subrosa"
+  # Write beside the target, then rename, so a running old binary is never rewritten in place.
+  NEW="$DATA/bin/subrosa.$$"
+  tar -xzf "$TMP/$ARCHIVE" -O subrosa >"$NEW" && chmod 755 "$NEW" && mv -f "$NEW" "$DATA/bin/subrosa"
   STATUS=$?
-  rm -rf "$TMP"
+  rm -rf "$TMP" "$NEW"
   return $STATUS
 }
 
 find_bin
+
+# Session start only: a failed download then retries once per session, not on every prompt.
+# distill.rs puts this copy first on its child's PATH, so refresh it even when PATH wins.
+if [ "$EVENT" = session-start ] && [ -x "$DATA/bin/subrosa" ]; then
+  PIN="$(cat "$SELF/binary-version" 2>/dev/null)"
+  if [ "$("$DATA/bin/subrosa" -V 2>/dev/null)" != "subrosa ${PIN#v}" ] && bootstrap >>"$DATA/hook.log" 2>&1; then
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) bootstrap: installed $PIN to $DATA/bin" >>"$DATA/hook.log"
+  fi
+fi
 if [ -z "$BIN" ]; then
   mkdir -p "$DATA" 2>/dev/null
   if bootstrap >>"$DATA/hook.log" 2>&1; then

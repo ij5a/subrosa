@@ -4,7 +4,7 @@ Rust CLI and Claude Code plugin for persistent local memory. Read before changin
 
 ## How it fits together
 
-`subrosa` is one binary. `.claude-plugin/` and `hooks/hooks.json` connect SessionStart, SessionEnd, UserPromptSubmit, PreCompact, and Stop to `hooks/run.sh`, which finds or bootstraps it and runs `subrosa hook <event>`.
+`subrosa` is one binary. `.claude-plugin/` and `hooks/hooks.json` connect SessionStart, SessionEnd, UserPromptSubmit, PreCompact, and Stop to `hooks/run.sh`, which finds or bootstraps it and runs `subrosa hook <event>`. At SessionStart, if the data-dir binary's `-V` does not match `hooks/binary-version`, `run.sh` downloads the pinned release, even when another binary runs the hook. A failed download keeps the old binary.
 
 - SessionStart catch-up-ingests changed transcripts and prints the checkpoint nudge. On startup and `/clear`, it also prints a 2-line card about the newest earlier session in the same project.
 - SessionEnd starts a detached worker that archives, queues, retries SQLite contention for a bounded time, optionally drains up to 3 checkpoints, and backs up. The hook returns immediately. Sweep recovers a missed worker.

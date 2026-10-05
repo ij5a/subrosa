@@ -4,7 +4,7 @@
 
 subrosa uploads no turns, queries, or saved text. It has no telemetry or update checker. It uses 11 direct crates, one static binary, and only the system `curl` child for the one-time model download. The download uploads no turns, queries, or saved text.
 
-The plugin bootstrap downloads the program from GitHub releases. An optional mirror writes one static snapshot to your folder. A sync client may upload it. The mirror is off by default.
+The plugin bootstrap downloads the program from GitHub releases. It downloads again only when the program is missing, or at a session start after a plugin update pins a new release. An optional mirror writes one static snapshot to your folder. A sync client may upload it. The mirror is off by default.
 
 ## Where is data stored?
 

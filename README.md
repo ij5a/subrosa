@@ -54,7 +54,7 @@ Inside Claude Code, run:
 /plugin install subrosa@subrosa
 ```
 
-Start a new Claude Code session after installation. The plugin downloads the right prebuilt program, about 2.5 MB, and checks its checksum.
+Start a new Claude Code session after installation. The plugin downloads the right prebuilt program, about 2.5 MB, and checks its checksum. After a plugin update pins a new release, the next session start replaces that program. A `subrosa` you install yourself, on PATH or in `~/.cargo/bin`, runs first, and the plugin never replaces it.
 
 It also archives sessions already on your disk, then archives sessions while you work and when they end. It shows related past sessions in Claude's context and reports sessions waiting for long-term memory.
 
