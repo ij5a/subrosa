@@ -35,7 +35,7 @@ The user is about to run `/clear` or `/compact`. Save durable facts before eithe
 4. **Write the leaf, then register the fact. Do NOT hand-edit `MEMORY.md`.**
    - Create or update the leaf with frontmatter: `name`, `description`, `type`.
    - Use **Why:** and **How to apply:** for `feedback` and `project`. The why helps future readers judge edge cases.
-   - Register it: `subrosa fact upsert --leaf <file.md> --hook "<one-line hook, under ~150 chars>"`. Type and title come from frontmatter. Pass `--pin` for an always-loaded guardrail, but pinned facts still compete for the byte budget. On update, the stored title stays unless you pass `--title`. New facts append; updates keep their place.
+   - Register it: `subrosa fact upsert --leaf <file.md> --hook "<one-line hook, under ~150 chars>" --origin-session <id>`. `<id>` is the current session id from step 10. Pass it for new and updated facts, because `checkpoint-mark` refuses a session with no fact stamped with its id. Type and title come from frontmatter. Pass `--pin` for an always-loaded guardrail, but pinned facts still compete for the byte budget. On update, the stored title stays unless you pass `--title`. New facts append; updates keep their place.
    - Link related leaves with `[[slug]]`, using the other leaf's `name`. A not-yet-written leaf is allowed. Run `subrosa fact link <slug>` after registration. `[dangling]` means a typo or missing leaf.
 
 5. **Convert relative dates to absolute dates** before writing. Use today's date as the anchor. For example, replace "yesterday", "last Thursday", or "next sprint".

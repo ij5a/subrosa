@@ -186,11 +186,14 @@ fn upsert(
     pin: bool,
     origin_session: Option<&str>,
 ) -> rusqlite::Result<()> {
-    let origin_session: Option<String> = origin_session.map(str::to_string).or_else(|| {
-        std::env::var("SUBROSA_ORIGIN_SESSION")
-            .ok()
-            .filter(|s| !s.is_empty())
-    });
+    let origin_session: Option<String> = origin_session
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            std::env::var("SUBROSA_ORIGIN_SESSION")
+                .ok()
+                .filter(|s| !s.is_empty())
+        });
     let fm = std::fs::read_to_string(memdir.join(leaf))
         .map(|t| parse_frontmatter(&t))
         .unwrap_or_default();
@@ -276,8 +279,18 @@ fn upsert(
     let action = if let Some(r) = &row {
         conn.execute(
             "UPDATE facts SET type=?, title=?, hook=?, description=?, status='active', \
-             superseded_at=NULL, pinned=MAX(pinned,?), updated_at=? WHERE id=?",
-            params![type_, title, hook, description, pin as i64, now, r.id],
+             superseded_at=NULL, pinned=MAX(pinned,?), \
+             origin_session=COALESCE(?, origin_session), updated_at=? WHERE id=?",
+            params![
+                type_,
+                title,
+                hook,
+                description,
+                pin as i64,
+                origin_session,
+                now,
+                r.id
+            ],
         )?;
         "updated"
     } else {

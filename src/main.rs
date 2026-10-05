@@ -208,7 +208,7 @@ enum Cmd {
         /// Force always-loaded regardless of budget
         #[arg(long)]
         pin: bool,
-        /// Stamp origin_session on new facts (checkpoint provenance)
+        /// Stamp origin_session on new and updated facts for checkpoint provenance
         #[arg(long)]
         origin_session: Option<String>,
         /// Encoded project name (default: parent dir of --memdir)

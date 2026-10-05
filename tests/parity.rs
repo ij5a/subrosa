@@ -320,6 +320,35 @@ fn checkpoint_mark_with_fact_keeps_working() {
     assert!(!String::from_utf8_lossy(&out.stdout).contains("no facts were saved"));
 }
 
+#[test]
+fn checkpoint_mark_accepts_a_fact_the_session_updated() {
+    let env = setup("mark-updated-fact");
+    let transcript = env.projects.join("-tmp-demo/second-2222.jsonl");
+    fs::write(&transcript, golden("transcript.jsonl")).unwrap();
+    run(&env, &["ingest", transcript.to_str().unwrap()], None);
+    let memdir = env.data.join("memory");
+    fs::create_dir_all(&memdir).unwrap();
+    fs::write(
+        memdir.join("saved.md"),
+        "---\nname: saved\ntype: project\n---\nA durable fact.\n",
+    )
+    .unwrap();
+    let memdir = memdir.to_str().unwrap();
+    for origin in [Some("first-1111"), Some("second-2222"), Some(""), None] {
+        let mut args = vec!["fact", "upsert", "--leaf", "saved.md", "--memdir", memdir];
+        if let Some(origin) = origin {
+            args.extend(["--origin-session", origin]);
+        }
+        assert!(run_full(&env, &args, None).status.success());
+    }
+    let out = run_full(&env, &["checkpoint-mark", "second-2222"], None);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 fn user_rec_for_test() -> String {
     "\n{\"type\":\"user\",\"timestamp\":\"2026-06-12T01:06:00Z\",\"uuid\":\"new\",\"cwd\":\"/tmp/demo\",\"message\":{\"role\":\"user\",\"content\":\"new turn\"}}\n".to_string()
 }
