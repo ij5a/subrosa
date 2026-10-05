@@ -4,6 +4,13 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.2] - 2026-10-06
+
+### Fixed
+
+- At session start, the plugin now replaces its downloaded program when a plugin update pins a new release. Before, plugin-only users kept the first program they downloaded. A `subrosa` you install yourself still runs first, and the plugin never replaces it.
+- `/subrosa:checkpoint` adds `--no-facts` when a checkpoint saves and updates nothing, so `checkpoint-mark` no longer refuses it.
+
 ## [0.29.1] - 2026-10-06
 
 ### Fixed
@@ -391,6 +398,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [0.15.0]: https://github.com/ij5a/subrosa/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/ij5a/subrosa/compare/v0.14.0...v0.14.1
 [0.28.1]: https://github.com/ij5a/subrosa/compare/v0.28.0...v0.28.1
+[0.29.2]: https://github.com/ij5a/subrosa/compare/v0.29.1...v0.29.2
 [0.29.1]: https://github.com/ij5a/subrosa/compare/v0.29.0...v0.29.1
 [0.29.0]: https://github.com/ij5a/subrosa/compare/v0.28.4...v0.29.0
 [0.28.4]: https://github.com/ij5a/subrosa/compare/v0.28.3...v0.28.4
