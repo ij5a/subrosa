@@ -128,6 +128,7 @@ subrosa fact doctor                      # read-only; exit 1 on a break
 subrosa generate                         # rebuild MEMORY.md
 subrosa import ~/.claude/projects/<project>/memory # import an existing MEMORY.md
 subrosa session <id>                     # full ID or unique prefix
+subrosa session <id> --since N           # only turns after sequence N
 subrosa pending                          # queued checkpoints
 subrosa checkpoint-drop <id> --max-seq N # remove a verified queue prefix
 subrosa sweep                            # catch up on transcripts
@@ -154,7 +155,7 @@ printf 'distill=/absolute/path/to/claude\n' >> ~/.claude/subrosa/config
 
 The child uses `--bare`, so it does not use a Claude subscription login; set `ANTHROPIC_API_KEY` in its environment.
 
-SessionEnd then starts `subrosa distill --auto`, up to 3 queued sessions per run. Each child uses `--bare`, `--model sonnet`, 40 turns, and a $1 budget. The worker compares leaf hashes and registered fact rows before dropping a queue row; a verified no-op also needs no changed leaf, no deleted leaf, an exact `SESSION_TOTAL: saved 0, updated <digits>` line, and an unchanged `max(seq)`. Set `SUBROSA_DISTILL=off` to disable it.
+SessionEnd then starts `subrosa distill --auto`, up to 3 queued sessions per run, newest first. The session whose end started the run skips the 10-minute check. The retry wait, run lock, 3-run cap, and incomplete-archive check still apply. Other sessions with transcripts changed in the last 10 minutes are skipped for a later run. Each child uses `--bare`, `--model sonnet`, 40 turns, and a $1 budget. The worker compares leaf hashes and registered fact rows before advancing `checkpointed_seq`; a passing proof advances through the captured boundary and keeps a grown session queued. An incomplete archive is deferred. A later run passes `--since <seq>` only when `checkpointed_seq` is 0 or more and below the session's last archived seq. Otherwise the child reads the whole session. A replaced transcript longer than the watermark can still hide changed turns below it. A verified no-op needs no changed leaf, no deleted leaf, and an exact `SESSION_TOTAL: saved 0, updated <digits>` line. Set `SUBROSA_DISTILL=off` to disable it.
 
 ## Make Claude use the archive itself
 

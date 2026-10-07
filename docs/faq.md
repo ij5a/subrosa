@@ -16,6 +16,8 @@ The plugin bootstrap downloads the program from GitHub releases. It downloads ag
 | Checkpoint queue | `~/.claude/subrosa/memory.db` | SQLite table. Older versions used `~/.claude/subrosa/pending-checkpoint.log`; upgrade imports it once and leaves it untouched. |
 | Semantic model | `~/.claude/subrosa/models/` | About 133 MB, downloaded once and checksum-verified. |
 | Index retry state | `~/.claude/subrosa/embed.state` | Records the next retry time when present. Healthy runs can also leave it present. |
+| Distill retry state | `~/.claude/subrosa/distill.state` | Each worker run writes it at start. A clean run removes it. After a failure it holds a 1-hour retry wait. |
+| Last distill result | `~/.claude/subrosa/distill.last` | Holds the time, session id, and result of the last automatic checkpoint run. |
 
 These variables control data paths, secrets, modes, and tools: `SUBROSA_DIR`, `SUBROSA_DB`, `SUBROSA_PROJECTS_DIR`, `SUBROSA_PENDING_LOG`, `SUBROSA_MIRROR`, `SUBROSA_MIRROR_PASSPHRASE`, `SUBROSA_CHECKPOINT_NUDGE`, `SUBROSA_SEMANTIC`, and `SUBROSA_CURL`. The legacy import alone reads `SUBROSA_PENDING_LOG`.
 
@@ -66,7 +68,7 @@ A passphrase set outside `subrosa setup` applies at the next backup. The first e
 
 ## How does long-term memory work?
 
-Ended sessions start a detached worker and return. It archives the transcript, adds it to the SQLite queue, retries database contention for a bounded time, and lets a later sweep recover missed work. `/subrosa:checkpoint-backlog` saves queued facts. `/subrosa:checkpoint` saves facts before `/clear` or `/compact`.
+Ended sessions start a detached worker and return. It archives the transcript, adds it to the SQLite queue, retries database contention for a bounded time, and lets a later sweep recover missed work. When configured, automatic checkpointing starts up to 3 queued child runs. The session whose end started the run skips the 10-minute check. The retry wait, run lock, 3-run cap, and incomplete-archive check still apply. `/subrosa:checkpoint-backlog` saves queued facts. `/subrosa:checkpoint` saves facts before `/clear` or `/compact`.
 
 Each fact has a Markdown file and database row. `subrosa generate` writes `MEMORY.md`. Facts outside the byte budget stay searchable, and recall shows one when a prompt names it clearly.
 
@@ -130,7 +132,7 @@ Tags are read-only and recomputed from redacted text. Filter with `subrosa sessi
 
 ## What does the dashboard show?
 
-Bare `subrosa` shows an activity sparkline, database size, project share, index budget, and semantic-index progress.
+Bare `subrosa` shows an activity sparkline, database size, project share, index budget, semantic-index progress, and automatic checkpoint health when it is enabled. The `ckpt` line shows waiting and live sessions plus the last result. Without automatic checkpointing, it shows the backlog hint when sessions are queued.
 
 ## Proof
 

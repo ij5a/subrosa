@@ -5,7 +5,7 @@ description: Check ended Claude Code sessions in subrosa's queue. Read the SQLit
 
 # checkpoint-backlog: checkpoint queued sessions
 
-When a session ends, `SessionEnd` adds it to the database queue. Older versions used `~/.claude/subrosa/pending-checkpoint.log`. The queue may drain automatically when `distill` is configured; this skill processes anything still queued **in-session**. It applies the checkpoint skill to each *past* session.
+When a session ends, `SessionEnd` adds it to the database queue. Older versions used `~/.claude/subrosa/pending-checkpoint.log`. The queue may drain automatically when `distill` is configured; this skill processes anything still queued **in-session**. Automatic distill starts up to 3 queued sessions newest first. The session whose end started the run skips the 10-minute check. The retry wait, run lock, 3-run cap, and incomplete-archive check still apply. It applies the checkpoint skill to each *past* session.
 
 Follow the checkpoint skill's 4 types, rules, exclusions, and `subrosa fact upsert` to `subrosa generate` flow. Read `${CLAUDE_PLUGIN_ROOT}/skills/checkpoint/SKILL.md`. Apply these overrides.
 
@@ -15,7 +15,7 @@ For **more than one project**, read dumps in parallel, one sub-agent per project
 
 1. **List the backlog:** Run `subrosa pending`. Each line is `<timestamp>\t<session-id>`, newest first. Collect unique ids. If empty, say "no backlog" and stop.
 
-2. **Process all queued sessions.** Work through every id from `subrosa pending`, newest first. Process every queued id. Drop each completed session or leave it queued explicitly.
+2. **Process all queued sessions.** Work through every id from `subrosa pending`, newest first. Process every queued id. Drop each completed session or leave it queued explicitly. Automatic distill may already have handled some rows, so list the queue again before reporting.
 
 3. **Find each session's project.** For each id, run `subrosa session <id> | head -2`. The pipe stops after 2 header lines. It avoids dumping the whole session and works with any recent binary:
    - Line 1 is `# session <id>  project=<project>  cwd=<cwd>  <first>..<last>`. Take `project=`.

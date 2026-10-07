@@ -20,7 +20,7 @@ Rust CLI and Claude Code plugin for persistent local memory. Read before changin
 | File | Job |
 |---|---|
 | `main.rs` | clap dispatch and small command runners |
-| `paths.rs` | Data paths, environment overrides, and the `KEY=VALUE` config. It handles `semantic` and `embed.state`. |
+| `paths.rs` | Data paths, environment overrides, and the `KEY=VALUE` config. It handles `semantic`, `embed.state`, `distill.state`, and `distill.last`. |
 | `db.rs` | Compatibility-critical schema, `connect`, `connect_readonly`, `migrate()`, `now_iso`, `encode_cwd`, `current_memdir`, and lazy trigram and `turn_embeddings` tables. The schema includes `session_tags`. |
 | `redact.rs` | Secret masking before storage |
 | `ingest.rs` | JSONL to turn rows, seek-resume ingest with `scan_offset` and `scan_seq`, sweep, checkpoint queue, and tag derivation hook |
@@ -33,14 +33,14 @@ Rust CLI and Claude Code plugin for persistent local memory. Read before changin
 | `facts.rs` | Curated facts CRUD, frontmatter parsing, type weights, `fact link` `[[name]]` graph reads, and read-only `fact doctor` leaf and row checks |
 | `generate.rs` | Byte-budgeted `MEMORY.md`. It supports `<memdir>/.budget` and stops at Claude Code's 200-line load limit. |
 | `import_existing.rs` | One-time import of a `MEMORY.md` and its leaves into the facts table |
-| `session.rs` | Session dump by full ID or unique prefix, optional `--tags`, and checkpoint queue operations: drop, enqueue, and mark-current |
-| `stats.rs` | Dashboard, including the semantic-index progress line. It is also the bare `subrosa` command. |
+| `session.rs` | Session dump by full ID or unique prefix, optional `--tags` and `--since`, and checkpoint queue operations: drop, enqueue, and mark-current |
+| `stats.rs` | Dashboard, including semantic-index progress and automatic checkpoint health. It is also the bare `subrosa` command. |
 | `timeutil.rs` | ISO-8601 and Unix-epoch helpers without chrono: `parse_ts`, `now_unix`, `civil_to_days`, `civil_from_days`, `parse_ymd`, and `next_day`. Stats, recall, search, and sessions use them. |
 | `backup.rs` | Throttled snapshots through the SQLite backup API and plain or encrypted mirror copies |
 | `crypt.rs` | Encrypted mirror snapshots with XChaCha20-Poly1305 and argon2id. It also implements `subrosa restore`. |
 | `setup.rs` | Interactive first-run config for a mirror folder and optional mirror passphrase |
 | `embed.rs` | CPU `bge-small-en-v1.5` model, pinned revision, one-time system-`curl` download, per-file sha256 checks on download, pinned-size checks later, CLS pooling, cosine normalization, and shared `Embedder`. `embed(&self)` is Send+Sync, so workers share one loaded model. It also owns `spawn_if_due`, `embed.lock`, and `embed.state`. |
-| `distill.rs` | Opt-in detached checkpoint worker, its run lock and retry state, muted child session ids, and prove-before-drop queue completion. |
+| `distill.rs` | Opt-in detached checkpoint worker, live-session skip, run lock, retry state, result file, muted child session ids, watermark completion, and prove-before-drop queue handling. |
 | `wordpiece.rs` | Hand-rolled BERT WordPiece tokenizer over `vocab.txt`. The project leaves out `tokenizers` because it builds C oniguruma. |
 | `hook.rs` | Hook entrypoints. They read JSON from stdin, log to a file, print the SessionStart card, always exit 0, and start the detached indexer at SessionStart and SessionEnd. |
 
@@ -49,7 +49,7 @@ Rust CLI and Claude Code plugin for persistent local memory. Read before changin
 - **Schema and output formats are compatibility-critical.** Archives must work across versions. Golden tests pin stored text, session dumps, `MEMORY.md`, recall, related, fact links, and session listings byte for byte. A failing golden test needs a deliberate format decision. Never update one only to silence failure.
   - Schema changes are additive through `migrate()`. v3 adds `session_tags` and backfill. v4 adds `scan_offset` and `scan_seq`. v5 imports the old queue once. v6 adds the queue ordering column.
 - **Hooks never fail or block.** They log to `$SUBROSA_DIR/hook.log` and exit 0. SessionEnd hands archive, queue writes, and optional distill spawning to detached workers. Stdout carries only the nudge, backlog directive, recall hits, and last-session card. Hooks never spawn Claude; the detached distill worker may, only with `--bare` and a muted session id.
-- **Checkpoint completion is monotonic.** `checkpointed_seq` only moves forward. `checkpoint-clear --confirm` refuses a queue that still needs per-session verification. `checkpoint-drop` without `--max-seq` uses the distilled watermark as its boundary; pass `--max-seq` to acknowledge a verified prefix explicitly.
+- **Checkpoint completion is monotonic.** `checkpointed_seq` only moves forward. Automatic distill advances it through the captured boundary and keeps a grown session queued. It drops the queue row only when the live maximum sequence still equals that boundary. `checkpoint-clear --confirm` refuses a queue that still needs per-session verification. `checkpoint-drop` without `--max-seq` uses the distilled watermark as its boundary; pass `--max-seq` to acknowledge a verified prefix explicitly.
 - **The live database never goes in a synced folder.** Sync can corrupt SQLite WAL and SHM sidecars. Only static snapshots may mirror. Do not move the live database.
 - **An intended encrypted mirror never becomes plaintext.** Intent starts when a passphrase resolves, even with an error, or when `subrosa-latest.db.enc` exists. Later failure skips the mirror and leaves it stale. It never falls back. Clear the plaintext twin before bailout. Disable encryption by deleting `.enc`; missing config must not do it.
 - **The binary has no network path except the model download child and the opt-in distill child.** The one-time download uses system `curl`, a pinned revision, and sha256 checks. The distill child sends redacted transcript text to Anthropic, so `distill` is unset and off by default. Hooks never download, embed, or distill. SessionStart and SessionEnd spawn background work in detached process groups with null stdio and no wait.
