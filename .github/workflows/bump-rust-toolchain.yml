@@ -15,8 +15,8 @@ jobs:
   bump:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       - name: Bump mise rust pin to latest stable
         run: |
           V=$(mise latest rust)
@@ -26,7 +26,7 @@ jobs:
       # because GITHUB_TOKEN-opened PRs don't retrigger ci.yml. Swap to a PAT and
       # drop this if you'd rather the PR run the full matrix.
       - run: mise exec -- cargo test --locked
-      - uses: peter-evans/create-pull-request@v8
+      - uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           branch: chore/bump-rust-toolchain
           title: "chore: bump rust toolchain pin to latest stable"
