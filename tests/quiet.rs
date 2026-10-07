@@ -113,6 +113,146 @@ fn ingest(env: &TestEnv, stem: &str, records: &[String]) {
 }
 
 #[test]
+fn distill_skips_live_rows_and_reports_health() {
+    let env = setup("distill-queue");
+    let script = env.data.join("distill.sh");
+    let ran = env.data.join("ran");
+    fs::write(
+        &script,
+        format!("#!/bin/sh\necho \"$SUBROSA_ORIGIN_SESSION\" >> {}\necho 'SESSION_TOTAL: saved 0, updated 0'\n", ran.display()),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    fs::write(
+        env.data.join("config"),
+        format!("distill={}\n", script.display()),
+    )
+    .unwrap();
+    for stem in ["old1", "old2", "old3", "old4", "live1", "live2"] {
+        ingest(&env, stem, &[user_rec("2026-06-12T01:00:00Z", stem, stem)]);
+        assert!(run(&env, &["checkpoint-enqueue", stem], None).1.is_empty());
+    }
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    for stem in ["old1", "old2", "old3", "old4"] {
+        let path: String = db
+            .query_row(
+                "SELECT file_path FROM sessions WHERE session_id=?",
+                [stem],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+            .unwrap();
+    }
+    db.execute(
+        "UPDATE sessions SET partial_tail=1 WHERE session_id='old4'",
+        [],
+    )
+    .unwrap();
+    assert!(run_env::<&str>(&env, &["distill", "--auto"], None, &[]).2);
+    assert_eq!(
+        fs::read_to_string(&ran)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["old3", "old2", "old1"]
+    );
+    let log = fs::read_to_string(env.data.join("hook.log")).unwrap();
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("done through "))
+            .count(),
+        3
+    );
+    assert!(log.contains("distill old4 deferred: session archive is incomplete"));
+    let last = fs::read_to_string(env.data.join("distill.last")).unwrap();
+    assert!(last.contains("sid=old1") && last.contains("result=done through "));
+    let dashboard = run_env(&env, &[], None, &[("NO_COLOR", "1")]).0;
+    assert!(dashboard.contains("1 waiting, 2 live  last: old1 done through "));
+    assert!(!dashboard.contains("checkpoint-backlog"));
+    assert!(run_env::<&str>(&env, &["distill", "--auto", "--ended", "live1"], None, &[]).2);
+    assert_eq!(
+        fs::read_to_string(&ran)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["old3", "old2", "old1", "live1"]
+    );
+    fs::write(
+        env.data.join("distill.last"),
+        "at=-9223372036854775808\nsid=1234567é\nresult=x\n",
+    )
+    .unwrap();
+    let dashboard = run_env(&env, &[], None, &[("NO_COLOR", "1")]).0;
+    assert!(dashboard.contains("last: 1234567é x"));
+    fs::remove_file(env.data.join("distill.last")).unwrap();
+    fs::create_dir(env.data.join("distill.last")).unwrap();
+    let dashboard = run_env(&env, &[], None, &[("NO_COLOR", "1")]).0;
+    assert!(dashboard.contains("waiting,") && dashboard.contains("last: unreadable ("));
+    fs::remove_dir(env.data.join("distill.last")).unwrap();
+    fs::remove_file(env.data.join("config")).unwrap();
+    let dashboard = run_env(&env, &[], None, &[("NO_COLOR", "1")]).0;
+    assert!(dashboard.contains("2 pending  run /subrosa:checkpoint-backlog"));
+}
+
+#[test]
+fn distill_rereads_a_rebuilt_session_in_full() {
+    let env = setup("distill-rebuilt");
+    let script = env.data.join("distill.sh");
+    fs::write(&script, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}/$SUBROSA_ORIGIN_SESSION.prompt\necho 'SESSION_TOTAL: saved 0, updated 0'\n", env.data.display())).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    fs::write(
+        env.data.join("config"),
+        format!("distill={}\n", script.display()),
+    )
+    .unwrap();
+    for stem in ["rebuilt", "incremental"] {
+        ingest(
+            &env,
+            stem,
+            &[
+                user_rec("2026-06-12T01:00:00Z", "one", "one"),
+                user_rec("2026-06-12T01:01:00Z", "two", "two"),
+            ],
+        );
+        run(&env, &["checkpoint-enqueue", stem], None);
+    }
+    let db = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+    db.execute(
+        "UPDATE sessions SET checkpointed_seq=1, file_size=file_size WHERE session_id='rebuilt'",
+        [],
+    )
+    .unwrap();
+    db.execute("UPDATE sessions SET checkpointed_seq=0, file_size=file_size WHERE session_id='incremental'", []).unwrap();
+    for stem in ["rebuilt", "incremental"] {
+        let path: String = db
+            .query_row(
+                "SELECT file_path FROM sessions WHERE session_id=?",
+                [stem],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+            .unwrap();
+    }
+    assert!(run_env::<&str>(&env, &["distill", "--auto"], None, &[]).2);
+    assert!(!fs::read_to_string(env.data.join("rebuilt.prompt"))
+        .unwrap()
+        .contains("--since"));
+    assert!(fs::read_to_string(env.data.join("incremental.prompt"))
+        .unwrap()
+        .contains("--since 0"));
+}
+
+#[test]
 fn ingest_missing_path_fails() {
     let env = setup("ingest-missing");
     let missing = env.projects.join("-tmp-demo/missing.jsonl");

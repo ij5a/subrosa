@@ -152,6 +152,8 @@ enum Cmd {
         /// Run the detached-style worker
         #[arg(long)]
         auto: bool,
+        #[arg(long, hide = true)]
+        ended: Option<String>,
     },
     /// Find terms and sessions that co-occur with an identifier across the archive
     Related {
@@ -263,6 +265,9 @@ enum Cmd {
         /// Print the archived sequence boundary for checkpointing.
         #[arg(long)]
         boundary: bool,
+        /// Print only turns after this sequence number
+        #[arg(long)]
+        since: Option<i64>,
     },
     /// List sessions queued for checkpoint
     Pending,
@@ -391,7 +396,7 @@ fn main() -> ExitCode {
             semantic,
         ),
         Cmd::Embed { rebuild, auto } => search::embed_backfill(rebuild, auto),
-        Cmd::Distill { auto } => distill::run(auto),
+        Cmd::Distill { auto, ended } => distill::run(auto, ended.as_deref()),
         Cmd::Related {
             identifier,
             limit,
@@ -450,7 +455,12 @@ fn main() -> ExitCode {
             no_backup,
             project,
         } => import_existing::run(memdir, no_backup, project),
-        Cmd::Session { id, tags, boundary } => session::dump(&id, tags, boundary),
+        Cmd::Session {
+            id,
+            tags,
+            boundary,
+            since,
+        } => session::dump(&id, tags, boundary, since),
         Cmd::Pending => run_pending(),
         Cmd::CheckpointDrop {
             id,

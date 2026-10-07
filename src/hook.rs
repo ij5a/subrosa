@@ -64,7 +64,7 @@ fn session_end_write(
         Ok(None) => {}
         Err(e) => log(&format!("session-end backup error: {e}")),
     }
-    crate::distill::spawn_if_due();
+    crate::distill::spawn_if_due(sid);
     Ok(())
 }
 

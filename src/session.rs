@@ -80,7 +80,7 @@ fn resolve_session(conn: &rusqlite::Connection, arg: &str) -> Resolved {
 /// the full session id or any unique prefix (e.g. the 8-char id `search` and
 /// `related` print). With `show_tags`, adds one `# tags:` line to the header;
 /// the default output stays byte-identical (pinned by session_dump.golden).
-pub fn dump(arg: &str, show_tags: bool, show_boundary: bool) -> ExitCode {
+pub fn dump(arg: &str, show_tags: bool, show_boundary: bool, since: Option<i64>) -> ExitCode {
     let conn = match db::connect_queue_readonly() {
         Ok(c) => c,
         Err(e) => {
@@ -106,10 +106,10 @@ pub fn dump(arg: &str, show_tags: bool, show_boundary: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let rows: Result<Vec<(String, Option<String>)>, _> = tx
-        .prepare("SELECT role, text FROM turns WHERE session_id=? ORDER BY seq")
+    let rows: Result<Vec<(i64, String, Option<String>)>, _> = tx
+        .prepare("SELECT seq, role, text FROM turns WHERE session_id=? ORDER BY seq")
         .and_then(|mut s| {
-            s.query_map([sid.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))?
+            s.query_map([sid.as_str()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
                 .collect()
         });
     let rows = match rows {
@@ -172,7 +172,10 @@ pub fn dump(arg: &str, show_tags: bool, show_boundary: bool) -> ExitCode {
         eprintln!("[subrosa] cannot finish session read: {e}");
         return ExitCode::FAILURE;
     }
-    for (role, text) in rows {
+    for (seq, role, text) in rows {
+        if since.is_some_and(|n| seq <= n) {
+            continue;
+        }
         println!("## {role}\n{}\n", text.unwrap_or_default());
     }
     ExitCode::SUCCESS

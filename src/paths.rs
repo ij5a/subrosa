@@ -466,6 +466,10 @@ pub fn distill_state_path() -> PathBuf {
     mem_dir().join("distill.state")
 }
 
+pub fn distill_last_path() -> PathBuf {
+    mem_dir().join("distill.last")
+}
+
 #[cfg(test)]
 pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
     use std::sync::{Mutex, OnceLock};

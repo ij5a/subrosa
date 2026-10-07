@@ -572,6 +572,47 @@ fn pending_count() -> Option<usize> {
     .map(|n| n as usize)
 }
 
+fn distill_health() -> Option<String> {
+    let conn = db::connect_queue_readonly().ok()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.file_path FROM checkpoint_queue q LEFT JOIN sessions s USING(session_id)",
+        )
+        .ok()?;
+    let paths: Vec<Option<String>> = stmt
+        .query_map([], |r| r.get(0))
+        .ok()?
+        .collect::<Result<_, _>>()
+        .ok()?;
+    let live = paths
+        .iter()
+        .filter(|p| crate::distill::is_live(p.as_deref()))
+        .count();
+    let last = match paths::read_control_file(&paths::distill_last_path(), 4096) {
+        Ok(None) => "last: none yet".to_string(),
+        Ok(Some(text)) => {
+            let sid = paths::kv_get(&text, "sid").unwrap_or_default();
+            let result = paths::kv_get(&text, "result").unwrap_or_default();
+            let at = paths::kv_get(&text, "at")
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(now_unix());
+            format!(
+                "last: {} {}, {}",
+                sid.chars().take(8).collect::<String>(),
+                result,
+                ago_secs(now_unix().saturating_sub(at))
+            )
+        }
+        Err(e) => format!("last: unreadable ({e})"),
+    };
+    let waiting = paths.len() - live;
+    let counts = c1(
+        &format!("{waiting} waiting, {live} live"),
+        if waiting > 0 { "yellow" } else { "gray" },
+    );
+    Some(format!("{}  {}", counts, c1(&last, "gray")))
+}
+
 // ---- current-context resolution ---------------------------------------------
 
 struct CurrentContext {
@@ -1248,26 +1289,35 @@ fn render(conn: &Connection, stats: &Stats, ctx: &CurrentContext, detail: bool) 
 
     println!("{}", sline("semantic", &semantic_line(conn), 8));
 
-    match pending_count() {
-        Some(pend) if pend > 0 => println!(
-            "{}",
-            sline(
-                "ckpt",
-                &format!(
-                    "{}{}",
-                    c1(&format!("{} pending", pend), "yellow"),
-                    c1("  run /subrosa:checkpoint-backlog", "gray")
-                ),
-                8
-            )
-        ),
-        Some(_) => {}
-        // A queue we can't read is louder than one that's empty: the backlog
-        // is invisible exactly when something is wrong with the file holding it.
-        None => println!(
-            "{}",
-            sline("ckpt", &c1("unreadable — check the database", "bred"), 8)
-        ),
+    match paths::distill_path() {
+        Ok(Some(_)) => match distill_health() {
+            Some(text) => println!("{}", sline("ckpt", &text, 8)),
+            None => println!(
+                "{}",
+                sline("ckpt", &c1("unreadable — check the database", "bred"), 8)
+            ),
+        },
+        Ok(None) | Err(_) => match pending_count() {
+            Some(pend) if pend > 0 => println!(
+                "{}",
+                sline(
+                    "ckpt",
+                    &format!(
+                        "{}{}",
+                        c1(&format!("{} pending", pend), "yellow"),
+                        c1("  run /subrosa:checkpoint-backlog", "gray")
+                    ),
+                    8
+                )
+            ),
+            Some(_) => {}
+            // A queue we can't read is louder than one that's empty: the backlog
+            // is invisible exactly when something is wrong with the file holding it.
+            None => println!(
+                "{}",
+                sline("ckpt", &c1("unreadable — check the database", "bred"), 8)
+            ),
+        },
     }
 
     // ---- detail section ----

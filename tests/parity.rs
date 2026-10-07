@@ -414,6 +414,18 @@ fn session_dump_matches_golden() {
 }
 
 #[test]
+fn session_since_keeps_headers_and_prints_later_turns() {
+    let env = setup("dump-since");
+    ingest_golden_transcript(&env);
+    let plain = run(&env, &["session", "aaaa-bbbb-1111"], None);
+    let since = run(&env, &["session", "aaaa-bbbb-1111", "--since", "0"], None);
+    assert!(since.starts_with("# session aaaa-bbbb-1111"));
+    assert!(since.contains("# memdir:"));
+    assert!(since.len() < plain.len());
+    assert!(since.contains("## assistant"));
+}
+
+#[test]
 fn memory_md_matches_golden() {
     let env = setup("gen");
     let memdir = env.data.join("memdir");

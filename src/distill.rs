@@ -12,13 +12,14 @@ use crate::{db, embed, ingest, paths};
 
 const MAX_SESSIONS: i64 = 3;
 const RETRY_SECS: i64 = 3600;
+const LIVE_SECS: u64 = 600;
 
-pub fn run(auto: bool) -> std::process::ExitCode {
+pub fn run(auto: bool, ended: Option<&str>) -> std::process::ExitCode {
     if !auto {
         eprintln!("[subrosa] distill requires --auto");
         return std::process::ExitCode::FAILURE;
     }
-    match run_worker() {
+    match run_worker(ended) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             crate::hook::log(&format!("distill worker error: {e}"));
@@ -28,7 +29,7 @@ pub fn run(auto: bool) -> std::process::ExitCode {
     }
 }
 
-pub fn spawn_if_due() {
+pub fn spawn_if_due(ended: Option<&str>) {
     let path = match paths::distill_path() {
         Ok(Some(path)) => path,
         Ok(None) => return,
@@ -44,13 +45,16 @@ pub fn spawn_if_due() {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let argv = [exe.as_os_str(), OsStr::new("distill"), OsStr::new("--auto")];
+    let mut argv = vec![exe.as_os_str(), OsStr::new("distill"), OsStr::new("--auto")];
+    if let Some(sid) = ended {
+        argv.extend([OsStr::new("--ended"), OsStr::new(sid)]);
+    }
     if let Err(e) = embed::detach(&argv) {
         crate::hook::log(&format!("distill spawn failed: {e}"));
     }
 }
 
-fn run_worker() -> Result<(), Box<dyn std::error::Error>> {
+fn run_worker(ended: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let Some(program) = paths::distill_path()? else {
         return Ok(());
     };
@@ -62,11 +66,43 @@ fn run_worker() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     let conn = db::connect_with_timeout(Duration::from_secs(10))?;
-    let ids = queued_ids(&conn)?;
+    let rows = queued_rows(&conn)?;
     let mut failed = false;
-    for sid in ids {
-        if let Err(e) = distill_one(&program, &sid) {
-            failed |= handle_error(&sid, e.as_ref(), failures);
+    let mut runs = 0;
+    for (sid, path, incomplete) in rows {
+        if runs >= MAX_SESSIONS {
+            break;
+        }
+        if ended != Some(sid.as_str()) && is_live(path.as_deref()) {
+            continue;
+        }
+        if incomplete != 0 {
+            crate::hook::log(&format!(
+                "distill {sid} deferred: session archive is incomplete"
+            ));
+            continue;
+        }
+        runs += 1;
+        let result = distill_one(&program, &sid);
+        match result {
+            Ok(text) => {
+                crate::hook::log(&format!("distill {sid} {text}"));
+                write_last(&sid, &text);
+            }
+            Err(e) => {
+                write_last(
+                    &sid,
+                    &format!(
+                        "{}: {e}",
+                        if e.downcast_ref::<Deferred>().is_some() {
+                            "deferred"
+                        } else {
+                            "failed"
+                        }
+                    ),
+                );
+                failed |= handle_error(&sid, e.as_ref(), failures);
+            }
         }
     }
     drop(lock);
@@ -74,6 +110,24 @@ fn run_worker() -> Result<(), Box<dyn std::error::Error>> {
         clear_failures();
     }
     Ok(())
+}
+
+pub(crate) fn is_live(path: Option<&str>) -> bool {
+    path.and_then(|path| std::fs::metadata(path).ok())
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age < Duration::from_secs(LIVE_SECS))
+}
+
+fn write_last(sid: &str, result: &str) {
+    let _ = paths::write_control_file(
+        &paths::distill_last_path(),
+        &format!(
+            "at={}\nsid={sid}\nresult={}\n",
+            crate::timeutil::now_unix(),
+            embed::one_line(result)
+        ),
+    );
 }
 
 fn handle_error(sid: &str, error: &(dyn std::error::Error + 'static), failures: u32) -> bool {
@@ -160,10 +214,11 @@ fn run_lock() -> Result<Option<Connection>, Box<dyn std::error::Error>> {
     }
 }
 
-fn queued_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
-    let mut stmt =
-        conn.prepare("SELECT session_id FROM checkpoint_queue ORDER BY enqueue_seq DESC LIMIT ?")?;
-    let rows = stmt.query_map([MAX_SESSIONS], |r| r.get(0))?.collect();
+fn queued_rows(conn: &Connection) -> rusqlite::Result<Vec<(String, Option<String>, i64)>> {
+    let mut stmt = conn.prepare("SELECT q.session_id, s.file_path, COALESCE(s.skipped_lines,0) + COALESCE(s.partial_tail,0) FROM checkpoint_queue q LEFT JOIN sessions s USING(session_id) ORDER BY q.enqueue_seq DESC")?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect();
     rows
 }
 
@@ -191,16 +246,17 @@ fn mute(conn: &Connection, sid: &str, child_id: &str) -> rusqlite::Result<i64> {
     Ok(boundary)
 }
 
-fn distill_one(program: &std::path::Path, sid: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn distill_one(program: &std::path::Path, sid: &str) -> Result<String, Box<dyn std::error::Error>> {
     let program = program.canonicalize()?;
     let conn = db::connect_with_timeout(Duration::from_secs(10))?;
     let id = child_id()?;
     let boundary = mute(&conn, sid, &id)?;
-    let incomplete: i64 = conn.query_row(
-        "SELECT COALESCE(skipped_lines,0) + COALESCE(partial_tail,0) FROM sessions WHERE session_id=?",
+    let incomplete: (i64, i64) = conn.query_row(
+        "SELECT COALESCE(skipped_lines,0) + COALESCE(partial_tail,0), COALESCE(checkpointed_seq, -1) FROM sessions WHERE session_id=?",
         [sid],
-        |r| r.get(0),
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
     )?;
+    let (incomplete, checkpointed) = incomplete;
     if incomplete != 0 {
         return Err(Deferred("session archive is incomplete").into());
     }
@@ -216,13 +272,20 @@ fn distill_one(program: &std::path::Path, sid: &str) -> Result<(), Box<dyn std::
         .unwrap_or_else(|| paths::mem_dir().join("memory"));
     std::fs::create_dir_all(&memdir)?;
     let before = snapshot(&memdir)?;
+    // NOTE: a queued session at or past its watermark was rebuilt, so it rereads in full. A replaced transcript longer than the watermark can still hide changed turns below it; a stored reset marker would close that gap.
+    let since = if (0..boundary).contains(&checkpointed) {
+        format!(" Earlier runs distilled this session through seq {checkpointed}. Read only the later turns with subrosa session {sid} --since {checkpointed} --boundary, and read earlier turns only for context.")
+    } else {
+        String::new()
+    };
     let prompt = format!(
-        "{}\n\nSession id: {sid}\nMemory directory: {}\nToday: {}\nProcess only this queued session. Use --origin-session {sid} only for fact upsert, and --memdir {} for every fact and generate command. In queued mode, skip the queue step and never run checkpoint-mark, checkpoint-drop, or checkpoint-clear. Print exactly one line: SESSION_TOTAL: saved 0, updated 0 when nothing was saved or updated; otherwise print SESSION_TOTAL: saved <n>, updated <n>.\n",
+        "{}\n\nSession id: {sid}\nMemory directory: {}\nToday: {}\nProcess only this queued session. Use --origin-session {sid} only for fact upsert, and --memdir {} for every fact and generate command. In queued mode, skip the queue step and never run checkpoint-mark, checkpoint-drop, or checkpoint-clear. Print exactly one line: SESSION_TOTAL: saved <n>, updated <n>. saved counts new leaf files you wrote in the memory directory. updated counts every other change, such as an edited leaf, a changed hook, or an archived fact. Print SESSION_TOTAL: saved 0, updated 0 when you changed nothing.{}\n",
         include_str!("../skills/checkpoint/SKILL.md"),
         memdir.display(),
         db::now_iso(),
-        memdir.display()
+        memdir.display(), since
     );
+    // `current_dir` does not update PWD, and a shell replaces a stale PWD with the physical path, so a wrapper saw the symlink target.
     let output = Command::new(program)
         .args([
             "-p",
@@ -245,6 +308,7 @@ fn distill_one(program: &std::path::Path, sid: &str) -> Result<(), Box<dyn std::
             &prompt,
         ])
         .current_dir(&memdir)
+        .env("PWD", &memdir)
         .env("SUBROSA_ORIGIN_SESSION", sid)
         .env("PATH", format!("{}:{}", paths::mem_dir().join("bin").display(), std::env::var("PATH").unwrap_or_default()))
         .stdin(Stdio::null())
@@ -272,16 +336,17 @@ fn distill_one(program: &std::path::Path, sid: &str) -> Result<(), Box<dyn std::
         &start,
         &end,
         &String::from_utf8_lossy(&output.stdout),
-        boundary,
     )?;
-    let dropped = match proof {
+    let result = match proof {
         Proof::Saved | Proof::NoOp => finish(&conn, sid, boundary)?,
         Proof::Rejected(reason) => return Err(reason.into()),
     };
-    if !dropped {
-        return Err(Deferred("session grew or archive remained incomplete").into());
+    match result {
+        "dropped" => Ok(format!("done through {boundary}")),
+        "kept" => Ok(format!("kept through {boundary}, session grew")),
+        "deferred" => Err(Deferred("session archive is incomplete").into()),
+        _ => Err(Deferred("unknown finish result").into()),
     }
-    Ok(())
 }
 
 #[derive(Debug)]
@@ -334,21 +399,12 @@ fn prove(
     start: &str,
     end: &str,
     stdout: &str,
-    boundary: i64,
 ) -> Result<Proof, Box<dyn std::error::Error>> {
     let after = snapshot(memdir)?;
     let changed: Vec<&str> = after
         .iter()
         .filter_map(|(name, hash)| (before.get(name) != Some(hash)).then_some(name.as_str()))
         .collect();
-    let max_seq: i64 = conn.query_row(
-        "SELECT COALESCE(max(seq), -1) FROM turns WHERE session_id=?",
-        [sid],
-        |r| r.get(0),
-    )?;
-    if max_seq != boundary {
-        return Err(Deferred("session grew during distill").into());
-    }
     if changed.is_empty() {
         if before.keys().any(|name| !after.contains_key(name)) {
             return Ok(Proof::Rejected("leaf deleted during distill".into()));
@@ -377,7 +433,7 @@ fn prove(
     Ok(Proof::Saved)
 }
 
-fn finish(conn: &Connection, sid: &str, boundary: i64) -> rusqlite::Result<bool> {
+fn finish(conn: &Connection, sid: &str, boundary: i64) -> rusqlite::Result<&'static str> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let latest: i64 = tx.query_row(
         "SELECT COALESCE(max(seq), -1) FROM turns WHERE session_id=?",
@@ -385,20 +441,26 @@ fn finish(conn: &Connection, sid: &str, boundary: i64) -> rusqlite::Result<bool>
         |r| r.get(0),
     )?;
     let incomplete: i64 = tx.query_row("SELECT COALESCE(skipped_lines,0) + COALESCE(partial_tail,0) FROM sessions WHERE session_id=?", [sid], |r| r.get(0))?;
-    if latest != boundary || incomplete != 0 {
+    if latest < boundary || incomplete != 0 {
         tx.rollback()?;
-        return Ok(false);
+        return Ok("deferred");
     }
     ingest::advance_checkpoint(&tx, sid, boundary)?;
-    tx.execute("DELETE FROM checkpoint_queue WHERE session_id=?", [sid])?;
+    let result = if latest == boundary {
+        tx.execute("DELETE FROM checkpoint_queue WHERE session_id=?", [sid])?;
+        "dropped"
+    } else {
+        "kept"
+    };
     tx.commit()?;
-    Ok(true)
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    use std::time::SystemTime;
 
     fn proof_db() -> (Connection, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!("subrosa-proof-{}", child_id().unwrap()));
@@ -442,6 +504,19 @@ mod tests {
     }
 
     #[test]
+    fn live_transcript_is_only_live_when_recent() {
+        let path = std::env::temp_dir().join(format!("subrosa-live-{}", child_id().unwrap()));
+        let file = fs::File::create(&path).unwrap();
+        assert!(is_live(path.to_str()));
+        file.set_modified(SystemTime::now() - Duration::from_secs(11 * 60))
+            .unwrap();
+        assert!(!is_live(path.to_str()));
+        assert!(!is_live(None));
+        assert!(!is_live(Some("/no/such/transcript")));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn allowed_tools_scope_file_access_to_memdir() {
         let memdir = std::path::Path::new("/Users/test/memory");
         let allowed = format!(
@@ -470,13 +545,12 @@ mod tests {
                 &before,
                 "2025-01-01",
                 "9999-01-01",
-                "",
-                1
+                ""
             )
             .unwrap(),
             Proof::Saved
         );
-        assert!(finish(&conn, "sid", 1).unwrap());
+        assert_eq!(finish(&conn, "sid", 1).unwrap(), "dropped");
     }
 
     #[test]
@@ -493,8 +567,7 @@ mod tests {
                 &before,
                 "2025-01-01",
                 "9999-01-01",
-                "",
-                1
+                ""
             )
             .unwrap(),
             Proof::Rejected(_)
@@ -514,8 +587,7 @@ mod tests {
                 &BTreeMap::new(),
                 "2025-01-01",
                 "9999-01-01",
-                "",
-                1
+                ""
             )
             .unwrap(),
             Proof::Rejected(_)
@@ -523,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn noop_needs_exact_line_and_same_boundary() {
+    fn noop_needs_exact_report_line() {
         let (conn, memdir) = proof_db();
         assert_eq!(
             prove(
@@ -534,8 +606,7 @@ mod tests {
                 &BTreeMap::new(),
                 "2025-01-01",
                 "9999-01-01",
-                "SESSION_TOTAL: saved 0, updated 0",
-                1
+                "SESSION_TOTAL: saved 0, updated 0"
             )
             .unwrap(),
             Proof::NoOp
@@ -549,8 +620,7 @@ mod tests {
                 &BTreeMap::new(),
                 "2025-01-01",
                 "9999-01-01",
-                "SESSION_TOTAL: saved 0, updated 1",
-                1
+                "SESSION_TOTAL: saved 0, updated 1"
             )
             .unwrap(),
             Proof::NoOp
@@ -569,8 +639,7 @@ mod tests {
                     &BTreeMap::new(),
                     "2025-01-01",
                     "9999-01-01",
-                    report,
-                    1
+                    report
                 )
                 .unwrap(),
                 Proof::Rejected(_)
@@ -586,7 +655,6 @@ mod tests {
                 "2025-01-01",
                 "9999-01-01",
                 " SESSION_TOTAL: saved 0, updated 0",
-                1
             )
             .unwrap(),
             Proof::Rejected(_)
@@ -601,7 +669,6 @@ mod tests {
                 "2025-01-01",
                 "9999-01-01",
                 "{\"text\":\"SESSION_TOTAL: saved 0, updated 0\"}",
-                1
             )
             .unwrap(),
             Proof::Rejected(_)
@@ -611,7 +678,7 @@ mod tests {
             [],
         )
         .unwrap();
-        let error = prove(
+        let proof = prove(
             &conn,
             "project",
             "sid",
@@ -620,10 +687,9 @@ mod tests {
             "2025-01-01",
             "9999-01-01",
             "SESSION_TOTAL: saved 0, updated 0",
-            1,
         )
-        .unwrap_err();
-        assert!(error.downcast_ref::<Deferred>().is_some());
+        .unwrap();
+        assert_eq!(proof, Proof::NoOp);
     }
 
     #[test]
@@ -640,8 +706,7 @@ mod tests {
                 &before,
                 "2025-01-01",
                 "9999-01-01",
-                "SESSION_TOTAL: saved 0, updated 1",
-                1
+                "SESSION_TOTAL: saved 0, updated 1"
             )
             .unwrap(),
             Proof::Rejected(message) if message == "leaf deleted during distill"
@@ -649,25 +714,68 @@ mod tests {
     }
 
     #[test]
-    fn finish_recheck_refuses_growth_or_partial_tail() {
+    fn finish_keeps_growth_and_defers_partial_tail() {
         let (conn, _) = proof_db();
         conn.execute(
             "INSERT INTO turns(session_id,seq,role,text) VALUES ('sid',2,'user','grown')",
             [],
         )
         .unwrap();
-        assert!(!finish(&conn, "sid", 1).unwrap());
+        assert_eq!(finish(&conn, "sid", 1).unwrap(), "kept");
+        assert_eq!(
+            conn.query_row(
+                "SELECT checkpointed_seq FROM sessions WHERE session_id='sid'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
         conn.execute("DELETE FROM turns WHERE seq=2", []).unwrap();
         conn.execute(
             "UPDATE sessions SET partial_tail=1 WHERE session_id='sid'",
             [],
         )
         .unwrap();
-        assert!(!finish(&conn, "sid", 1).unwrap());
+        assert_eq!(finish(&conn, "sid", 1).unwrap(), "deferred");
     }
 
     #[test]
-    fn deferred_growth_keeps_queue_without_retry_state() {
+    fn incomplete_archive_stays_at_old_watermark() {
+        let (conn, _) = proof_db();
+        conn.execute(
+            "INSERT INTO turns(session_id,seq,role,text) VALUES ('sid',2,'user','grown')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE sessions SET partial_tail=1 WHERE session_id='sid'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(finish(&conn, "sid", 2).unwrap(), "deferred");
+        assert_eq!(
+            conn.query_row(
+                "SELECT checkpointed_seq FROM sessions WHERE session_id='sid'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM checkpoint_queue WHERE session_id='sid'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn grown_session_keeps_progress_without_retry_state() {
         let _env = crate::paths::test_env_lock();
         let root =
             std::env::temp_dir().join(format!("subrosa-distill-test-{}", child_id().unwrap()));
@@ -679,7 +787,7 @@ mod tests {
             [],
         )
         .unwrap();
-        assert!(!finish(&conn, "sid", 1).unwrap());
+        assert_eq!(finish(&conn, "sid", 1).unwrap(), "kept");
         assert_eq!(
             conn.query_row(
                 "SELECT count(*) FROM checkpoint_queue WHERE session_id='sid'",
@@ -689,7 +797,7 @@ mod tests {
             .unwrap(),
             1
         );
-        let error = prove(
+        let proof = prove(
             &conn,
             "project",
             "sid",
@@ -698,10 +806,9 @@ mod tests {
             "2025-01-01",
             "9999-01-01",
             "SESSION_TOTAL: saved 0, updated 0",
-            1,
         )
-        .unwrap_err();
-        assert!(!handle_error("sid", error.as_ref(), 1));
+        .unwrap();
+        assert_eq!(proof, Proof::NoOp);
         assert!(!paths::distill_state_path().exists());
         std::env::remove_var("SUBROSA_DIR");
         let _ = fs::remove_dir_all(root);
@@ -721,7 +828,6 @@ mod tests {
             "2025-01-01",
             "9999-01-01",
             "",
-            1,
         )
         .unwrap();
         assert_eq!(proof, Proof::Saved);
@@ -753,8 +859,7 @@ mod tests {
                 &before,
                 "2025-01-01",
                 "9999-01-01",
-                "",
-                1
+                ""
             )
             .unwrap(),
             Proof::Rejected(_)
