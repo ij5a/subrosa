@@ -272,7 +272,9 @@ fn distill_one(program: &std::path::Path, sid: &str) -> Result<String, Box<dyn s
         .unwrap_or_else(|| paths::mem_dir().join("memory"));
     std::fs::create_dir_all(&memdir)?;
     let before = snapshot(&memdir)?;
-    // NOTE: a queued session at or past its watermark was rebuilt, so it rereads in full. A replaced transcript longer than the watermark can still hide changed turns below it; a stored reset marker would close that gap.
+
+    // NOTE: --since only when 0 <= watermark < last seq, else a full reread. A replaced longer
+    // transcript can still hide changed turns below the watermark; a reset marker would close that.
     let since = if (0..boundary).contains(&checkpointed) {
         format!(" Earlier runs distilled this session through seq {checkpointed}. Read only the later turns with subrosa session {sid} --since {checkpointed} --boundary, and read earlier turns only for context.")
     } else {
@@ -285,7 +287,8 @@ fn distill_one(program: &std::path::Path, sid: &str) -> Result<String, Box<dyn s
         db::now_iso(),
         memdir.display(), since
     );
-    // `current_dir` does not update PWD, and a shell replaces a stale PWD with the physical path, so a wrapper saw the symlink target.
+
+    // `current_dir` does not update PWD, so a wrapper saw the symlink target. Set it explicitly.
     let output = Command::new(program)
         .args([
             "-p",

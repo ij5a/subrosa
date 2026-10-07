@@ -593,14 +593,17 @@ fn distill_health() -> Option<String> {
         Ok(Some(text)) => {
             let sid = paths::kv_get(&text, "sid").unwrap_or_default();
             let result = paths::kv_get(&text, "result").unwrap_or_default();
-            let at = paths::kv_get(&text, "at")
+            let age = paths::kv_get(&text, "at")
                 .and_then(|v| v.parse::<i64>().ok())
-                .unwrap_or(now_unix());
+                .map_or_else(
+                    || "time unknown".to_string(),
+                    |at| ago_secs(now_unix().saturating_sub(at)),
+                );
             format!(
                 "last: {} {}, {}",
                 sid.chars().take(8).collect::<String>(),
                 result,
-                ago_secs(now_unix().saturating_sub(at))
+                age
             )
         }
         Err(e) => format!("last: unreadable ({e})"),
@@ -1311,6 +1314,7 @@ fn render(conn: &Connection, stats: &Stats, ctx: &CurrentContext, detail: bool) 
                 )
             ),
             Some(_) => {}
+
             // A queue we can't read is louder than one that's empty: the backlog
             // is invisible exactly when something is wrong with the file holding it.
             None => println!(

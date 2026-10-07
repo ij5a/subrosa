@@ -174,6 +174,9 @@ fn distill_skips_live_rows_and_reports_health() {
     let dashboard = run_env(&env, &[], None, &[("NO_COLOR", "1")]).0;
     assert!(dashboard.contains("1 waiting, 2 live  last: old1 done through "));
     assert!(!dashboard.contains("checkpoint-backlog"));
+    fs::write(env.data.join("distill.last"), "sid=old1\nresult=x\n").unwrap();
+    let dashboard = run_env(&env, &[], None, &[("NO_COLOR", "1")]).0;
+    assert!(dashboard.contains("last: old1 x, time unknown"));
     assert!(run_env::<&str>(&env, &["distill", "--auto", "--ended", "live1"], None, &[]).2);
     assert_eq!(
         fs::read_to_string(&ran)
