@@ -4,6 +4,26 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0] - 2026-10-08
+
+### Added
+
+- `subrosa session <id> --since <seq>` prints only turns after a stored sequence boundary, so automatic checkpointing can read new turns incrementally.
+- The dashboard reports automatic checkpoint sessions waiting, live transcripts, and the last result; `distill.last` records that result.
+
+### Changed
+
+- Automatic checkpointing starts up to 3 queued sessions newest first. The session whose end started the run skips the 10-minute check. The retry wait, run lock, 3-run cap, and incomplete-archive check still apply. Other transcripts changed in the last 10 minutes are skipped. The child runs with the memory directory as `PWD`.
+- A passing checkpoint proof advances through its captured boundary and keeps a grown session queued; an incomplete archive is deferred.
+- Incomplete rows no longer use one of the 3 child-run slots. The dashboard `ckpt` line replaces the backlog hint when automatic checkpointing is on. jdx/mise-action v5.1.1 no longer passes its token to later workflow steps.
+- The Rust toolchain pin moves to 1.99.0. GitHub Actions are pinned to commit hashes, and the lockfile refreshes 32 compatible crates while keeping `ctutils` at 0.4.2 for the 1.85 MSRV.
+
+### Fixed
+
+- Automatic checkpointing logs `distill <id> done through <seq>` and `distill <id> kept through <seq>, session grew` after successful child runs.
+- The child counts new leaf files as saved and every other memory change as updated, fixing a hook-only update being counted as saved.
+- The child sets `PWD` to the memory directory, fixing leaf writes refused through a symlinked memory folder.
+
 ## [0.29.2] - 2026-10-06
 
 ### Fixed
@@ -398,6 +418,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [0.15.0]: https://github.com/ij5a/subrosa/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/ij5a/subrosa/compare/v0.14.0...v0.14.1
 [0.28.1]: https://github.com/ij5a/subrosa/compare/v0.28.0...v0.28.1
+[0.30.0]: https://github.com/ij5a/subrosa/compare/v0.29.2...v0.30.0
 [0.29.2]: https://github.com/ij5a/subrosa/compare/v0.29.1...v0.29.2
 [0.29.1]: https://github.com/ij5a/subrosa/compare/v0.29.0...v0.29.1
 [0.29.0]: https://github.com/ij5a/subrosa/compare/v0.28.4...v0.29.0
