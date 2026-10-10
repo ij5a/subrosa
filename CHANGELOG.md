@@ -4,6 +4,12 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- The `checkpoint_exclude` config key lists folders whose sessions are never queued for checkpoint. A folder covers every folder below it, and excluded sessions are still archived and searchable. `subrosa checkpoint-enqueue` reports them as `excluded`.
+
 ## [0.30.0] - 2026-10-08
 
 ### Added
