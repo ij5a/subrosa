@@ -426,6 +426,24 @@ pub fn checkpoint_nudge_mode() -> String {
         .unwrap_or_else(|| "loud".to_string())
 }
 
+/// Folders whose sessions are never queued for checkpoint: the comma-separated
+/// `checkpoint_exclude` config value, `~`-expanded. A session started in one of
+/// these folders, or anywhere below it, is skipped. An unreadable config means
+/// no exclusions, so a broken file can't silently stop memory being saved.
+pub fn checkpoint_excludes() -> Vec<PathBuf> {
+    config_get("checkpoint_exclude")
+        .ok()
+        .flatten()
+        .map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| expanduser(std::path::Path::new(s)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Where the embedding model's files are downloaded, one folder per model.
 /// `subrosa embed` and `search --semantic` load them; plain search checks readiness
 /// before an automatic semantic retry after an exact miss.

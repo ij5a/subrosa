@@ -20,7 +20,7 @@ Rust CLI and Claude Code plugin for persistent local memory. Read before changin
 | File | Job |
 |---|---|
 | `main.rs` | clap dispatch and small command runners |
-| `paths.rs` | Data paths, environment overrides, and the `KEY=VALUE` config. It handles `semantic`, `embed.state`, `distill.state`, and `distill.last`. |
+| `paths.rs` | Data paths, environment overrides, and the `KEY=VALUE` config. It handles `semantic`, `checkpoint_exclude`, `embed.state`, `distill.state`, and `distill.last`. |
 | `db.rs` | Compatibility-critical schema, `connect`, `connect_readonly`, `migrate()`, `now_iso`, `encode_cwd`, `current_memdir`, and lazy trigram and `turn_embeddings` tables. The schema includes `session_tags`. |
 | `redact.rs` | Secret masking before storage |
 | `ingest.rs` | JSONL to turn rows, seek-resume ingest with `scan_offset` and `scan_seq`, sweep, checkpoint queue, and tag derivation hook |

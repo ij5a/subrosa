@@ -660,7 +660,7 @@ pub fn advance_checkpoint(conn: &Connection, sid: &str, boundary: i64) -> rusqli
 
 /// Append a session to the checkpoint queue — but only when it's worth distilling
 /// and isn't already queued or already checkpointed. Idempotent: the SessionEnd
-/// hook fires repeatedly on resume. Returns: queued | pruned | unchanged | duplicate.
+/// hook fires repeatedly on resume. Returns: queued | pruned | excluded | unchanged | duplicate.
 pub fn enqueue_checkpoint(conn: &Connection, sid: &str) -> Result<&'static str, Box<dyn Error>> {
     let user_turns: i64 = conn.query_row(
         "SELECT count(*) FROM turns WHERE session_id=? AND role='user' AND is_sidechain=0",
@@ -671,18 +671,29 @@ pub fn enqueue_checkpoint(conn: &Connection, sid: &str) -> Result<&'static str, 
         return Ok("pruned");
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let row: Option<(i64, i64)> = tx
+    let row: Option<(i64, i64, Option<String>)> = tx
         .query_row(
-            "SELECT COALESCE((SELECT max(seq) FROM turns WHERE session_id=s.session_id), -1), COALESCE(s.checkpointed_seq,-1) \
+            "SELECT COALESCE((SELECT max(seq) FROM turns WHERE session_id=s.session_id), -1), COALESCE(s.checkpointed_seq,-1), s.cwd \
              FROM sessions s WHERE s.session_id=?",
             [sid],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    let Some((last_seq, checkpointed_seq)) = row else {
+    let Some((last_seq, checkpointed_seq, cwd)) = row else {
         tx.commit()?;
         return Ok("pruned"); // not yet ingested
     };
+    if let Some(cwd) = cwd {
+        // Path::starts_with compares whole components: excluding `/a/reviews`
+        // must not also exclude `/a/reviews-old`.
+        if crate::paths::checkpoint_excludes()
+            .iter()
+            .any(|dir| Path::new(&cwd).starts_with(dir))
+        {
+            tx.commit()?;
+            return Ok("excluded");
+        }
+    }
     let scan_reset: bool = tx.query_row(
         "SELECT scan_offset=0 AND scan_seq=0 FROM sessions WHERE session_id=?",
         [sid],
@@ -755,6 +766,50 @@ mod checkpoint_tests {
             .unwrap();
         assert_eq!(queued, 0);
         assert_eq!(mark, i64::MAX);
+        std::env::remove_var("SUBROSA_DB");
+        std::env::remove_var("SUBROSA_DIR");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn excluded_folders_are_never_queued() {
+        let _env = crate::paths::test_env_lock();
+        let root = std::env::temp_dir().join(format!("subrosa-exclude-{}", std::process::id()));
+        let project = root.join("-tmp-demo");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&project).unwrap();
+        std::env::set_var("SUBROSA_DIR", &root);
+        std::env::set_var("SUBROSA_DB", root.join("memory.db"));
+        let conn = crate::db::connect().unwrap();
+        for (sid, cwd) in [
+            ("top", "/w/reviews"),
+            ("nested", "/w/reviews/wt-1"),
+            ("sibling", "/w/reviews-old"),
+            ("other", "/w/local"),
+        ] {
+            let path = project.join(format!("{sid}.jsonl"));
+            std::fs::write(
+                &path,
+                format!(r#"{{"type":"user","timestamp":"2026-01-01T00:00:00Z","uuid":"{sid}","cwd":"{cwd}","message":{{"role":"user","content":"hi"}}}}"#) + "\n",
+            )
+            .unwrap();
+            ingest_file(&conn, &path).unwrap();
+        }
+        std::fs::write(
+            root.join("config"),
+            "checkpoint_exclude=/w/elsewhere, /w/reviews/\n",
+        )
+        .unwrap();
+
+        assert_eq!(enqueue_checkpoint(&conn, "top").unwrap(), "excluded");
+        assert_eq!(enqueue_checkpoint(&conn, "nested").unwrap(), "excluded");
+        assert_eq!(enqueue_checkpoint(&conn, "sibling").unwrap(), "queued");
+        assert_eq!(enqueue_checkpoint(&conn, "other").unwrap(), "queued");
+
+        // Exclusion leaves no state behind: dropping the config line queues again.
+        std::fs::write(root.join("config"), "").unwrap();
+        assert_eq!(enqueue_checkpoint(&conn, "top").unwrap(), "queued");
+
         std::env::remove_var("SUBROSA_DB");
         std::env::remove_var("SUBROSA_DIR");
         let _ = std::fs::remove_dir_all(root);

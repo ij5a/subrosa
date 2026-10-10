@@ -32,9 +32,10 @@ The config file is `~/.claude/subrosa/config`. It uses `KEY=VALUE` lines with mo
 - `mirror` selects the snapshot folder or `none`.
 - `mirror_passphrase` encrypts the mirror when set. Before an encrypted mirror exists, an absent value leaves it readable.
 - `checkpoint_nudge` accepts `loud`, `quiet`, or `off`; `loud` is the default.
+- `checkpoint_exclude` lists folders, separated by commas, whose sessions are never queued for checkpoint, for example `checkpoint_exclude=~/scratch,~/work/reviews`. A folder covers every folder below it. Those sessions are still archived and searchable. Removing a folder from the list makes its sessions eligible again when they next end or change.
 - `semantic=off` stops automatic indexing, model downloads, and every network call subrosa can make. A model already on disk can still serve semantic searches.
 
-An environment variable usually wins over config. `mirror=none` is the exception: it always disables mirroring, even when `SUBROSA_MIRROR` names a folder. `SUBROSA_MIRROR=none` also disables mirroring. For semantic indexing, `SUBROSA_SEMANTIC` wins over config, so it can override `semantic=off`. Remove the setting or run `subrosa setup` to enable mirroring. An unreadable config means `semantic=off`.
+An environment variable usually wins over config. `mirror=none` is the exception: it always disables mirroring, even when `SUBROSA_MIRROR` names a folder. `SUBROSA_MIRROR=none` also disables mirroring. For semantic indexing, `SUBROSA_SEMANTIC` wins over config, so it can override `semantic=off`. Remove the setting or run `subrosa setup` to enable mirroring. An unreadable config means `semantic=off`, but no `checkpoint_exclude` folders, so a broken config never stops sessions being queued.
 
 ## What gets redacted?
 

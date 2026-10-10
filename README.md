@@ -139,7 +139,7 @@ subrosa setup                            # choose the backup mirror
 
 ## The memory workflow
 
-1. When a session ends, subrosa archives it and adds it to the checkpoint queue.
+1. When a session ends, subrosa archives it and adds it to the checkpoint queue. Sessions started under a folder listed in `checkpoint_exclude` are archived but never queued.
 2. At the next start, Claude receives an `ACTION REQUIRED` note for queued sessions, or `[subrosa] Archive is updated.` when automatic distillation is enabled. The note goes to Claude's context, not your chat window.
 3. Without automatic distillation, the note repeats on each prompt until the queue clears; set `checkpoint_nudge=quiet` or `off` to change it.
 4. Run `/subrosa:checkpoint-backlog` to save durable facts from queued sessions. Run `/subrosa:checkpoint` before `/clear` or `/compact` to save the live session.
