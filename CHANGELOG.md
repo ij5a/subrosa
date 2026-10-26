@@ -4,6 +4,18 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.1] - 2026-10-26
+
+### Changed
+
+- The Rust toolchain pin moves to 1.99.1. The minimum Rust version moves to 1.89.
+- Crates move to newer versions. `rusqlite` 0.41 bundles SQLite 3.54.1, and `ctutils` moves to 0.4.6.
+- GitHub Action pins move to newer commits.
+
+### Security
+
+- `cargo audit` ignores RUSTSEC-2026-0367, 0368 and 0369 in `zip`, which `candle-core` pulls in. subrosa never calls the extract code those advisories cover.
+
 ## [0.30.0] - 2026-10-08
 
 ### Added
@@ -418,6 +430,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [0.15.0]: https://github.com/ij5a/subrosa/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/ij5a/subrosa/compare/v0.14.0...v0.14.1
 [0.28.1]: https://github.com/ij5a/subrosa/compare/v0.28.0...v0.28.1
+[0.30.1]: https://github.com/ij5a/subrosa/compare/v0.30.0...v0.30.1
 [0.30.0]: https://github.com/ij5a/subrosa/compare/v0.29.2...v0.30.0
 [0.29.2]: https://github.com/ij5a/subrosa/compare/v0.29.1...v0.29.2
 [0.29.1]: https://github.com/ij5a/subrosa/compare/v0.29.0...v0.29.1
