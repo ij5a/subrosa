@@ -1,0 +1,8 @@
+[advisories]
+# NOTE: zip comes from candle-core 0.9, and these advisories cover ZipArchive::extract(), which subrosa never calls.
+# Drop these IDs once candle-core moves to zip 9.0.0 or later.
+ignore = [
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+]
