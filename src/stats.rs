@@ -143,7 +143,7 @@ fn commas(n: i64) -> String {
         String::new()
     };
     for (i, c) in digits.char_indices() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);

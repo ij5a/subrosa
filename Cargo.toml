@@ -2,7 +2,7 @@
 name = "subrosa"
 version = "0.30.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.89"
 description = "Persistent, private memory for Claude Code. Archives every session into a local SQLite FTS5 database and makes it searchable."
 repository = "https://github.com/ij5a/subrosa"
 license = "MIT"
@@ -20,7 +20,7 @@ candle-transformers = "0.9"
 chacha20poly1305 = { version = "0.11.0", features = ["zeroize"] }
 clap = { version = "4.6", features = ["derive"] }
 regex = "1"
-rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+rusqlite = { version = "0.41", features = ["bundled", "backup"] }
 serde = "1"
 serde_json = "1"
 sha2 = "0.11"
