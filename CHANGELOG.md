@@ -4,6 +4,17 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.2] - 2026-11-04
+
+### Fixed
+
+- Checkpoint no longer warns "Session grew" for the live session: it marks through the captured boundary and SessionEnd queues the rest. A single-project backlog saves a grown session's progress and keeps it queued.
+- Checkpoint no longer marks a compacted conversation, so the queued pass reads its archived turns.
+
+### Security
+
+- `cargo audit` ignores RUSTSEC-2026-0429 in `zip`, which `candle-core` pulls in. subrosa never calls the extract code it covers.
+
 ## [0.30.1] - 2026-10-26
 
 ### Changed
@@ -430,6 +441,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [0.15.0]: https://github.com/ij5a/subrosa/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/ij5a/subrosa/compare/v0.14.0...v0.14.1
 [0.28.1]: https://github.com/ij5a/subrosa/compare/v0.28.0...v0.28.1
+[0.30.2]: https://github.com/ij5a/subrosa/compare/v0.30.1...v0.30.2
 [0.30.1]: https://github.com/ij5a/subrosa/compare/v0.30.0...v0.30.1
 [0.30.0]: https://github.com/ij5a/subrosa/compare/v0.29.2...v0.30.0
 [0.29.2]: https://github.com/ij5a/subrosa/compare/v0.29.1...v0.29.2
