@@ -33,7 +33,7 @@ For **more than one project**, read dumps in parallel, one sub-agent per project
    - Check memory with `subrosa fact list --memdir "<memdir>"` and `subrosa search "<keyword>"`. Update a similar stale fact instead of duplicating it.
    - Write each leaf in the probed `<memdir>`. Register it with `subrosa fact upsert --memdir "<memdir>" --leaf <name>.md --hook "<one-line hook>" --origin-session <id>`.
    - Rebuild the index with `subrosa generate --memdir "<memdir>"`.
-   - Before removing it, run `subrosa ingest --require-complete <transcript>` again. A non-zero exit reports UNKNOWN and leaves the id queued. If it exits 0, run `subrosa session <id> --boundary | head -3`. If `last_seq` is greater than `DISTILLED_SEQ`, leave it queued and report that it grew. Otherwise remove it with `subrosa checkpoint-drop <id> --max-seq <DISTILLED_SEQ>` only after handling all archived turns through `<DISTILLED_SEQ>`. Older versions used `subrosa checkpoint-drop <id>`.
+   - Before removing it, run `subrosa ingest --require-complete <transcript>` again. A non-zero exit reports UNKNOWN and leaves the id queued. If it exits 0, run `subrosa checkpoint-drop <id> --max-seq <DISTILLED_SEQ>` only after handling all archived turns through `<DISTILLED_SEQ>`. If the session grew, the drop keeps it queued and saves progress through `<DISTILLED_SEQ>`; report that it grew. Older versions used `subrosa checkpoint-drop <id>`.
 
    ### Branch B: more than one project
 
@@ -82,7 +82,7 @@ Hard rules:
 - NEVER write to any memdir other than {{MEMDIR}}.
 - If `subrosa session <id>` prints "no archived turns" after a complete ingest exit 0, extract nothing and report `empty; safe to drop`. The orchestrator drops it with `subrosa checkpoint-drop <id> --max-seq=-1`. A failed or incomplete ingest is a failure report, not an empty result.
 
-Before reporting an id finished, run `subrosa ingest --require-complete <transcript>` again. If it fails, leave the id queued and report UNKNOWN. If it exits 0, re-read the boundary. If it grew past the captured boundary, leave it queued and do not report it as finished.
+Before reporting an id finished, run `subrosa ingest --require-complete <transcript>` again. If it fails, leave the id queued and report UNKNOWN. If it exits 0, re-read the boundary. If it grew past the captured boundary, leave it queued, write `grew` in its PER_SESSION note, and do not report it as finished.
 
 If a session has a permanently malformed line, its stored incomplete state must be cleared by hand only after the source is fixed or accepted: `sqlite3 "$SUBROSA_DIR/memory.db" "DELETE FROM turns WHERE session_id='<id>'; UPDATE sessions SET num_turns=0, last_seq=-1, file_size=0, file_mtime=0, skipped_lines=0, partial_tail=0, scan_offset=0, scan_seq=0 WHERE session_id='<id>';"`. The cursor reset makes the next check read the repaired line. Run `subrosa ingest --require-complete` again before clearing its queue entry.
 
@@ -98,7 +98,7 @@ TOTALS: saved <X>, updated <Y>, skipped <Z>
 
 ## Report
 
-Print `👍 Safe to /clear or /compact.` only for a session that was marked. For a session that grew, print `⚠️ Session grew; do not /clear or /compact.` For a session with genuinely no archived turns after ingest, print `⚠️ No archived turns; do not /clear or /compact.`
+Print `👍 Safe to /clear or /compact.` only for a session that was marked. For any session left queued because it grew, print `⚠️ <id> grew; left queued.` For a session with genuinely no archived turns after ingest, print `⚠️ No archived turns; do not /clear or /compact.`
 
 Add Branch A work, each `TOTALS`, and no-turn skips. Re-run `subrosa pending`. Count ids left. `M` is authoritative.
 
