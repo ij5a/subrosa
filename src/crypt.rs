@@ -373,12 +373,13 @@ pub(crate) fn prompt_hidden(label: &str) -> Option<String> {
 /// about to be typed. `system_tool` resolves a symlinked candidate as long as
 /// it stays in a system directory, which is what BusyBox's `/bin/stty ->
 /// /bin/busybox` needs. False here means the prompt refuses to run at all.
+/// `argv[0]` stays `stty`, because BusyBox picks the applet from that name.
 fn stty(arg: &str) -> bool {
     paths::system_tool(&["/bin/stty", "/usr/bin/stty"]).is_some_and(|stty| {
-        std::process::Command::new(stty)
-            .arg(arg)
-            .status()
-            .is_ok_and(|s| s.success())
+        let mut cmd = std::process::Command::new(stty);
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::arg0(&mut cmd, "stty");
+        cmd.arg(arg).status().is_ok_and(|s| s.success())
     })
 }
 
