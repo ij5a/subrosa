@@ -89,7 +89,8 @@ pub fn system_tool(candidates: &[&str]) -> Option<PathBuf> {
 /// has to land inside one of these: BusyBox ships `/bin/stty` as a link to
 /// `/bin/busybox` — normal, and the whole Alpine world — while a link pointing
 /// out to somewhere writable is what this is guarding against.
-const TOOL_DIRS: [&str; 3] = ["/bin", "/usr/bin", "/sbin"];
+/// Ubuntu 26.04 links `/usr/bin/stty` into the root-owned uutils directory.
+const TOOL_DIRS: [&str; 4] = ["/bin", "/usr/bin", "/sbin", "/usr/lib/cargo/bin/coreutils"];
 
 /// One candidate, resolved. `Some` only when it really is a regular file whose
 /// resolved home is still a trusted directory. The RESOLVED path comes back,
