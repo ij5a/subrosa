@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - `subrosa fact doctor` warns about possible duplicate facts, and about project facts whose index line still says in-flight after 60 days. Doctor stays read-only.
+- `subrosa hours <YYYY-MM>` prints active time for 1 local-time month, from the timestamps of typed prompts. `--by-session` prints 1 line per session.
 
 ### Changed
 

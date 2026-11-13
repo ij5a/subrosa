@@ -1488,6 +1488,71 @@ fn recap_matches_golden() {
     );
 }
 
+// Like run_full(), but with a fixed time zone, because `hours` reports a local-time month.
+fn run_tz(env: &TestEnv, tz: &str, args: &[&str]) -> std::process::Output {
+    let mut child = base_cmd(env).env("TZ", tz).args(args).spawn().unwrap();
+    child.stdin.as_mut().unwrap().write_all(b"").unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn hours_matches_golden() {
+    let env = setup("hours");
+    fs::create_dir_all(env.projects.join("-tmp-other")).unwrap();
+    let prompt = |ts: &str| {
+        format!(
+            r#"{{"type":"user","timestamp":"{ts}","uuid":"u{ts}","cwd":"/tmp/x","message":{{"role":"user","content":"next step"}}}}"#
+        )
+    };
+    let two = |a: &str, b: &str| format!("{}\n{}\n", prompt(a), prompt(b));
+    for (path, body) in [
+        ("-tmp-demo/eeee-ffff-3333.jsonl", golden("hours.jsonl")),
+        (
+            "-tmp-other/gggg-hhhh-4444.jsonl",
+            two("2026-02-28T16:35:00.000Z", "2026-02-28T17:20:00.000Z"),
+        ),
+        (
+            "-tmp-demo/iiii-jjjj-5555.jsonl",
+            two("2026-03-15T02:00:00.000Z", "2026-03-15T02:20:00.000Z"),
+        ),
+    ] {
+        let t = env.projects.join(path);
+        fs::write(&t, body).unwrap();
+        run(&env, &["ingest", t.to_str().unwrap()], None);
+    }
+    let out = |tz: &str, args: &[&str]| {
+        String::from_utf8_lossy(&run_tz(&env, tz, args).stdout).into_owned()
+    };
+    let footer = "\n[subrosa] 2026-03 · 8 prompt(s) · 1.6 h total (one merged timeline)\n";
+
+    assert_eq!(out("XXX-8", &["hours", "2026-03"]), golden("hours.golden"));
+    assert_eq!(
+        out("XXX-8", &["hours", "2026-03", "--by-session"]),
+        format!(
+            "2026-03-01 00:30 · -tmp-demo · eeee-fff · 4 prompt(s) · 0.7 h\n\
+             2026-03-01 00:35 · -tmp-other · gggg-hhh · 2 prompt(s) · 0.1 h\n\
+             2026-03-15 10:00 · -tmp-demo · iiii-jjj · 2 prompt(s) · 0.4 h\n{footer}"
+        )
+    );
+    assert_eq!(
+        out("UTC0", &["hours", "2026-03"]),
+        "-tmp-demo · 3 prompt(s) · 0.4 h\n\n\
+         [subrosa] 2026-03 · 3 prompt(s) · 0.4 h total (one merged timeline)\n"
+    );
+    let other = out("XXX-8", &["hours", "2026-03", "--project", "other"]);
+    assert!(!other.contains("-tmp-demo"), "got:\n{other}");
+    assert_eq!(
+        run_tz(&env, "XXX-8", &["hours", "nope"]).status.code(),
+        Some(2)
+    );
+    let none = run_tz(&env, "XXX-8", &["hours", "2031-01"]);
+    assert_eq!(none.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&none.stdout),
+        "[subrosa] no typed prompts in 2031-01.\n"
+    );
+}
+
 #[test]
 fn session_tags_line_is_opt_in() {
     let env = setup("sesstags");

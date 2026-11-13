@@ -6,6 +6,7 @@ mod embed;
 mod facts;
 mod generate;
 mod hook;
+mod hours;
 mod import_existing;
 mod ingest;
 mod paths;
@@ -209,6 +210,22 @@ enum Cmd {
         /// Max sessions to print
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: usize,
+    },
+    /// Print active time for 1 month, from the timestamps of typed prompts
+    ///
+    /// The month is local time and follows `TZ`. The first prompt, and a prompt
+    /// after a gap over 30 minutes, add 2 minutes. Every other prompt adds its
+    /// gap. The total merges all matched sessions into 1 timeline. Slash
+    /// commands are not archived, so they do not count.
+    Hours {
+        /// Month to report (YYYY-MM)
+        month: String,
+        /// Restrict to a project (substring match)
+        #[arg(long)]
+        project: Option<String>,
+        /// Print 1 line per session, not 1 line per project
+        #[arg(long)]
+        by_session: bool,
     },
     /// Show the memory archive dashboard (activity, store, by-project share)
     Stats(stats::Args),
@@ -452,6 +469,11 @@ fn main() -> ExitCode {
             before.as_deref(),
             limit,
         ),
+        Cmd::Hours {
+            month,
+            project,
+            by_session,
+        } => hours::run(&month, project.as_deref(), by_session),
         Cmd::Stats(args) => stats::run(&args),
         Cmd::Fact {
             action,
