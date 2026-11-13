@@ -65,9 +65,10 @@ fn merge(conn: &Connection, src: &Connection) -> Result<(i64, i64, i64), Box<dyn
         )
         .into());
     }
-    // A session this machine archived from a transcript is never touched.
+    // A session this machine archived from a transcript is never touched. Old
+    // archives hold such rows with scan_seq = 0, so file_path is the marker.
     let local: HashSet<String> = conn
-        .prepare("SELECT session_id FROM sessions WHERE scan_seq > 0")?
+        .prepare("SELECT session_id FROM sessions WHERE file_path IS NOT NULL")?
         .query_map([], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
 
@@ -75,7 +76,7 @@ fn merge(conn: &Connection, src: &Connection) -> Result<(i64, i64, i64), Box<dyn
     let mut keep: HashSet<String> = HashSet::new();
     {
         let mut stmt = src.prepare(
-            "SELECT session_id, project, cwd, COALESCE(checkpointed_seq, -1) FROM sessions s \
+            "SELECT session_id, project, cwd FROM sessions s \
              WHERE EXISTS (SELECT 1 FROM turns t WHERE t.session_id = s.session_id)",
         )?;
         let mut rows = stmt.query([])?;
@@ -83,8 +84,8 @@ fn merge(conn: &Connection, src: &Connection) -> Result<(i64, i64, i64), Box<dyn
         let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
         {
             let mut ins = tx.prepare(
-                "INSERT OR IGNORE INTO sessions(session_id, project, cwd, checkpointed_seq, ingested_at) \
-                 VALUES (?,?,?,?,?)",
+                "INSERT OR IGNORE INTO sessions(session_id, project, cwd, ingested_at) \
+                 VALUES (?,?,?,?)",
             )?;
             while let Some(r) = rows.next()? {
                 let sid: String = r.get(0)?;
@@ -96,7 +97,6 @@ fn merge(conn: &Connection, src: &Connection) -> Result<(i64, i64, i64), Box<dyn
                     sid,
                     r.get::<_, Value>(1)?,
                     r.get::<_, Value>(2)?,
-                    r.get::<_, i64>(3)?,
                     db::now_iso()
                 ])? as i64;
                 keep.insert(sid);
@@ -115,10 +115,13 @@ fn merge(conn: &Connection, src: &Connection) -> Result<(i64, i64, i64), Box<dyn
         while !done {
             let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
             {
+                // The guard skips a session that a hook archived here after
+                // the merge started.
                 let mut ins = tx.prepare(
                     "INSERT OR IGNORE INTO turns\
                      (session_id,seq,uuid,ts,role,text,is_meta,is_sidechain,project,cwd) \
-                     VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10 WHERE EXISTS \
+                     (SELECT 1 FROM sessions WHERE session_id=?1 AND file_path IS NULL)",
                 )?;
                 for _ in 0..BATCH {
                     let Some(r) = rows.next()? else {
@@ -154,7 +157,7 @@ fn merge(conn: &Connection, src: &Connection) -> Result<(i64, i64, i64), Box<dyn
     // tags come from the stored turns.
     let stale: Vec<String> = conn
         .prepare(
-            "SELECT session_id FROM sessions s WHERE scan_seq = 0 AND COALESCE(num_turns, 0) != \
+            "SELECT session_id FROM sessions s WHERE file_path IS NULL AND COALESCE(num_turns, 0) != \
              (SELECT count(*) FROM turns t WHERE t.session_id = s.session_id)",
         )?
         .query_map([], |r| r.get(0))?
@@ -163,7 +166,7 @@ fn merge(conn: &Connection, src: &Connection) -> Result<(i64, i64, i64), Box<dyn
         conn.execute(
             "UPDATE sessions SET (num_turns, last_seq, first_ts, last_ts) = \
              (SELECT count(*), COALESCE(max(seq), -1), min(ts), max(ts) FROM turns WHERE session_id=?1) \
-             WHERE session_id=?1",
+             WHERE session_id=?1 AND file_path IS NULL",
             [sid],
         )?;
         if let Err(e) = tags::derive_tags(conn, sid) {
@@ -407,7 +410,7 @@ PRAGMA user_version=1;
             dump(
                 &conn,
                 "SELECT session_id, num_turns, last_seq, last_ts FROM sessions \
-                 WHERE scan_seq = 0 ORDER BY session_id"
+                 WHERE file_path IS NULL ORDER BY session_id"
             ),
             vec![
                 "[Text(\"N\"), Integer(2), Integer(1), Text(\"2026-01-02T00:00:01Z\")]",
@@ -432,6 +435,35 @@ PRAGMA user_version=1;
         assert_eq!(merge_file(&snap).unwrap(), (0, 0, 1));
         assert_eq!(count(&conn, COUNTS), counts);
         assert_eq!(count(&conn, untouched), 10101);
+    }
+
+    #[test]
+    fn old_local_session_with_zero_scan_seq_is_skipped() {
+        let env = Env::new("oldlocal");
+        let snap = env.ingest("snap.db", "O", &["remote cache-prod", "remote ibisroost"]);
+        env.open("snap.db")
+            .execute("UPDATE sessions SET checkpointed_seq=1", [])
+            .unwrap();
+        env.ingest("live.db", "O", &["local TICKET-123"]);
+        let conn = env.live();
+        // Old archives hold locally archived rows with scan_seq = 0.
+        conn.execute("UPDATE sessions SET scan_seq=0, num_turns=9", [])
+            .unwrap();
+        let rows = [
+            "SELECT * FROM sessions",
+            "SELECT * FROM turns ORDER BY id",
+            "SELECT * FROM session_tags ORDER BY tag",
+        ];
+        let before = rows.map(|q| dump(&conn, q));
+        assert!(!before[2].is_empty());
+        assert_eq!(merge_file(&snap).unwrap(), (0, 0, 1));
+        assert_eq!(rows.map(|q| dump(&conn, q)), before);
+
+        // A merged session keeps the default watermark, not the snapshot value.
+        conn.execute_batch("DELETE FROM turns; DELETE FROM sessions;")
+            .unwrap();
+        assert_eq!(merge_file(&snap).unwrap(), (1, 2, 0));
+        assert_eq!(count(&conn, "SELECT checkpointed_seq FROM sessions"), -1);
     }
 
     #[test]
