@@ -4,6 +4,12 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `subrosa fact doctor` warns about possible duplicate facts, and about project facts whose index line still says in-flight after 60 days. Doctor stays read-only.
+
 ## [0.31.0] - 2026-11-14
 
 ### Added
