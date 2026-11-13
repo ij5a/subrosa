@@ -325,11 +325,18 @@ fn distill_one(program: &std::path::Path, sid: &str) -> Result<String, Box<dyn s
     }
     let end = db::now_iso();
     let conn = db::connect_with_timeout(Duration::from_secs(10))?;
-    let project: String = conn.query_row(
-        "SELECT project FROM sessions WHERE session_id=?",
-        [sid],
-        |r| r.get(0),
-    )?;
+
+    // `forget` can delete the session while the child runs. That is not a failure.
+    let project: Option<String> = conn
+        .query_row(
+            "SELECT project FROM sessions WHERE session_id=?",
+            [sid],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(project) = project else {
+        return Err(Deferred("session was deleted").into());
+    };
     let proof = prove(
         &conn,
         &project,

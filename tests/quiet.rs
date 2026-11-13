@@ -3511,6 +3511,8 @@ fn forget_removes_a_session_and_keeps_it_out() {
         let (out, err) = run(&env, args, None);
         assert!((out + &err).contains("no matches for"), "{args:?} found it");
     }
+
+    // This holds on a small archive. A large one can keep old copies in live pages.
     for name in ["memory.db", "memory.db-wal"] {
         let bytes = fs::read(env.data.join(name)).unwrap_or_default();
         assert!(
@@ -3555,4 +3557,42 @@ fn forget_removes_a_session_and_keeps_it_out() {
     assert!(pruned.contains("pruned"), "{pruned}");
     let (_, err, ok) = run_env::<&str>(&env, &["ingest", "--require-complete", path], None, &[]);
     assert!(ok, "{err}");
+}
+
+#[test]
+fn sweep_racing_a_forget_does_not_bring_the_session_back() {
+    let env = setup("forget-race");
+    run(&env, &["init"], None);
+    fs::write(
+        env.projects.join("-tmp-demo/raced.jsonl"),
+        user_rec("2026-06-12T01:00:00Z", "r1", "raced note") + "\n",
+    )
+    .unwrap();
+    let conn = rusqlite::Connection::open(env.data.join("memory.db")).unwrap();
+
+    // Hold the write lock like a running delete. The sweep passes its first
+    // check, waits for the lock, and must check again after the commit.
+    conn.execute_batch(
+        "BEGIN IMMEDIATE; \
+         INSERT INTO forgotten_sessions(session_id, forgotten_at) VALUES('raced', 'now');",
+    )
+    .unwrap();
+    let (out, err, ok) = std::thread::scope(|s| {
+        let sweep = s.spawn(|| run_env::<&str>(&env, &["sweep"], None, &[]));
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        conn.execute_batch("COMMIT").unwrap();
+        sweep.join().unwrap()
+    });
+    assert!(ok, "{err}");
+    assert!(out.contains("+0 turns"), "{out}");
+    for table in ["turns", "sessions", "checkpoint_queue"] {
+        let n: i64 = conn
+            .query_row(
+                &format!("SELECT count(*) FROM {table} WHERE session_id='raced'"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "{table} got the forgotten session back");
+    }
 }

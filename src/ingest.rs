@@ -469,6 +469,22 @@ pub fn ingest_file_report(
         // Immediate: take the write lock at BEGIN (where busy_timeout applies)
         // instead of risking a mid-transaction SQLITE_BUSY that bypasses it.
         let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+
+        // A `forget` can commit between the first check and this write lock.
+        let forgotten: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM forgotten_sessions WHERE session_id=?)",
+            [&sid],
+            |r| r.get(0),
+        )?;
+        if forgotten {
+            return Ok(IngestReport {
+                inserted: 0,
+                scanned: 0,
+                skipped: 0,
+                partial_tail: false,
+                complete: true,
+            });
+        }
         {
             let mut stmt = tx.prepare(
                 "INSERT OR IGNORE INTO turns\
@@ -508,7 +524,8 @@ pub fn ingest_file_report(
     conn.execute(
         "INSERT INTO sessions \
            (session_id,file_path,project,cwd,first_ts,last_ts,num_turns,last_seq,file_size,file_mtime,scan_offset,scan_seq,skipped_lines,partial_tail,ingested_at) \
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
+         SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15 \
+         WHERE NOT EXISTS (SELECT 1 FROM forgotten_sessions WHERE session_id=?1) \
          ON CONFLICT(session_id) DO UPDATE SET \
            file_path=excluded.file_path, \
            project=excluded.project, \

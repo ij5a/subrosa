@@ -903,7 +903,8 @@ fn backfill(rebuild: bool, auto: bool) -> Result<i64, String> {
                 for id in ids {
                     tx.execute(
                         "INSERT OR REPLACE INTO turn_embeddings(turn_id, model, dim, vec) \
-                         VALUES (?1, ?2, ?3, ?4)",
+                         SELECT ?1, ?2, ?3, ?4 \
+                         WHERE EXISTS (SELECT 1 FROM turns WHERE id = ?1)",
                         params![id, key, v.len() as i64, &blob],
                     )
                     .map_err(|e| e.to_string())?;

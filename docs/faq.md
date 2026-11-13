@@ -54,7 +54,9 @@ Original transcripts stay unchanged under `~/.claude/projects`. Full-disk encryp
 
 ## How do I delete a session?
 
-Run `subrosa forget <id>` to see the session. Run `subrosa forget <id> --confirm` to delete it. The command removes the turns, their entries in both search indexes, the vectors, the tags, and the queue entry. It overwrites the freed bytes in the live database. It records the id, so no later ingest brings the session back.
+Run `subrosa forget <id>` to see the session. Run `subrosa forget <id> --confirm` to delete it. The command removes the turns, their entries in both search indexes, the vectors, the tags, and the queue entry. It turns on secure delete, so SQLite overwrites the space that the delete frees. A few deleted rows can remain as old copies inside live pages until a `VACUUM`. It records the id, so no later ingest brings the session back.
+
+The delete holds the write lock. On a session of a few thousand turns it can take about 30 to 60 s, and hooks wait during that time. `forget` works per machine. An archive on another machine keeps its copy.
 
 These copies stay, and the command lists the first 3:
 

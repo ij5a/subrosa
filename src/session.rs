@@ -309,7 +309,10 @@ pub fn forget(arg: &str, confirm: bool) -> ExitCode {
     };
 
     // A running session's turns so far must be in the archive before the delete.
-    let _ = ingest::sweep(&conn, &paths::projects_dir(), false);
+    // The preview writes nothing.
+    if confirm {
+        let _ = ingest::sweep(&conn, &paths::projects_dir(), false);
+    }
     let sid = match resolve_session(&conn, arg) {
         Resolved::One(id) => id,
         Resolved::None => {
@@ -385,8 +388,16 @@ pub fn forget(arg: &str, confirm: bool) -> ExitCode {
     };
 
     // The write-ahead log still holds the old pages until a checkpoint empties it.
-    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    let blocked: i64 = conn
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
+        .unwrap_or(1);
     println!("[subrosa] forgot session {sid}: deleted {deleted} turns");
+    if blocked != 0 {
+        println!("[subrosa] a reader blocked the log reset; deleted text can stay in the write-ahead log until the next checkpoint");
+    }
+    if matches!(paths::distill_path(), Ok(Some(_))) {
+        println!("[subrosa] automatic checkpointing is on; a run in flight can still save facts from this session");
+    }
     let snapshots = backup::snapshots().len();
     let mirror = paths::mirror().is_some();
     if snapshots > 0 || mirror {
