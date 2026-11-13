@@ -144,12 +144,16 @@ pub fn run(
         tags,
     );
 
+    // A trigram token is 3 characters, so 12 tokens show about 18 characters.
+    // 64 is the most FTS5 allows.
+    let snip_tokens = if fuzzy { 64 } else { 12 };
+
     // The table name is a fixed literal chosen by --fuzzy, never user input; the
     // tail is a fixed ORDER/LIMIT clause built from typed integers. Strings stay bound.
     let fetch = |match_str: &str, tail: &str| -> rusqlite::Result<Vec<Hit>> {
         let sql = format!(
             "SELECT t.session_id, t.ts, t.role, t.project, \
-                    snippet({table}, 0, '«', '»', '…', 12) AS snip, t.seq \
+                    snippet({table}, 0, '«', '»', '…', {snip_tokens}) AS snip, t.seq \
              FROM {table} JOIN turns t ON t.id = {table}.rowid \
              WHERE {table} MATCH ?{where_extra} {tail}"
         );
@@ -487,8 +491,8 @@ const EMBED_BATCH: usize = 1;
 const EMBED_SLAB: usize = 4096;
 
 /// The one test for "this `turn_embeddings` row counts for `model`", shared by
-/// the ranked scan and the pending count so the two can never disagree about
-/// which rows exist. `dim` is a usize read from our own column, never input.
+/// the ranked scan and the backfill's work queue so the two can never disagree
+/// about which rows exist. `dim` is a usize read from our own column, never input.
 fn same_width(dim: Option<usize>) -> String {
     dim.map(|d| format!(" AND e.dim = {d}")).unwrap_or_default()
 }
@@ -506,14 +510,28 @@ fn pending_sql(dim: Option<usize>) -> String {
     )
 }
 
-/// The rows `--semantic` ranks, under the same filters and the same width test
-/// the pending count uses — a row the scan ranks must be one the count doesn't
-/// call pending, or "N of M" double-counts it.
+/// Every turn `--semantic` could rank under the same filters. The scan's row
+/// count subtracted from this is the pending count, with no per-turn lookup.
+fn eligible_sql(tail: &str) -> String {
+    format!("SELECT count(*) FROM turns t WHERE t.text IS NOT NULL AND t.text <> ''{tail}")
+}
+
+/// The rows `--semantic` ranks, under the same filters as `eligible_sql`. The
+/// pending count is that total minus these rows, so "N of M" counts no row twice.
 fn scan_sql(dim: usize, tail: &str) -> String {
+    let width = same_width(Some(dim));
+    if tail.is_empty() {
+        return format!(
+            "SELECT e.turn_id, e.vec FROM turn_embeddings e JOIN turns t ON t.id = e.turn_id \
+             WHERE e.model = ?{width} ORDER BY e.turn_id"
+        );
+    }
+
+    // CROSS JOIN keeps `turns` as the outer loop, so a project, session or date
+    // filter reads only its own turns' vectors. A tag filter runs after the read.
     format!(
-        "SELECT e.turn_id, e.vec FROM turn_embeddings e JOIN turns t ON t.id = e.turn_id \
-         WHERE e.model = ?{}{tail} ORDER BY e.turn_id",
-        same_width(Some(dim))
+        "SELECT e.turn_id, e.vec FROM turns t CROSS JOIN turn_embeddings e ON e.turn_id = t.id \
+         WHERE e.model = ?{width}{tail}"
     )
 }
 
@@ -545,6 +563,11 @@ fn score_row(qvec: &[f32], blob: &[u8], dim: usize) -> Option<f64> {
     }
     let score = embed::cosine(qvec, &decode_vec(blob));
     (-1.001..=1.001).contains(&score).then_some(score)
+}
+
+/// Best score first. Equal scores sort by turn id, so results are reproducible.
+fn rank_order(a: &(f64, i64), b: &(f64, i64)) -> std::cmp::Ordering {
+    b.0.total_cmp(&a.0).then(a.1.cmp(&b.1))
 }
 
 /// Vectors are stored little-endian f32, L2-normalized at write time.
@@ -1023,18 +1046,19 @@ fn run_semantic(
             }
         }
         tx.query_row(
-            &format!("SELECT count(*) {}{tail}", pending_sql(Some(dim))),
-            params_from_iter(binds.iter()),
+            &eligible_sql(&tail),
+            params_from_iter(binds.iter().skip(1)),
             |r| r.get::<_, i64>(0),
         )
     });
-    let pending = match scan {
+    let eligible = match scan {
         Ok(p) => p,
         Err(e) => {
             eprintln!("[subrosa] query error: {e}");
             return ExitCode::FAILURE;
         }
     };
+    let pending = eligible - (scored.len() + corrupt) as i64;
     if corrupt > 0 {
         eprintln!(
             "[subrosa] skipped {corrupt} unreadable embedding(s) — repair with: subrosa embed --rebuild"
@@ -1051,8 +1075,8 @@ fn run_semantic(
         warn_incomplete(pending, ranked + corrupt);
         return ExitCode::SUCCESS;
     }
-    // Stable sort: equal scores keep turn-id order, so results are reproducible.
-    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    // Equal scores sort by turn id, whatever order the scan returns.
+    scored.sort_by(rank_order);
     // SQLite reads a negative LIMIT as "no limit" — the keyword path relies on
     // that, so -n -1 has to mean the same thing here.
     if limit >= 0 {
@@ -1291,6 +1315,71 @@ mod tests {
         let ranked = count(format!("SELECT count(*) FROM ({})", scan_sql(2, &tail)));
         let pending = count(format!("SELECT count(*) {}{tail}", pending_sql(Some(2))));
         assert_eq!((ranked, pending), (0, 1), "only turn 3 is in proj-b");
+    }
+
+    /// The filtered scan and the subtracted count must agree with the SQL they
+    /// replaced, with and without a filter, on a store that has gaps.
+    #[test]
+    fn the_scan_and_the_subtracted_count_match_the_sql_they_replaced() {
+        let conn = seeded();
+        conn.execute_batch(
+            "INSERT INTO turns VALUES (4,'proj-b','s',NULL,'cache warm',3),\
+                                      (5,'proj-b','s',NULL,'queue drained',4);\
+             INSERT INTO turn_embeddings VALUES (4,'m',2,x'000000000000803f'),\
+                                               (5,'m',2,x'0000803f');",
+        )
+        .unwrap();
+        let cases: [(Option<&str>, Vec<i64>, i64); 3] = [
+            (None, vec![1, 4, 5], 2),
+            (Some("proj-b"), vec![4, 5], 1),
+            (Some("proj-a"), vec![1], 1),
+        ];
+        for (project, want_ids, want_pending) in cases {
+            let (tail, filter_binds) = turn_filters(project, None, None, None, &[]);
+            let binds: Vec<String> = std::iter::once("m".to_string())
+                .chain(filter_binds)
+                .collect();
+            let ids = |sql: &str| -> Vec<i64> {
+                let mut stmt = conn.prepare(sql).unwrap();
+                let mut ids: Vec<i64> = stmt
+                    .query_map(params_from_iter(binds.iter()), |r| r.get(0))
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect();
+                ids.sort_unstable();
+                ids
+            };
+            let got = ids(&scan_sql(2, &tail));
+            let old = ids(&format!(
+                "SELECT e.turn_id, e.vec FROM turn_embeddings e JOIN turns t ON t.id = e.turn_id \
+                 WHERE e.model = ? AND e.dim = 2{tail} ORDER BY e.turn_id"
+            ));
+            let eligible: i64 = conn
+                .query_row(
+                    &eligible_sql(&tail),
+                    params_from_iter(binds.iter().skip(1)),
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let old_pending: i64 = conn
+                .query_row(
+                    &format!("SELECT count(*) {}{tail}", pending_sql(Some(2))),
+                    params_from_iter(binds.iter()),
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(got, want_ids, "scan ids for {project:?}");
+            assert_eq!(got, old, "scan ids against the old SQL for {project:?}");
+            assert_eq!(eligible - got.len() as i64, want_pending, "{project:?}");
+            assert_eq!(old_pending, want_pending, "old count for {project:?}");
+        }
+    }
+
+    #[test]
+    fn rank_order_puts_the_best_score_first_and_breaks_ties_by_turn_id() {
+        let mut scored = vec![(0.5, 9), (0.9, 4), (0.5, 2), (0.9, 7)];
+        scored.sort_by(rank_order);
+        assert_eq!(scored, vec![(0.9, 4), (0.9, 7), (0.5, 2), (0.5, 9)]);
     }
 
     /// The scan and the pending count have to test width the same way, or a

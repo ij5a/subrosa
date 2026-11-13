@@ -4,6 +4,13 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `subrosa search --fuzzy` shows about 70 characters around each match, up from about 18. The typo fallback's nearest matches can differ, because it now reads the wider snippet.
+- `subrosa search --semantic` reads only the matching turns' vectors when `--project`, `--session`, `--after`, `--before` or `--exclude` is set. The count of turns not indexed yet takes 1 cheap query. Results and their order do not change.
+
 ## [0.30.3] - 2026-11-04
 
 ### Fixed

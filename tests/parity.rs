@@ -404,6 +404,28 @@ fn search_fuzzy_true_miss_output_unchanged() {
 }
 
 #[test]
+fn search_fuzzy_snippet_shows_the_words_around_the_match() {
+    let env = setup("fuzzy-snippet");
+    let tp = env.projects.join("-tmp-demo/fuzz-1111-2222-3333.jsonl");
+    let text = "the aardvark opened the wombatbridge before the elephant left";
+    fs::write(
+        &tp,
+        format!(
+            "{{\"type\":\"user\",\"timestamp\":\"2026-06-12T01:00:00Z\",\"uuid\":\"x0\",\
+             \"cwd\":\"/tmp/demo\",\"message\":{{\"role\":\"user\",\"content\":\"{text}\"}}}}\n"
+        ),
+    )
+    .unwrap();
+    run(&env, &["ingest", tp.to_str().unwrap()], None);
+
+    let out = run(&env, &["search", "--fuzzy", "ombatbridg"], None);
+    assert!(
+        out.contains("opened") && out.contains("before"),
+        "fuzzy snippet shows the words around the match, got:\n{out}"
+    );
+}
+
+#[test]
 fn session_dump_matches_golden() {
     let env = setup("dump");
     ingest_golden_transcript(&env);
