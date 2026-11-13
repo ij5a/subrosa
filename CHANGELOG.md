@@ -4,18 +4,26 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.32.0] - 2026-11-14
 
 ### Added
 
 - `subrosa fact doctor` warns about possible duplicate facts, and about project facts whose index line still says in-flight after 60 days. Doctor stays read-only.
 - `subrosa hours <YYYY-MM>` prints active time for 1 local-time month, from the timestamps of typed prompts. `--by-session` prints 1 line per session.
+- `subrosa merge <snapshot.db>` adds the sessions and turns of another machine from a plain snapshot. It never touches a session that this machine archived or forgot.
+- `subrosa forget <id> --confirm` deletes 1 session and keeps it out. The schema is now version 8, so an older binary refuses the archive.
+- `subrosa redact` counts the stored turns that the current redaction rules mask. `--apply` rewrites those turns.
 
 ### Changed
 
 - `subrosa search` lists each session once, with its best hit. `(+N more)` counts that session's other hits among the top-ranked hits. `--session` lists every hit as before. `--fuzzy` and `--semantic` do the same.
 - The footer of `search`, `sessions` and `related` names `subrosa session <id8>`. The old transcript path stopped working when the transcript file was deleted.
 - `subrosa search --semantic --tag` reads only the tagged sessions' vectors. Results and their order do not change.
+
+### Fixed
+
+- The AWS key rule now catches a key that follows a letter.
+- `subrosa search --fuzzy -n=-1` keeps the typo fallback.
 
 ## [0.31.0] - 2026-11-14
 
@@ -472,6 +480,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [0.15.0]: https://github.com/ij5a/subrosa/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/ij5a/subrosa/compare/v0.14.0...v0.14.1
 [0.28.1]: https://github.com/ij5a/subrosa/compare/v0.28.0...v0.28.1
+[0.32.0]: https://github.com/ij5a/subrosa/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/ij5a/subrosa/compare/v0.30.3...v0.31.0
 [0.30.3]: https://github.com/ij5a/subrosa/compare/v0.30.2...v0.30.3
 [0.30.2]: https://github.com/ij5a/subrosa/compare/v0.30.1...v0.30.2
