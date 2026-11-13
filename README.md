@@ -22,6 +22,7 @@ Prompt recall is keyword-only. It adds up to 3 lines when the match is strong: u
 - The project has 11 direct crates and one static binary of about 5 MB. SessionEnd starts a short-lived detached archival worker.
 - The binary opens no sockets by default. A system `curl` child makes the one-time model download. Optional automatic checkpointing runs a configured Claude child and sends redacted transcript text to Anthropic.
 - Nothing you type, save, or search is uploaded unless you explicitly opt in to automatic checkpointing. Secret shapes are masked before storage.
+- `subrosa forget <id> --confirm` deletes 1 session from the archive for good. The FAQ lists the copies that stay.
 - Recall adds about 200 estimated tokens on a strong match in the benchmark fixture. The estimate divides response bytes by 3.8; it is not a runtime cap. `MEMORY.md` uses at most 23 KB by default.
 - Keyword hits take about 5 to 11 ms over 50,000 turns. A semantic fallback scans indexed turns linearly, so a miss gets slower as the index grows.
 
@@ -136,6 +137,7 @@ subrosa generate                         # rebuild MEMORY.md
 subrosa import ~/.claude/projects/<project>/memory # import an existing MEMORY.md
 subrosa session <id>                     # full ID or unique prefix
 subrosa session <id> --since N           # only turns after sequence N
+subrosa forget <id> --confirm            # delete 1 session for good
 subrosa pending                          # queued checkpoints
 subrosa checkpoint-drop <id> --max-seq N # remove a verified queue prefix
 subrosa sweep                            # catch up on transcripts
