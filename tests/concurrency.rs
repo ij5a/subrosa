@@ -177,6 +177,20 @@ fn connect_needs_no_write_lock_when_schema_current() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    // The file appears before the detached worker creates the schema.
+    while !rusqlite::Connection::open(env.data.join("memory.db"))
+        .and_then(|c| {
+            c.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'")?
+                .exists([])
+        })
+        .unwrap_or(false)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "SessionEnd worker did not create the schema"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     // Hold the write lock, then run a session-start (connect + sweep of an
     // empty projects dir = reads only). It must finish while the lock is held.
