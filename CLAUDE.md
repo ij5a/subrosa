@@ -34,6 +34,7 @@ Rust CLI and Claude Code plugin for persistent local memory. Read before changin
 | `facts.rs` | Curated facts CRUD, frontmatter parsing, type weights, `fact link` `[[name]]` graph reads, and read-only `fact doctor` leaf and row checks |
 | `generate.rs` | Byte-budgeted `MEMORY.md`. It supports `<memdir>/.budget` and stops at Claude Code's 200-line load limit. |
 | `import_existing.rs` | One-time import of a `MEMORY.md` and its leaves into the facts table |
+| `merge.rs` | `merge`: copy the sessions and turns of another machine from a plain snapshot, opened with `immutable=1`, into the live archive |
 | `session.rs` | Session dump by full ID or unique prefix, optional `--tags` and `--since`, and checkpoint queue operations: drop, enqueue, and mark-current |
 | `stats.rs` | Dashboard, including semantic-index progress and automatic checkpoint health. It is also the bare `subrosa` command. |
 | `timeutil.rs` | ISO-8601 and Unix-epoch helpers without chrono: `parse_ts`, `now_unix`, `civil_to_days`, `civil_from_days`, `parse_ymd`, and `next_day`. Stats, recall, search, and sessions use them. |
@@ -63,6 +64,7 @@ Rust CLI and Claude Code plugin for persistent local memory. Read before changin
 - **Small control files use `paths::read_control_file`.** This includes config, `embed.state`, `.budget`, the recall log, and `MEMORY.md`. SQLite holds the queue; v5 alone reads the legacy log. The helper accepts regular files, resolves symlinks by hand, and caps size. A FIFO could block a hook. A dangling symlink returns `ENOENT`, keeping evicted `semantic=off` off.
   - `Ok(None)` means absent. `Err` means unusable. Keep these cases separate.
 - **Redact before writing.** Every path storing transcript text must call `redact::redact`.
+- **Merge never touches a session this machine archived, the checkpoint queue, or facts.**
 - **Recall stays quiet and read-only.** It opens the database read-only, requires distinctive terms, and injects nothing for weak matches. Ingest filters `[subrosa recall]` with `NOISE_PREFIXES`, preventing feedback.
 - **Quote every FTS phrase.** Hyphenated identifiers such as `my-app-prod` and `TICKET-123` can trigger FTS5 syntax. `build_match` quotes each term. `--raw` opts out.
 - **Keep `project` unchanged.** It stores Claude Code's encoded transcript-parent directory. Do not normalize or decode it.

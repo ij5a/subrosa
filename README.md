@@ -137,6 +137,7 @@ subrosa checkpoint-drop <id> --max-seq N # remove a verified queue prefix
 subrosa sweep                            # catch up on transcripts
 subrosa backup --force                   # make a snapshot now
 subrosa restore <mirror>/subrosa-latest.db.enc   # decrypt an encrypted snapshot
+subrosa merge <mirror>/subrosa-latest.db # add another machine's sessions and turns
 subrosa setup                            # choose the backup mirror
 ```
 
@@ -200,6 +201,10 @@ The first section searches during a task. The second clears queued checkpoints.
 ## Where your data lives
 
 See [Where is data stored?](docs/faq.md#where-is-data-stored) for paths, permissions, config, and mirror rules.
+
+## Use 2 machines
+
+Give each machine its own mirror folder. On each machine, run `subrosa merge <snapshot.db>` on the snapshot of the other machine. Search and recall then find the sessions and turns of both machines. For an encrypted mirror, run `subrosa restore` first, then delete the restored file after the merge. Facts and `MEMORY.md` stay per machine. Recall needs the same project path on both machines.
 
 ## Privacy model
 

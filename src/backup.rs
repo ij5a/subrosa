@@ -249,7 +249,7 @@ fn unplaceholder(name: &str) -> &str {
 
 /// Does the file open with SQLite's header? Anything unreadable or shorter
 /// than the header is "don't know", which the caller treats as keep.
-fn is_plaintext(p: &Path) -> bool {
+pub(crate) fn is_plaintext(p: &Path) -> bool {
     let Ok(meta) = fs::symlink_metadata(p) else {
         return false;
     };
