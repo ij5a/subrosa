@@ -476,6 +476,7 @@ struct LinkFact {
     description: Option<String>,
     leaf_path: String,
     status: String,
+    updated_at: Option<String>,
 }
 
 impl LinkFact {
@@ -517,7 +518,7 @@ fn link_key(s: &str) -> String {
 
 fn load_link_facts(conn: &Connection, project: &str) -> rusqlite::Result<Vec<LinkFact>> {
     let mut stmt = conn.prepare(
-        "SELECT name, type, title, hook, description, leaf_path, status FROM facts \
+        "SELECT name, type, title, hook, description, leaf_path, status, updated_at FROM facts \
          WHERE project=? AND leaf_path IS NOT NULL \
          ORDER BY index_seq IS NULL, index_seq, leaf_path",
     )?;
@@ -533,6 +534,7 @@ fn load_link_facts(conn: &Connection, project: &str) -> rusqlite::Result<Vec<Lin
                 status: r
                     .get::<_, Option<String>>(6)?
                     .unwrap_or_else(|| "active".into()),
+                updated_at: r.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -787,6 +789,19 @@ fn frontmatter_problems(text: &str) -> Vec<String> {
     out
 }
 
+/// Share of description terms, in percent, at which 2 leaves may be duplicates.
+const DUP_PCT: usize = 35;
+/// Days without an update before an in-flight project fact may be stale.
+const STALE_DAYS: i64 = 60;
+
+/// What the possible-duplicate check keeps from each earlier active leaf.
+struct SeenLeaf {
+    leaf: String,
+    names: Vec<String>,
+    folded: HashSet<String>,
+    terms: HashSet<String>,
+}
+
 /// One finding, rendered at push time so the report keeps leaf order and a fixed
 /// per-leaf check order.
 fn finding(error: bool, leaf: &str, msg: String) -> (bool, String) {
@@ -897,6 +912,12 @@ fn doctor(project: Option<String>, memdir: Option<PathBuf>) -> ExitCode {
     let mut findings: Vec<(bool, String)> = Vec::new();
     // slug -> (first claimant, first ACTIVE claimant)
     let mut slug_owner: HashMap<String, (String, Option<String>)> = HashMap::new();
+    let now = crate::timeutil::now_unix();
+    let mut seen: Vec<SeenLeaf> = Vec::new();
+    let in_flight = Regex::new(
+            r"(?i)\b(pending|wip|in[- ]progress|queued|uncommitted|unmerged|still open|to do|todo|tbd|next step|follow[- ]up|not yet)\b",
+    )
+    .unwrap();
 
     for leaf in &leaves {
         let row = by_leaf.get(leaf.as_str()).copied();
@@ -1031,6 +1052,73 @@ fn doctor(project: Option<String>, memdir: Option<PathBuf>) -> ExitCode {
                     false,
                     leaf,
                     format!("dangling link [[{target}]] — fix the slug or write that leaf"),
+                ));
+            }
+        }
+
+        if ours {
+            let folded: HashSet<String> = claimed_here
+                .iter()
+                .cloned()
+                .chain([leaf_stem(leaf).to_ascii_lowercase()])
+                .map(|n| n.replace('_', "-"))
+                .collect();
+            let terms: HashSet<String> = fm_get(fm, "description")
+                .map(crate::text::extract_terms)
+                .unwrap_or_default()
+                .iter()
+                .map(|t| t.to_lowercase().trim_end_matches('.').to_string())
+                .collect();
+            // A pair on one exact name is already reported as a duplicate name.
+            let dup = seen
+                .iter()
+                .filter(|o| !o.names.iter().any(|n| claimed_here.contains(n)))
+                .find_map(|o| {
+                    if !o.folded.is_disjoint(&folded) {
+                        return Some(format!(
+                            "possible duplicate of {} — the names differ only by `-` and `_`; merge them, or archive one",
+                            o.leaf
+                        ));
+                    }
+                    if o.terms.is_empty() || terms.is_empty() {
+                        return None;
+                    }
+                    let shared = o.terms.intersection(&terms).count();
+                    let pct = shared * 100 / (o.terms.len() + terms.len() - shared);
+                    (pct >= DUP_PCT).then(|| {
+                        format!(
+                            "possible duplicate of {} — the descriptions share {pct}% of their terms; merge them, or archive one",
+                            o.leaf
+                        )
+                    })
+                });
+            if let Some(msg) = dup {
+                findings.push(finding(false, leaf, msg));
+            }
+            seen.push(SeenLeaf {
+                leaf: leaf.clone(),
+                names: claimed_here,
+                folded,
+                terms,
+            });
+
+            let project_row = row.filter(|f| {
+                f.type_
+                    .as_deref()
+                    .is_some_and(|t| t.eq_ignore_ascii_case("project"))
+            });
+            let cue = project_row.and_then(|f| in_flight.find(f.hook.as_deref()?));
+            let days = project_row
+                .and_then(|f| crate::timeutil::parse_ts(f.updated_at.as_deref()?))
+                .map(|t| (now - t) / 86_400);
+            if let (Some(cue), Some(days)) = (cue, days.filter(|d| *d > STALE_DAYS)) {
+                findings.push(finding(
+                    false,
+                    leaf,
+                    format!(
+                        "may be stale — the index line says `{}` and the fact was last updated {days} days ago; update it, or `subrosa fact archive --leaf {leaf}`",
+                        cue.as_str().to_lowercase()
+                    ),
                 ));
             }
         }

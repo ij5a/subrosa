@@ -953,6 +953,93 @@ fn fact_doctor_clean_then_warning_only_stay_exit_zero() {
 }
 
 #[test]
+fn fact_doctor_flags_possible_duplicates_and_stale_in_flight_facts() {
+    let env = setup("factdoctoraging");
+    let memdir = env.data.join("memdir");
+    fs::create_dir_all(&memdir).unwrap();
+    let md = memdir.to_str().unwrap();
+    for (leaf, name, type_, description) in [
+        (
+            "reference_cache_expiry.md",
+            "cache-expiry",
+            "reference",
+            "Gateway cache entries expire after ninety seconds",
+        ),
+        (
+            "reference_cache_ttl.md",
+            "cache-ttl",
+            "reference",
+            "Gateway cache entries expire after ninety seconds",
+        ),
+        (
+            "feedback_deploy-window.md",
+            "deploy-window",
+            "feedback",
+            "Deploys wait for the Tuesday window",
+        ),
+        (
+            "feedback_deploy_window.md",
+            "deploy_window",
+            "feedback",
+            "Never release outside the agreed slot",
+        ),
+        (
+            "project_billing_export.md",
+            "billing-export",
+            "project",
+            "Billing export rewrite is still pending review",
+        ),
+        (
+            "feedback_pending_reviews.md",
+            "pending-reviews",
+            "feedback",
+            "Flag pending reviews in the standup note",
+        ),
+    ] {
+        fs::write(
+            memdir.join(leaf),
+            format!("---\nname: {name}\ndescription: {description}\ntype: {type_}\n---\nBody.\n"),
+        )
+        .unwrap();
+        run(
+            &env,
+            &["fact", "upsert", "--leaf", leaf, "--memdir", md],
+            None,
+        );
+    }
+
+    // upsert stamps updated_at from the real clock, so doctor's clock is set from it too.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let doctor_at = |epoch: u64| {
+        base_cmd(&env)
+            .env("SUBROSA_NOW", epoch.to_string())
+            .args(["fact", "doctor", "--memdir", md])
+            .output()
+            .unwrap()
+    };
+    let names = "warn  feedback_deploy_window.md: possible duplicate of feedback_deploy-window.md \u{2014} the names differ only by `-` and `_`; merge them, or archive one\n";
+    let terms = "warn  reference_cache_ttl.md: possible duplicate of reference_cache_expiry.md \u{2014} the descriptions share 100% of their terms; merge them, or archive one\n";
+
+    let fresh = doctor_at(now);
+    assert_eq!(
+        String::from_utf8_lossy(&fresh.stdout),
+        format!("{names}{terms}\n[subrosa] doctor: 0 error(s), 2 warning(s)\n")
+    );
+    assert_eq!(fresh.status.code(), Some(0));
+
+    let aged = doctor_at(now + 61 * 86_400);
+    let stale = "warn  project_billing_export.md: may be stale \u{2014} the index line says `pending` and the fact was last updated 61 days ago; update it, or `subrosa fact archive --leaf project_billing_export.md`\n";
+    assert_eq!(
+        String::from_utf8_lossy(&aged.stdout),
+        format!("{names}{stale}{terms}\n[subrosa] doctor: 0 error(s), 3 warning(s)\n")
+    );
+    assert_eq!(aged.status.code(), Some(0));
+}
+
+#[test]
 fn fact_upsert_follows_a_default_hook_and_keeps_a_hand_one() {
     let env = setup("factupserthook");
     let memdir = env.data.join("memdir");

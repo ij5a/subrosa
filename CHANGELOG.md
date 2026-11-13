@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `subrosa fact doctor` warns about possible duplicate facts, and about project facts whose index line still says in-flight after 60 days. Doctor stays read-only.
+
 ### Changed
 
 - `subrosa search` lists each session once, with its best hit. `(+N more)` counts that session's other hits among the top-ranked hits. `--session` lists every hit as before. `--fuzzy` and `--semantic` do the same.

@@ -69,7 +69,7 @@ The user is about to run `/clear` or `/compact`. Save durable facts before eithe
 
 9. **Lint what you wrote.** Run `subrosa fact doctor`. It is read-only. It exits 1 for broken or spliced frontmatter, missing `name`/`description`/`type`, duplicate active name slugs, or fact rows whose leaf files are gone.
 
-   A collision with only an archived fact is a warning. Warnings exit 0 for an unregistered leaf, unknown type, dangling `[[link]]`, or a description changed since the last upsert.
+   A collision with only an archived fact is a warning. Warnings exit 0 for an unregistered leaf, unknown type, dangling `[[link]]`, a description changed since the last upsert, a possible duplicate, or a project fact that still says in-flight after 60 days. Read the leaf, and its pair for a duplicate, before you act. Never merge or archive on the warning alone.
 
    Run it after writing leaves. Fix errors on touched leaves. The command never edits leaves. Handle older findings separately.
 
