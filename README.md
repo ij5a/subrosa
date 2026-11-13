@@ -91,7 +91,7 @@ subrosa          # open the dashboard
 - Archives the live session after each assistant turn. The current session becomes searchable before it ends.
 - On a new session or after `/clear`, shows Claude the newest earlier session in the same project: date, id, first prompt, and last reply. It uses about 82 tokens once per session in Claude's context, not the chat window.
 - Adds up to 3 strong keyword matches from the same project to each prompt. It skips weak matches and the current session.
-- Searches with FTS5. Use `--project`, `--after`, `--before`, `--tag`, `--context`, `--exclude`, `--any`, and `--fuzzy` to narrow results.
+- Searches with FTS5. Use `--project`, `--after`, `--before`, `--tag`, `--context`, `--exclude`, `--any`, and `--fuzzy` to narrow results. A page lists each session once, and `--session` lists every hit in one session.
 - Supports semantic search with `subrosa search --semantic`. Automatic semantic search runs only after a plain search has zero hits and the local model and index are ready.
 - Builds curated facts with `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog`. Each fact has a small Markdown file. `subrosa generate` writes the size-limited `MEMORY.md`, and `subrosa fact search` finds facts.
 - Lists sessions and deterministic tags. Tags include tools, file types, and topic terms.
@@ -113,6 +113,7 @@ subrosa search api --tag tool:kubectl    # tag filter; repeat --tag to require a
 subrosa search pgbouncer -C 2            # show nearby turns
 subrosa search timeout --exclude test    # exclude a term; repeat to add more
 subrosa search redis valkey --any        # match any term, not all terms
+subrosa search deploy --session 3f9a2c1b # every hit in one session
 subrosa embed                            # update the semantic index
 subrosa embed --rebuild                  # rebuild semantic vectors
 subrosa search --semantic 'why did checkout get slow' # semantic search

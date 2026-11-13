@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use rusqlite::params_from_iter;
 
-use crate::{db, paths, search, text, timeutil};
+use crate::{db, search, text, timeutil};
 
 // Bound the co-occurrence so a very common anchor stays millisecond-scale: only
 // the most recent CAP anchor-sessions are tokenized. The header says when it bit.
@@ -358,10 +358,9 @@ fn render(
         println!("    {snip}");
     }
     println!(
-        "\n[subrosa] {} of {} session(s). Open a session: {}/<project>/<session_id>.jsonl",
+        "\n[subrosa] {} of {} session(s). Full text: subrosa session <id8>",
         shown.len(),
-        report.scanned,
-        paths::projects_dir().display()
+        report.scanned
     );
 }
 

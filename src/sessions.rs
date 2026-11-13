@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use rusqlite::params_from_iter;
 
-use crate::{db, paths, tags, timeutil};
+use crate::{db, tags, timeutil};
 
 /// One listed session: span + counts, plus its display-ordered tags.
 struct Row {
@@ -138,9 +138,8 @@ pub fn run(
         }
     }
     println!(
-        "\n[subrosa] {} session(s). Open a session: {}/<project>/<session_id>.jsonl",
-        rows.len(),
-        paths::projects_dir().display()
+        "\n[subrosa] {} session(s). Full text: subrosa session <id8>",
+        rows.len()
     );
     ExitCode::SUCCESS
 }

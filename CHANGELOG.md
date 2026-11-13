@@ -4,6 +4,14 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `subrosa search` lists each session once, with its best hit. `(+N more)` counts that session's other hits among the top-ranked hits. `--session` lists every hit as before. `--fuzzy` and `--semantic` do the same.
+- The footer of `search`, `sessions` and `related` names `subrosa session <id8>`. The old transcript path stopped working when the transcript file was deleted.
+- `subrosa search --semantic --tag` reads only the tagged sessions' vectors. Results and their order do not change.
+
 ## [0.31.0] - 2026-11-14
 
 ### Added

@@ -173,7 +173,8 @@ pub fn run(
         it.collect()
     };
 
-    let rows = match fetch(&m, &format!("ORDER BY bm25({table}) LIMIT {limit}")) {
+    let fetch_n = fetch_limit(limit, session);
+    let rows = match fetch(&m, &format!("ORDER BY bm25({table}) LIMIT {fetch_n}")) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[subrosa] query error: {e}");
@@ -271,10 +272,10 @@ pub fn run(
                         }
                     }
                 }
-                near.truncate(limit.max(0) as usize);
+                near.truncate(fetch_n.max(0) as usize);
                 if !near.is_empty() {
                     println!("[subrosa] no substring match — nearest matches (within one edit):");
-                    print_results(&conn, &near, context);
+                    print_results(&conn, &fold_sessions(&near, limit, session), context);
                     return ExitCode::SUCCESS;
                 }
             }
@@ -313,7 +314,7 @@ pub fn run(
         }
         return ExitCode::SUCCESS;
     }
-    print_results(&conn, &rows, context);
+    print_results(&conn, &fold_sessions(&rows, limit, session), context);
     ExitCode::SUCCESS
 }
 
@@ -347,10 +348,12 @@ fn turn_filters(
     }
     // EXISTS, not JOIN: a JOIN would multiply result rows per matching tag, which
     // corrupts bm25() ranking and LIMIT. Repeated --tag is ANDed.
+    // The LIMIT stops SQLite from turning the EXISTS into a join, so the semantic
+    // scan checks the tag before it reads the vector.
     for tg in tags {
         where_extra.push_str(
             " AND EXISTS (SELECT 1 FROM session_tags st \
-             WHERE st.session_id = t.session_id AND st.tag = ?)",
+             WHERE st.session_id = t.session_id AND st.tag = ? LIMIT 1)",
         );
         extra_binds.push(tg.clone());
     }
@@ -407,8 +410,37 @@ fn term_trigrams(term_low: &str) -> Vec<String> {
     out
 }
 
+/// How many ranked hits are fetched per shown session, so a page can fill
+/// after repeat hits of one session fold into its first row.
+const FOLD_WINDOW: i64 = 4;
+
+fn fetch_limit(limit: i64, session: Option<&str>) -> i64 {
+    if session.is_some() {
+        limit
+    } else {
+        limit.saturating_mul(FOLD_WINDOW)
+    }
+}
+
+/// One row per session, best hit first, with the count of that session's other
+/// hits. `--session` keeps every hit; a negative limit keeps every session.
+fn fold_sessions<'a>(rows: &'a [Hit], limit: i64, session: Option<&str>) -> Vec<(&'a Hit, usize)> {
+    if session.is_some() {
+        return rows.iter().map(|r| (r, 0)).collect();
+    }
+    let mut out: Vec<(&Hit, usize)> = Vec::new();
+    for r in rows {
+        if let Some(kept) = out.iter_mut().find(|k| k.0 .0 == r.0) {
+            kept.1 += 1;
+        } else if limit < 0 || (out.len() as i64) < limit {
+            out.push((r, 0));
+        }
+    }
+    out
+}
+
 /// Print ranked hits with optional --context neighbours, then the footer line.
-fn print_results(conn: &rusqlite::Connection, rows: &[Hit], context: i64) {
+fn print_results(conn: &rusqlite::Connection, rows: &[(&Hit, usize)], context: i64) {
     // --context looks up the turns on each side of a hit by (session_id, seq);
     // idx_turns_session makes this a cheap indexed range read per hit. Prepared
     // once and reused; None (and so no extra work) on the default context=0 path.
@@ -423,7 +455,7 @@ fn print_results(conn: &rusqlite::Connection, rows: &[Hit], context: i64) {
     };
 
     let now = timeutil::now_unix();
-    for (i, (sid, ts, role, project, snip, seq)) in rows.iter().enumerate() {
+    for (i, ((sid, ts, role, project, snip, seq), more)) in rows.iter().enumerate() {
         let snip = crate::text::collapse_ws(snip.as_deref().unwrap_or(""));
         let sid8 = crate::text::sid8(sid);
         // Relative age after the timestamp, shared with recall (`(7mo old)` etc.);
@@ -432,14 +464,20 @@ fn print_results(conn: &rusqlite::Connection, rows: &[Hit], context: i64) {
             Some(epoch) => timeutil::age_suffix(now - epoch),
             None => String::new(),
         };
+        let more = if *more > 0 {
+            format!(" (+{more} more)")
+        } else {
+            String::new()
+        };
         println!(
-            "{:>2}. [{}]{} {} · {} · {}",
+            "{:>2}. [{}]{} {} · {} · {}{}",
             i + 1,
             timeutil::fmt_ts(ts.as_deref().unwrap_or("")),
             age,
             role,
             project.as_deref().unwrap_or("?"),
-            sid8
+            sid8,
+            more
         );
         // Neighbouring turns (empty unless --context). Split on the hit's own seq
         // so the matched snippet stays in the middle, everything in transcript order.
@@ -465,10 +503,14 @@ fn print_results(conn: &rusqlite::Connection, rows: &[Hit], context: i64) {
             println!("      {}  {}", n.1, ctx_preview(&n.2));
         }
     }
+    let hint = if rows.iter().any(|r| r.1 > 0) {
+        ". More from one session: add --session <id8>"
+    } else {
+        ""
+    };
     println!(
-        "\n[subrosa] {} result(s). Open a session: {}/<project>/<session_id>.jsonl",
-        rows.len(),
-        paths::projects_dir().display()
+        "\n[subrosa] {} result(s). Full text: subrosa session <id8>{hint}",
+        rows.len()
     );
 }
 
@@ -528,7 +570,7 @@ fn scan_sql(dim: usize, tail: &str) -> String {
     }
 
     // CROSS JOIN keeps `turns` as the outer loop, so a project, session or date
-    // filter reads only its own turns' vectors. A tag filter runs after the read.
+    // filter reads only its own turns' vectors. A tag filter runs before the read too.
     format!(
         "SELECT e.turn_id, e.vec FROM turns t CROSS JOIN turn_embeddings e ON e.turn_id = t.id \
          WHERE e.model = ?{width}{tail}"
@@ -1080,7 +1122,7 @@ fn run_semantic(
     // SQLite reads a negative LIMIT as "no limit" — the keyword path relies on
     // that, so -n -1 has to mean the same thing here.
     if limit >= 0 {
-        scored.truncate(limit as usize);
+        scored.truncate(fetch_limit(limit, session) as usize);
     }
 
     // The keyword path shows an FTS snippet; with no match terms, a plain
@@ -1116,7 +1158,7 @@ fn run_semantic(
     }
     // Stdout stays the shared result format; the how-it-ranked note is stderr.
     eprintln!("[subrosa] semantic: ranked {ranked} turns via {model}");
-    print_results(&conn, &rows, context);
+    print_results(&conn, &fold_sessions(&rows, limit, session), context);
     warn_incomplete(pending, ranked + corrupt);
     ExitCode::SUCCESS
 }
@@ -1372,6 +1414,62 @@ mod tests {
             assert_eq!(got, old, "scan ids against the old SQL for {project:?}");
             assert_eq!(eligible - got.len() as i64, want_pending, "{project:?}");
             assert_eq!(old_pending, want_pending, "old count for {project:?}");
+        }
+    }
+
+    #[test]
+    fn fold_sessions_keeps_one_row_per_session_and_counts_the_rest() {
+        let rows: Vec<Hit> = ["a", "b", "a", "c", "a"]
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.to_string(), None, String::new(), None, None, i as i64))
+            .collect();
+        let got = |limit, session| -> Vec<(String, usize)> {
+            fold_sessions(&rows, limit, session)
+                .iter()
+                .map(|(h, n)| (h.0.clone(), *n))
+                .collect()
+        };
+        assert_eq!(
+            got(2, None),
+            vec![("a".to_string(), 2), ("b".to_string(), 0)]
+        );
+        assert_eq!(got(-1, None).len(), 3);
+        let all = got(2, Some("a"));
+        assert_eq!(all.len(), 5);
+        assert!(all.iter().all(|(_, n)| *n == 0));
+    }
+
+    /// The LIMIT inside the tag EXISTS changes the plan only, never the rows.
+    #[test]
+    fn the_tag_filter_limit_keeps_the_same_rows() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE turns (id INTEGER PRIMARY KEY, session_id TEXT);\
+             CREATE VIRTUAL TABLE turns_fts USING fts5(text);\
+             CREATE TABLE session_tags (session_id TEXT, tag TEXT, \
+               PRIMARY KEY (session_id, tag));\
+             INSERT INTO turns VALUES (1,'a'),(2,'b'),(3,'a'),(4,'c');\
+             INSERT INTO turns_fts (rowid, text) VALUES (1,'deploy'),(2,'deploy'),\
+               (3,'deploy'),(4,'deploy');\
+             INSERT INTO session_tags VALUES ('a','x'),('c','x');",
+        )
+        .unwrap();
+        let (tail, _) = turn_filters(None, None, None, None, &["x".to_string()]);
+        let plain = tail.replace(" LIMIT 1", "");
+        assert_ne!(tail, plain);
+        for tail in [tail, plain] {
+            let ids: Vec<i64> = conn
+                .prepare(&format!(
+                    "SELECT t.id FROM turns_fts JOIN turns t ON t.id = turns_fts.rowid \
+                     WHERE turns_fts MATCH ?{tail} ORDER BY bm25(turns_fts) LIMIT 2"
+                ))
+                .unwrap()
+                .query_map(["deploy", "x"], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            assert_eq!(ids, vec![1, 3]);
         }
     }
 

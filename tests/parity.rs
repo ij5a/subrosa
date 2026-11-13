@@ -623,7 +623,7 @@ fn related_matches_golden() {
     .unwrap();
     run(&env, &["ingest", t2.to_str().unwrap()], None);
     let out = run(&env, &["related", "cache-prod"], None);
-    let want = golden("related.golden").replace("{{PROJECTS_DIR}}", env.projects.to_str().unwrap());
+    let want = golden("related.golden");
     assert_eq!(out, want);
 }
 
@@ -1349,8 +1349,7 @@ fn sessions_matches_golden() {
     let env = setup("sessions");
     ingest_golden_transcript(&env);
     let out = run(&env, &["sessions"], None);
-    let want =
-        golden("sessions.golden").replace("{{PROJECTS_DIR}}", env.projects.to_str().unwrap());
+    let want = golden("sessions.golden");
     assert_eq!(out, want);
 }
 
@@ -1563,7 +1562,7 @@ fn search_exclude_drops_hits_carrying_the_term() {
     run(&env, &["ingest", tp.to_str().unwrap()], None);
 
     // Without --exclude both deploy turns match (the second carries the snarf token).
-    let plain = run(&env, &["search", "deploy"], None);
+    let plain = run(&env, &["search", "deploy", "--session", "excl"], None);
     assert!(
         plain.contains("snarf"),
         "the rollback turn is present without --exclude, got:\n{plain}"
@@ -1609,7 +1608,11 @@ fn search_any_ors_terms_and_composes_with_exclude() {
     );
 
     // --any ORs them: the alpha turns and the beta turn all match.
-    let any = run(&env, &["search", "alpha", "beta", "--any"], None);
+    let any = run(
+        &env,
+        &["search", "alpha", "beta", "--any", "--session", "any0"],
+        None,
+    );
     assert!(
         any.contains("apple") && any.contains("banana") && any.contains("cherry"),
         "--any matches any term, got:\n{any}"
@@ -1618,7 +1621,16 @@ fn search_any_ors_terms_and_composes_with_exclude() {
     // --any composed with --exclude drops the alpha turn that also carries the token.
     let composed = run(
         &env,
-        &["search", "alpha", "beta", "--any", "--exclude", "quuxroll"],
+        &[
+            "search",
+            "alpha",
+            "beta",
+            "--any",
+            "--exclude",
+            "quuxroll",
+            "--session",
+            "any0",
+        ],
         None,
     );
     assert!(
@@ -1628,6 +1640,43 @@ fn search_any_ors_terms_and_composes_with_exclude() {
     assert!(
         !composed.contains("cherry"),
         "the alpha turn carrying the excluded token is dropped, got:\n{composed}"
+    );
+}
+
+#[test]
+fn search_lists_each_session_once() {
+    let env = setup("searchfold");
+    let sid = "any0-1111-2222-3333";
+    let tp = env.projects.join(format!("-tmp-demo/{sid}.jsonl"));
+    fs::write(
+        &tp,
+        "{\"type\":\"user\",\"timestamp\":\"2026-06-12T01:00:00Z\",\"uuid\":\"n1\",\
+         \"cwd\":\"/tmp/demo\",\"message\":{\"role\":\"user\",\"content\":\"alpha apple\"}}\n\
+         {\"type\":\"assistant\",\"timestamp\":\"2026-06-12T01:01:00Z\",\"uuid\":\"n2\",\
+         \"cwd\":\"/tmp/demo\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\
+         \"text\":\"beta banana\"}]}}\n\
+         {\"type\":\"user\",\"timestamp\":\"2026-06-12T01:02:00Z\",\"uuid\":\"n3\",\
+         \"cwd\":\"/tmp/demo\",\"message\":{\"role\":\"user\",\"content\":\"alpha cherry quuxroll\"}}\n",
+    )
+    .unwrap();
+    run(&env, &["ingest", tp.to_str().unwrap()], None);
+
+    let folded = run(&env, &["search", "alpha"], None);
+    assert!(
+        folded.contains("(+1 more)")
+            && folded.contains("1 result(s)")
+            && folded.contains("add --session <id8>")
+            && !folded.contains("cherry"),
+        "one row for the session, got:\n{folded}"
+    );
+
+    let all = run(&env, &["search", "alpha", "--session", "any0"], None);
+    assert!(
+        all.contains("apple")
+            && all.contains("cherry")
+            && all.contains("2 result(s)")
+            && !all.contains("(+"),
+        "--session lists every hit, got:\n{all}"
     );
 }
 

@@ -101,7 +101,7 @@ enum Cmd {
     Search {
         /// Search terms (each phrase-quoted unless --raw)
         terms: Vec<String>,
-        /// Max results
+        /// Max results (one per session unless --session)
         #[arg(short = 'n', long, default_value_t = 15)]
         limit: i64,
         /// Treat the query as raw FTS5 syntax
@@ -110,7 +110,7 @@ enum Cmd {
         /// Restrict to a project (substring match)
         #[arg(long)]
         project: Option<String>,
-        /// Restrict to a session id (prefix match)
+        /// Restrict to a session id (prefix match); lists every hit
         #[arg(long)]
         session: Option<String>,
         /// Substring + small-typo matching via a trigram index (built on first use)
