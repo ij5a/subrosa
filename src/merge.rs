@@ -67,8 +67,12 @@ fn merge(conn: &Connection, src: &Connection) -> Result<(i64, i64, i64), Box<dyn
     }
     // A session this machine archived from a transcript is never touched. Old
     // archives hold such rows with scan_seq = 0, so file_path is the marker.
+    // A forgotten id counts as local, so a merge never brings it back.
     let local: HashSet<String> = conn
-        .prepare("SELECT session_id FROM sessions WHERE file_path IS NOT NULL")?
+        .prepare(
+            "SELECT session_id FROM sessions WHERE file_path IS NOT NULL \
+             UNION SELECT session_id FROM forgotten_sessions",
+        )?
         .query_map([], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
 
@@ -464,6 +468,26 @@ PRAGMA user_version=1;
             .unwrap();
         assert_eq!(merge_file(&snap).unwrap(), (1, 2, 0));
         assert_eq!(count(&conn, "SELECT checkpointed_seq FROM sessions"), -1);
+    }
+
+    #[test]
+    fn forgotten_session_stays_out_on_a_second_merge() {
+        let env = Env::new("forgotten");
+        let snap = env.ingest("snap.db", "G", &["remote otterhollow", "remote two"]);
+        let conn = env.live();
+        assert_eq!(merge_file(&snap).unwrap(), (1, 2, 0));
+        // The same rows `forget` removes, then the id it records.
+        conn.execute_batch(
+            "DELETE FROM turns WHERE session_id='G';
+             DELETE FROM session_tags WHERE session_id='G';
+             DELETE FROM sessions WHERE session_id='G';
+             INSERT INTO forgotten_sessions(session_id, forgotten_at) VALUES ('G', 'now');",
+        )
+        .unwrap();
+        assert_eq!(merge_file(&snap).unwrap(), (0, 0, 1));
+        assert_eq!(count(&conn, "SELECT count(*) FROM turns"), 0);
+        assert_eq!(count(&conn, "SELECT count(*) FROM sessions"), 0);
+        assert_eq!(hits(&conn, "turns_fts", "otterhollow"), 0);
     }
 
     #[test]
