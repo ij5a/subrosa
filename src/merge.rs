@@ -93,16 +93,19 @@ fn merge(conn: &Connection, src: &Connection) -> Result<(i64, i64, i64), Box<dyn
             )?;
             while let Some(r) = rows.next()? {
                 let sid: String = r.get(0)?;
-                if local.contains(&sid) {
+                // A project is 1 directory name. Anything else could point a
+                // path outside the projects folder.
+                let project: Option<String> = r.get(1)?;
+                let plain = project.as_deref().is_some_and(|p| {
+                    !p.is_empty() && !p.contains(['/', '\\']) && p != "." && p != ".."
+                });
+                if local.contains(&sid) || !plain {
                     skipped += 1;
                     continue;
                 }
-                sessions += ins.execute(params![
-                    sid,
-                    r.get::<_, Value>(1)?,
-                    r.get::<_, Value>(2)?,
-                    db::now_iso()
-                ])? as i64;
+                sessions +=
+                    ins.execute(params![sid, project, r.get::<_, Value>(2)?, db::now_iso()])?
+                        as i64;
                 keep.insert(sid);
             }
         }
@@ -278,6 +281,7 @@ PRAGMA user_version=1;
         fn drop(&mut self) {
             std::env::remove_var("SUBROSA_DB");
             std::env::remove_var("SUBROSA_DIR");
+            std::env::remove_var("SUBROSA_PROJECTS_DIR");
             let _ = fs::remove_dir_all(&self.root);
         }
     }
@@ -488,6 +492,38 @@ PRAGMA user_version=1;
         assert_eq!(count(&conn, "SELECT count(*) FROM turns"), 0);
         assert_eq!(count(&conn, "SELECT count(*) FROM sessions"), 0);
         assert_eq!(hits(&conn, "turns_fts", "otterhollow"), 0);
+    }
+
+    #[test]
+    fn tampered_project_is_skipped_and_a_merged_row_never_picks_the_memdir() {
+        let env = Env::new("tampered");
+        std::env::set_var("SUBROSA_PROJECTS_DIR", &env.root);
+        env.ingest("snap.db", "E", &["remote evil"]);
+        let snap = env.ingest("snap.db", "G", &["remote good"]);
+        let cwd = fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+        let src = env.open("snap.db");
+        src.execute(
+            "UPDATE sessions SET project='../evil' WHERE session_id='E'",
+            [],
+        )
+        .unwrap();
+        // A future timestamp makes the merged row the newest for this cwd.
+        src.execute(
+            "UPDATE sessions SET project='elsewhere', cwd=?1 WHERE session_id='G'",
+            [cwd.to_str().unwrap()],
+        )
+        .unwrap();
+        src.execute("UPDATE turns SET ts='2999-01-01T00:00:00Z'", [])
+            .unwrap();
+        drop(src);
+        let conn = env.live();
+        let before = db::current_memdir(Some(&conn));
+        assert_eq!(merge_file(&snap).unwrap(), (1, 1, 1));
+        assert_eq!(
+            dump(&conn, "SELECT session_id, project, last_ts FROM sessions"),
+            vec!["[Text(\"G\"), Text(\"elsewhere\"), Text(\"2999-01-01T00:00:00Z\")]"]
+        );
+        assert_eq!(db::current_memdir(Some(&conn)), before);
     }
 
     #[test]

@@ -668,10 +668,12 @@ fn current_context(conn: &Connection) -> CurrentContext {
     }
 
     // A sessions-table hit is authoritative — it holds Claude Code's own encoding.
+    // Only a row archived on this machine counts, never a merged one.
     let mut candidates: Vec<String> = Vec::new();
     for cw in &cwds {
         if let Ok(Some(proj)) = conn.query_row(
-            "SELECT project FROM sessions WHERE cwd=? ORDER BY last_ts DESC LIMIT 1",
+            "SELECT project FROM sessions WHERE cwd=? AND file_path IS NOT NULL \
+             ORDER BY last_ts DESC LIMIT 1",
             [cw.as_str()],
             |r| r.get::<_, Option<String>>(0),
         ) {

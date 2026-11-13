@@ -357,8 +357,9 @@ pub fn forget(arg: &str, confirm: bool) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let deleted = (|| -> rusqlite::Result<usize> {
-        db::scrub_on_delete(&conn)?;
+        // Lock first, so an index created by another process is scrubbed too.
         let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+        db::scrub_on_delete(&tx)?;
         if db::has_table(&tx, "turn_embeddings")? {
             tx.execute(
                 "DELETE FROM turn_embeddings WHERE turn_id IN (SELECT id FROM turns WHERE session_id=?)",

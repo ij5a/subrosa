@@ -279,10 +279,12 @@ pub fn current_memdir(conn: Option<&Connection>) -> PathBuf {
     let mut candidates: Vec<String> = Vec::new();
     if let Some(conn) = conn {
         // A sessions-table hit is authoritative — it's Claude Code's own encoding.
+        // Only a row archived on this machine counts, never a merged one.
         for cw in &cwds {
             let hit: Option<Option<String>> = conn
                 .query_row(
-                    "SELECT project FROM sessions WHERE cwd=? ORDER BY last_ts DESC LIMIT 1",
+                    "SELECT project FROM sessions WHERE cwd=? AND file_path IS NOT NULL \
+                     ORDER BY last_ts DESC LIMIT 1",
                     [cw],
                     |r| r.get(0),
                 )
