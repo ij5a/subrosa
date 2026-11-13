@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `subrosa recap` prints a session, or a date range of sessions, as its prompt trail. Each typed prompt shows the first line of the final reply.
+
 ### Changed
 
 - `subrosa search --fuzzy` shows about 70 characters around each match, up from about 18. The typo fallback's nearest matches can differ, because it now reads the wider snippet.

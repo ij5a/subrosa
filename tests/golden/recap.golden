@@ -1,0 +1,8 @@
+-tmp-demo · cccc-ddd · 3 prompt(s)
+  #0 2026-03-02 09:00  add a retry to the upload job, api_token=‹redacted› is the staging value and it must stay out of every log line, keep the backoff under 30 seconds, and leave th…
+     → Added a retry with backoff. The 4 tests pass.
+  #8 2026-03-02 09:31  why does the nightly build fail
+     → The nightly image has no ffmpeg, so the probe step exits 1.
+  #10 2026-03-03 00:10  ship it
+
+[subrosa] 1 session(s), 3 prompt(s).

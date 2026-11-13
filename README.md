@@ -95,6 +95,7 @@ subrosa          # open the dashboard
 - Supports semantic search with `subrosa search --semantic`. Automatic semantic search runs only after a plain search has zero hits and the local model and index are ready.
 - Builds curated facts with `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog`. Each fact has a small Markdown file. `subrosa generate` writes the size-limited `MEMORY.md`, and `subrosa fact search` finds facts.
 - Lists sessions and deterministic tags. Tags include tools, file types, and topic terms.
+- Prints a session or a date range as its prompt trail with `subrosa recap`. Each typed prompt shows the first line of the final reply.
 - Finds co-occurring terms with `subrosa related`. It supports linked facts and read-only checks with `subrosa fact link` and `subrosa fact doctor`.
 - Makes throttled snapshots. An optional mirror can encrypt the latest snapshot with XChaCha20-Poly1305 and argon2id.
 - Masks private-key blocks, AWS keys, bearer tokens, and labeled secret values before storage.
@@ -119,6 +120,8 @@ subrosa related cache-prod               # co-occurring terms and sessions
 subrosa related TICKET-123 --project api # scoped related search
 subrosa sessions                         # sessions, newest first
 subrosa sessions --tag topic:cache-prod --after 2026-05-01
+subrosa recap <id>                       # one session as its prompt trail
+subrosa recap --after 2026-05-01 --project api # prompt trails for a date range
 subrosa session <id> --tags              # session and derived tags
 subrosa fact list                        # facts for the current project
 subrosa fact search pgbouncer            # search facts
