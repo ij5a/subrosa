@@ -4,13 +4,18 @@
 //! transcripts are still cleartext; disk encryption is the real at-rest control.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::process::ExitCode;
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
 use regex::Regex;
+use rusqlite::{OptionalExtension, TransactionBehavior};
 
-static REDACTIONS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
+static REDACTIONS: LazyLock<Vec<(&'static str, Regex, &'static str)>> = LazyLock::new(|| {
     vec![
         (
+            "private-key",
             Regex::new(
                 r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
             )
@@ -18,10 +23,12 @@ static REDACTIONS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
             "‹redacted-private-key›",
         ),
         (
-            Regex::new(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b").unwrap(),
+            "aws-key",
+            Regex::new(r"(?:AKIA|ASIA)[0-9A-Z]{16}\b").unwrap(),
             "‹redacted-aws-key›",
         ),
         (
+            "bearer",
             Regex::new(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{20,}").unwrap(),
             "Bearer ‹redacted›",
         ),
@@ -44,6 +51,7 @@ static REDACTIONS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         //
         // Runs before the generic rule, so it wins.
         (
+            "passphrase",
             Regex::new(r"(?i)(?-u:\b)(\w*pass_?phrase)(?-u:\b)([^\S\n]*[=:][^\S\n]*)(.+)").unwrap(),
             "${1}${2}‹redacted›",
         ),
@@ -56,6 +64,7 @@ static REDACTIONS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         // opened the leak described above; a real fix needs a shell-aware
         // tokenizer, not a bigger regex.
         (
+            "labeled-secret",
             Regex::new(
                 r"(?i)(?-u:\b)(\w*(?:password|passwd|pwd|secret|token|api[_-]?key|mysql_pwd|access[_-]?key))(?-u:\b)(\s*[=:]\s*)(\S+)",
             )
@@ -69,12 +78,140 @@ static REDACTIONS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
 /// case — so clean turns cost zero copies here.
 pub fn redact(text: &str) -> Cow<'_, str> {
     let mut acc = Cow::Borrowed(text);
-    for (pat, repl) in REDACTIONS.iter() {
+    for (_, pat, repl) in REDACTIONS.iter() {
         if pat.is_match(&acc) {
             acc = Cow::Owned(pat.replace_all(&acc, *repl).into_owned());
         }
     }
     acc
+}
+
+/// `subrosa redact`: reapply today's rules to stored turns. Prints counts
+/// only, never turn text or a matched value.
+pub fn run(apply: bool) -> ExitCode {
+    match rewrite(apply) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("[subrosa] redact: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn rewrite(apply: bool) -> rusqlite::Result<ExitCode> {
+    let mut conn = crate::db::connect()?;
+    let mut per_rule = vec![0usize; REDACTIONS.len()];
+    let mut per_session: BTreeMap<String, usize> = BTreeMap::new();
+    let mut changes: Vec<(i64, String, String)> = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT id, session_id, text FROM turns WHERE text IS NOT NULL ORDER BY id")?;
+        let mut rows = stmt.query([])?;
+        while let Some(r) = rows.next()? {
+            let (id, sid, text): (i64, String, String) = (r.get(0)?, r.get(1)?, r.get(2)?);
+            let mut cur: Option<String> = None;
+            for (i, (_, pat, repl)) in REDACTIONS.iter().enumerate() {
+                let src = cur.as_deref().unwrap_or(&text);
+                let next = pat.replace_all(src, *repl);
+                if next != src {
+                    per_rule[i] += 1;
+                    cur = Some(next.into_owned());
+                }
+            }
+            if let Some(new) = cur {
+                *per_session.entry(sid.clone()).or_default() += 1;
+                changes.push((id, sid, new));
+            }
+        }
+    }
+
+    println!(
+        "{} turn(s) hold text that today's rules mask",
+        changes.len()
+    );
+    for ((name, _, _), n) in REDACTIONS.iter().zip(&per_rule) {
+        println!("  {name}: {n}");
+    }
+    for (sid, n) in &per_session {
+        println!("  session {sid}: {n}");
+    }
+    if !apply {
+        if !changes.is_empty() {
+            println!("rewrite them with: subrosa redact --apply");
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // Take the write lock first, so no index can appear after the checks below.
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let has_table = |name: &str| -> rusqlite::Result<bool> {
+        Ok(tx
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
+                [name],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    };
+    let (tri, vectors) = (has_table("turns_fts_tri")?, has_table("turn_embeddings")?);
+
+    // Without this, FTS5 keeps the old tokens in the index until a later merge.
+    tx.execute(
+        "INSERT INTO turns_fts(turns_fts, rank) VALUES('secure-delete', 1)",
+        [],
+    )?;
+    if tri {
+        tx.execute(
+            "INSERT INTO turns_fts_tri(turns_fts_tri, rank) VALUES('secure-delete', 1)",
+            [],
+        )?;
+    }
+    for (id, _, new) in &changes {
+        tx.execute(
+            "UPDATE turns SET text=?2 WHERE id=?1",
+            rusqlite::params![id, new],
+        )?;
+        if vectors {
+            tx.execute("DELETE FROM turn_embeddings WHERE turn_id=?1", [id])?;
+        }
+    }
+    tx.commit()?;
+
+    for sid in per_session.keys() {
+        if let Err(e) = crate::tags::derive_tags(&conn, sid) {
+            eprintln!("[subrosa] tag derivation {sid}: {e}");
+        }
+    }
+
+    // NOTE: VACUUM builds its copy in RAM (temp_store=MEMORY in db::tune). Set temp_store=FILE first if an archive outgrows RAM.
+    conn.execute_batch("VACUUM")?;
+
+    // The old text stays in the WAL file until a full reset truncates it. A
+    // checkpoint by another connection returns busy at once, so retry for 30 s.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let blocked = loop {
+        let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+        if busy == 0 || Instant::now() >= deadline {
+            break busy;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    if blocked != 0 {
+        eprintln!(
+            "[subrosa] redact: another connection blocked the WAL reset, so the old text may remain there. Run the command again."
+        );
+        return Ok(ExitCode::FAILURE);
+    }
+
+    println!(
+        "rewrote {} turn(s) in {} session(s)",
+        changes.len(),
+        per_session.len()
+    );
+    println!("snapshots and the mirror copy made before this run still hold the old text");
+    println!("replace them with: subrosa backup --force --keep 1");
+    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(test)]
@@ -94,6 +231,23 @@ mod tests {
         );
         let pem = "-----BEGIN RSA PRIVATE KEY-----\nzzz\n-----END RSA PRIVATE KEY-----";
         assert_eq!(redact(pem), "‹redacted-private-key›");
+    }
+
+    /// A key glued to a word character on its left is still a key. The right
+    /// side keeps its boundary, so plain words and longer runs stay.
+    #[test]
+    fn masks_an_aws_key_with_no_boundary_before_it() {
+        assert_eq!(
+            redact("id AAKIAIOSFODNN7EXAMPLE ok"),
+            "id A‹redacted-aws-key› ok"
+        );
+        assert_eq!(
+            redact("csv\\nAKIAIOSFODNN7EXAMPLE"),
+            "csv\\n‹redacted-aws-key›"
+        );
+        for s in ["MALAYSIA EURASIA ASIAPACIFIC", "AKIAIOSFODNN7EXAMPLEX"] {
+            assert_eq!(redact(s), s);
+        }
     }
 
     /// subrosa's own mirror passphrase, in every shape a session can show it.

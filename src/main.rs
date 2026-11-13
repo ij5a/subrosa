@@ -98,6 +98,12 @@ enum Cmd {
         /// Path to a plain snapshot .db file
         file: PathBuf,
     },
+    /// Count stored turns that today's redaction rules would mask
+    Redact {
+        /// Rewrite those turns for good, then compact the database
+        #[arg(long)]
+        apply: bool,
+    },
     /// Ingest every transcript that changed since its last archive
     Sweep {
         /// Suppress output
@@ -420,6 +426,7 @@ fn main() -> ExitCode {
         } => run_ingest(paths, sweep, quiet, require_complete),
         Cmd::Restore { file, out } => crypt::restore(file, out),
         Cmd::Merge { file } => merge::run(file),
+        Cmd::Redact { apply } => redact::run(apply),
         Cmd::Sweep { quiet } => run_ingest(Vec::new(), true, quiet, false),
         Cmd::Search {
             terms,
