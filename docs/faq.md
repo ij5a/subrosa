@@ -44,6 +44,8 @@ A `passphrase=` line is masked to its end. This covers quoted or unquoted text, 
 
 Original transcripts stay unchanged under `~/.claude/projects`. Full-disk encryption protects them.
 
+The rules can change between versions. `subrosa redact` counts the stored turns that the current rules mask, by rule and by session. `subrosa redact --apply` rewrites those turns for good. Snapshots and the mirror copy made before that run keep the old text. Replace them with `subrosa backup --force --keep 1`.
+
 ## What does subrosa not protect?
 
 - Redaction matches known shapes only. A `ghp_...` token, an `sk-...` key, a bare JWT, or another unknown secret stays as written.

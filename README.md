@@ -99,6 +99,7 @@ subrosa          # open the dashboard
 - Finds co-occurring terms with `subrosa related`. It supports linked facts and read-only checks with `subrosa fact link` and `subrosa fact doctor`.
 - Makes throttled snapshots. An optional mirror can encrypt the latest snapshot with XChaCha20-Poly1305 and argon2id.
 - Masks private-key blocks, AWS keys, bearer tokens, and labeled secret values before storage.
+- Reapplies the current redaction rules to stored turns with `subrosa redact`. It prints counts only, and `--apply` rewrites the turns.
 
 ## Commands
 
@@ -135,6 +136,7 @@ subrosa session <id> --since N           # only turns after sequence N
 subrosa pending                          # queued checkpoints
 subrosa checkpoint-drop <id> --max-seq N # remove a verified queue prefix
 subrosa sweep                            # catch up on transcripts
+subrosa redact --apply                   # mask stored turns with the current rules
 subrosa backup --force                   # make a snapshot now
 subrosa restore <mirror>/subrosa-latest.db.enc   # decrypt an encrypted snapshot
 subrosa setup                            # choose the backup mirror

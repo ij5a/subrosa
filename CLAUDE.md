@@ -22,7 +22,7 @@ Rust CLI and Claude Code plugin for persistent local memory. Read before changin
 | `main.rs` | clap dispatch and small command runners |
 | `paths.rs` | Data paths, environment overrides, and the `KEY=VALUE` config. It handles `semantic`, `embed.state`, `distill.state`, and `distill.last`. |
 | `db.rs` | Compatibility-critical schema, `connect`, `connect_readonly`, `migrate()`, `now_iso`, `encode_cwd`, `current_memdir`, and lazy trigram and `turn_embeddings` tables. The schema includes `session_tags`. |
-| `redact.rs` | Secret masking before storage |
+| `redact.rs` | Secret masking before storage. It also implements `subrosa redact`: a count by rule and session, and `--apply`, which rewrites stored turns, drops their vectors, turns on FTS5 `secure-delete`, then runs `VACUUM` and a WAL truncate. |
 | `ingest.rs` | JSONL to turn rows, seek-resume ingest with `scan_offset` and `scan_seq`, sweep, checkpoint queue, and tag derivation hook |
 | `search.rs` | FTS5 queries and output with `--after`, `--before`, and `--tag`; semantic ranking; and `subrosa embed` backfill. Backfill uses newest-first slabs, one thread per core, deduplication, one shared `Embedder`, and one DB writer. `--auto` uses half the cores, with a floor of 2 and a cap at the core count. A 2 or 3 core machine uses 2 cores. A 1 core machine uses 1. |
 | `sessions.rs` | `sessions`: list sessions newest-first and filter by project, date, or tag |
