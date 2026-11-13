@@ -914,13 +914,10 @@ fn doctor(project: Option<String>, memdir: Option<PathBuf>) -> ExitCode {
     let mut slug_owner: HashMap<String, (String, Option<String>)> = HashMap::new();
     let now = crate::timeutil::now_unix();
     let mut seen: Vec<SeenLeaf> = Vec::new();
-    static IN_FLIGHT: OnceLock<Regex> = OnceLock::new();
-    let in_flight = IN_FLIGHT.get_or_init(|| {
-        Regex::new(
+    let in_flight = Regex::new(
             r"(?i)\b(pending|wip|in[- ]progress|queued|uncommitted|unmerged|still open|to do|todo|tbd|next step|follow[- ]up|not yet)\b",
-        )
-        .unwrap()
-    });
+    )
+    .unwrap();
 
     for leaf in &leaves {
         let row = by_leaf.get(leaf.as_str()).copied();
