@@ -1,6 +1,6 @@
 [package]
 name = "subrosa"
-version = "0.30.3"
+version = "0.31.0"
 edition = "2021"
 rust-version = "1.89"
 description = "Persistent, private memory for Claude Code. Archives every session into a local SQLite FTS5 database and makes it searchable."
