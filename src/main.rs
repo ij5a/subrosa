@@ -10,6 +10,7 @@ mod import_existing;
 mod ingest;
 mod paths;
 mod recall;
+mod recap;
 mod redact;
 mod related;
 mod search;
@@ -186,6 +187,28 @@ enum Cmd {
         /// Max sessions to list
         #[arg(short = 'n', long, default_value_t = 20)]
         limit: i64,
+    },
+    /// Print a session, or a date range of sessions, as its prompt trail
+    ///
+    /// Each typed prompt prints with the first line of the final reply. `#N` is
+    /// the stored sequence: `subrosa session <id> --since <N-1>` prints from
+    /// that prompt on.
+    Recap {
+        /// Session id or unique prefix (default: every session the filters match)
+        #[arg(conflicts_with = "project")]
+        id: Option<String>,
+        /// Restrict to a project (substring match)
+        #[arg(long)]
+        project: Option<String>,
+        /// Only prompts on or after this UTC date (YYYY-MM-DD, inclusive)
+        #[arg(long)]
+        after: Option<String>,
+        /// Only prompts on or before this UTC date (YYYY-MM-DD, inclusive)
+        #[arg(long)]
+        before: Option<String>,
+        /// Max sessions to print
+        #[arg(short = 'n', long, default_value_t = 10)]
+        limit: usize,
     },
     /// Show the memory archive dashboard (activity, store, by-project share)
     Stats(stats::Args),
@@ -414,6 +437,19 @@ fn main() -> ExitCode {
             after.as_deref(),
             before.as_deref(),
             &tag,
+            limit,
+        ),
+        Cmd::Recap {
+            id,
+            project,
+            after,
+            before,
+            limit,
+        } => recap::run(
+            id.as_deref(),
+            project.as_deref(),
+            after.as_deref(),
+            before.as_deref(),
             limit,
         ),
         Cmd::Stats(args) => stats::run(&args),

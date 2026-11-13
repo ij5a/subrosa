@@ -17,14 +17,14 @@ fn opt_str(v: Option<&str>) -> &str {
 }
 
 /// What a session argument resolves to: a single id, nothing, or several.
-enum Resolved {
+pub(crate) enum Resolved {
     One(String),
     None,
     Ambiguous(Vec<String>),
 }
 
 /// The shared "ambiguous prefix" listing (`dump` and `mark_current` print it alike).
-fn print_ambiguous(arg: &str, ids: &[String]) {
+pub(crate) fn print_ambiguous(arg: &str, ids: &[String]) {
     eprintln!(
         "[subrosa] \"{arg}\" matches {} sessions — use a longer prefix or the full id:",
         ids.len()
@@ -42,7 +42,7 @@ fn print_ambiguous(arg: &str, ids: &[String]) {
 /// prefix — the 8-char `sid8` that `search`/`related` print. Resolves against
 /// the `turns` table so it only ever points at a dumpable session. `substr(…)=`
 /// (not `LIKE`) so `%`/`_` in the input aren't read as wildcards.
-fn resolve_session(conn: &rusqlite::Connection, arg: &str) -> Resolved {
+pub(crate) fn resolve_session(conn: &rusqlite::Connection, arg: &str) -> Resolved {
     if arg.is_empty() {
         return Resolved::None;
     }

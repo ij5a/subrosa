@@ -1333,6 +1333,54 @@ fn sessions_matches_golden() {
 }
 
 #[test]
+fn recap_matches_golden() {
+    let env = setup("recap");
+    ingest_golden_transcript(&env);
+    let t = env.projects.join("-tmp-demo/cccc-dddd-2222.jsonl");
+    fs::write(&t, golden("recap.jsonl")).unwrap();
+    run(&env, &["ingest", t.to_str().unwrap()], None);
+
+    assert_eq!(run(&env, &["recap", "cccc"], None), golden("recap.golden"));
+
+    let ranged = run(
+        &env,
+        &["recap", "--after", "2026-03-03", "--project", "demo"],
+        None,
+    );
+    assert!(
+        ranged.contains("ship it"),
+        "third prompt kept, got:\n{ranged}"
+    );
+    assert!(
+        !ranged.contains("add a retry"),
+        "first prompt is before --after, got:\n{ranged}"
+    );
+
+    let cut = run(&env, &["recap", "-n", "1"], None);
+    assert!(
+        cut.ends_with("More sessions match: raise -n.\n"),
+        "got:\n{cut}"
+    );
+
+    assert_eq!(
+        run_full(&env, &["recap", "nope"], None).status.code(),
+        Some(1)
+    );
+    assert_eq!(
+        run_full(&env, &["recap", "--after", "nope"], None)
+            .status
+            .code(),
+        Some(2)
+    );
+    let none = run_full(&env, &["recap", "--project", "nomatch"], None);
+    assert_eq!(none.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&none.stdout),
+        "[subrosa] no typed prompts match.\n"
+    );
+}
+
+#[test]
 fn session_tags_line_is_opt_in() {
     let env = setup("sesstags");
     ingest_golden_transcript(&env);

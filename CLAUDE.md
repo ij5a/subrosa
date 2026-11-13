@@ -26,6 +26,7 @@ Rust CLI and Claude Code plugin for persistent local memory. Read before changin
 | `ingest.rs` | JSONL to turn rows, seek-resume ingest with `scan_offset` and `scan_seq`, sweep, checkpoint queue, and tag derivation hook |
 | `search.rs` | FTS5 queries and output with `--after`, `--before`, and `--tag`; semantic ranking; and `subrosa embed` backfill. Backfill uses newest-first slabs, one thread per core, deduplication, one shared `Embedder`, and one DB writer. `--auto` uses half the cores, with a floor of 2 and a cap at the core count. A 2 or 3 core machine uses 2 cores. A 1 core machine uses 1. |
 | `sessions.rs` | `sessions`: list sessions newest-first and filter by project, date, or tag |
+| `recap.rs` | `recap`: a session or a date range as its prompt trail, typed prompts with the first line of each final reply |
 | `related.rs` | `related`: co-occurrence from an anchor to terms and sessions, with FTS-count IDF down-weighting |
 | `recall.rs` | UserPromptSubmit relevance gate, hidden fact lookup, and context injection |
 | `text.rs` | Shared tokenizer and term-quality helpers: `STOPWORDS`, `extract_terms`, `is_identifier`, `is_anchor`, `turn_tokens`, and `token_matches`. Recall, related, and tags use them. |
