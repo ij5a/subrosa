@@ -9,6 +9,7 @@ mod hook;
 mod hours;
 mod import_existing;
 mod ingest;
+mod merge;
 mod paths;
 mod recall;
 mod recap;
@@ -91,6 +92,11 @@ enum Cmd {
         /// Where to write the decrypted DB (default: ./<filename minus .enc>)
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+    /// Copy another machine's sessions and turns from a plain snapshot into this archive
+    Merge {
+        /// Path to a plain snapshot .db file
+        file: PathBuf,
     },
     /// Ingest every transcript that changed since its last archive
     Sweep {
@@ -405,6 +411,7 @@ fn main() -> ExitCode {
             require_complete,
         } => run_ingest(paths, sweep, quiet, require_complete),
         Cmd::Restore { file, out } => crypt::restore(file, out),
+        Cmd::Merge { file } => merge::run(file),
         Cmd::Sweep { quiet } => run_ingest(Vec::new(), true, quiet, false),
         Cmd::Search {
             terms,

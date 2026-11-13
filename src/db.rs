@@ -15,7 +15,7 @@ use crate::paths;
 // v3: session_tags (auto-derived, read-only tags) + a one-time backfill.
 // v4: scan_offset/scan_seq resume cursor on sessions — incremental transcript ingest.
 // v5: checkpoint_queue moves the pending session list into SQLite.
-const SCHEMA_VERSION: i64 = 7;
+pub(crate) const SCHEMA_VERSION: i64 = 7;
 const SCHEMA: &str = r#"
 PRAGMA journal_mode=WAL;
 

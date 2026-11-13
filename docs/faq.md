@@ -66,6 +66,10 @@ A fresh salt and nonce make every encrypted snapshot a full upload. Block reuse 
 
 A passphrase set outside `subrosa setup` applies at the next backup. The first encrypted snapshot waits for the 24-hour throttle. Run `subrosa backup --force` to create it now.
 
+## Can I use 2 machines?
+
+Yes. Give each machine its own mirror folder, then run `subrosa merge <snapshot.db>` on the snapshot of the other machine. For an encrypted mirror, run `subrosa restore` first and delete the restored file after the merge. Facts and `MEMORY.md` stay per machine. Recall needs the same project path on both machines.
+
 ## How does long-term memory work?
 
 Ended sessions start a detached worker and return. It archives the transcript, adds it to the SQLite queue, retries database contention for a bounded time, and lets a later sweep recover missed work. When configured, automatic checkpointing starts up to 3 queued child runs. The session whose end started the run skips the 10-minute check. The retry wait, run lock, 3-run cap, and incomplete-archive check still apply. `/subrosa:checkpoint-backlog` saves queued facts. `/subrosa:checkpoint` saves facts before `/clear` or `/compact`.
