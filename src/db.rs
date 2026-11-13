@@ -15,7 +15,8 @@ use crate::paths;
 // v3: session_tags (auto-derived, read-only tags) + a one-time backfill.
 // v4: scan_offset/scan_seq resume cursor on sessions — incremental transcript ingest.
 // v5: checkpoint_queue moves the pending session list into SQLite.
-const SCHEMA_VERSION: i64 = 7;
+// v8: forgotten_sessions lists the ids that `forget` deleted, so ingest skips them.
+const SCHEMA_VERSION: i64 = 8;
 const SCHEMA: &str = r#"
 PRAGMA journal_mode=WAL;
 
@@ -132,6 +133,11 @@ CREATE TABLE IF NOT EXISTS checkpoint_queue (
   session_id TEXT PRIMARY KEY,
   enqueued_at TEXT NOT NULL,
   enqueue_seq INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS forgotten_sessions (
+  session_id TEXT PRIMARY KEY,
+  forgotten_at TEXT NOT NULL
 );
 "#;
 
@@ -495,6 +501,31 @@ pub fn ensure_trigram_index(conn: &Connection) -> rusqlite::Result<bool> {
     Ok(true)
 }
 
+/// True when a table with this name exists. The trigram index and the vector table are lazy.
+pub fn has_table(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+        [name],
+        |r| r.get(0),
+    )
+}
+
+/// Make later deletes on this connection remove the bytes, not only mark them
+/// free. The pragma alone leaves deleted words in the FTS indexes. The FTS
+/// option is persistent. Batch because the pragma returns a row.
+pub fn scrub_on_delete(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "PRAGMA secure_delete=ON;\
+         INSERT INTO turns_fts(turns_fts, rank) VALUES('secure-delete', 1);",
+    )?;
+    if has_table(conn, "turns_fts_tri")? {
+        conn.execute_batch(
+            "INSERT INTO turns_fts_tri(turns_fts_tri, rank) VALUES('secure-delete', 1);",
+        )?;
+    }
+    Ok(())
+}
+
 /// Create the lazy embeddings store on the first indexing run. Outside the
 /// versioned schema, same as the trigram index: `semantic=off` users avoid its
 /// storage cost, and SCHEMA_VERSION stays put. `model` is part of the key
@@ -578,6 +609,7 @@ END;
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
+        assert!(has_table(&conn, "forgotten_sessions").unwrap());
         let ddl: String = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE name='turns_fts'",

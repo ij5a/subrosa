@@ -292,6 +292,14 @@ enum Cmd {
         #[arg(long)]
         since: Option<i64>,
     },
+    /// Delete one session from the archive for good
+    Forget {
+        /// Session id or unique prefix
+        id: String,
+        /// Delete it. Without this flag the command only shows the session.
+        #[arg(long)]
+        confirm: bool,
+    },
     /// List sessions queued for checkpoint
     Pending,
     /// Remove a session from the queue + record the checkpoint high-water mark
@@ -497,6 +505,7 @@ fn main() -> ExitCode {
             boundary,
             since,
         } => session::dump(&id, tags, boundary, since),
+        Cmd::Forget { id, confirm } => session::forget(&id, confirm),
         Cmd::Pending => run_pending(),
         Cmd::CheckpointDrop {
             id,

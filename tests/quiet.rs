@@ -3436,3 +3436,123 @@ fn pre_compact_archives_and_resets_dedup() {
         "dedup must reset after compaction, got:\n{again}"
     );
 }
+
+#[test]
+fn forget_removes_a_session_and_keeps_it_out() {
+    let env = setup("forget");
+    let mut long = "plain filler words ".repeat(400);
+    long.truncate(5988);
+    long += " zebraquartz";
+    assert_eq!(long.len(), 6000);
+    ingest(
+        &env,
+        "gone",
+        &[
+            user_rec("2026-06-12T01:00:00Z", "g1", "first gone note"),
+            user_rec("2026-06-12T01:01:00Z", "g2", &long),
+            user_rec("2026-06-12T01:02:00Z", "g3", "last gone note"),
+        ],
+    );
+    ingest(
+        &env,
+        "kept",
+        &[
+            user_rec("2026-06-12T02:00:00Z", "k1", "the walnutprism plan"),
+            user_rec("2026-06-12T02:01:00Z", "k2", "walnutprism is done"),
+        ],
+    );
+    let (hit, _) = run(&env, &["search", "--fuzzy", "zebraquartz"], None);
+    assert!(hit.contains("1 result(s)"), "{hit}");
+    let db_path = env.data.join("memory.db");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS turn_embeddings (turn_id INTEGER NOT NULL, model TEXT NOT NULL, \
+         dim INTEGER NOT NULL, vec BLOB NOT NULL, PRIMARY KEY (turn_id, model));\
+         INSERT INTO turn_embeddings(turn_id, model, dim, vec) \
+         SELECT id, 'demo-model', 2, x'0000803f00000000' FROM turns WHERE session_id='gone' LIMIT 1;",
+    )
+    .unwrap();
+    drop(conn);
+    let (queued, _) = run(&env, &["checkpoint-enqueue", "gone"], None);
+    assert!(queued.contains("queued"), "{queued}");
+    let (kept_before, _) = run(&env, &["session", "kept"], None);
+
+    // Rows left for `gone` in every table that holds a session, vectors included.
+    let rows = || -> Vec<i64> {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        [
+            "SELECT count(*) FROM turns WHERE session_id='gone'",
+            "SELECT count(*) FROM sessions WHERE session_id='gone'",
+            "SELECT count(*) FROM session_tags WHERE session_id='gone'",
+            "SELECT count(*) FROM checkpoint_queue WHERE session_id='gone'",
+            "SELECT count(*) FROM turn_embeddings",
+        ]
+        .iter()
+        .map(|sql| conn.query_row(sql, [], |r| r.get(0)).unwrap())
+        .collect()
+    };
+    let before = rows();
+    assert_eq!((before[0], before[1], before[3], before[4]), (3, 1, 1, 1));
+
+    let (_, err, ok) = run_env::<&str>(&env, &["forget", "gone"], None, &[]);
+    assert!(!ok, "forget without --confirm must refuse");
+    assert!(err.contains("nothing was deleted"), "{err}");
+    assert_eq!(rows(), before);
+    let (out, err, ok) = run_env::<&str>(&env, &["forget", "gone", "--confirm"], None, &[]);
+    assert!(ok, "{err}");
+    assert!(out.contains("deleted 3 turns"), "{out}");
+    assert!(!out.contains("zebraquartz") && !err.contains("zebraquartz"));
+
+    assert_eq!(rows(), [0, 0, 0, 0, 0]);
+    for args in [
+        &["search", "zebraquartz"][..],
+        &["search", "--fuzzy", "zebraquartz"],
+    ] {
+        let (out, err) = run(&env, args, None);
+        assert!((out + &err).contains("no matches for"), "{args:?} found it");
+    }
+    for name in ["memory.db", "memory.db-wal"] {
+        let bytes = fs::read(env.data.join(name)).unwrap_or_default();
+        assert!(
+            !bytes.windows(11).any(|w| w == b"zebraquartz"),
+            "{name} still holds the deleted text"
+        );
+    }
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    for index in ["turns_fts", "turns_fts_tri"] {
+        conn.execute(
+            &format!("INSERT INTO {index}({index}, rank) VALUES('integrity-check', 1)"),
+            [],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    let (kept_after, _) = run(&env, &["session", "kept"], None);
+    assert_eq!(kept_after, kept_before);
+    let (hit, _) = run(&env, &["search", "walnutprism"], None);
+    assert!(hit.contains("2 result(s)"), "{hit}");
+
+    // No write path brings the session back, even after the file grows.
+    let file = env.projects.join("-tmp-demo/gone.jsonl");
+    let path = file.to_str().unwrap();
+    run(&env, &["ingest", path], None);
+    assert_eq!(rows(), [0, 0, 0, 0, 0]);
+    let mut f = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(
+        f,
+        "{}",
+        user_rec("2026-06-12T01:03:00Z", "g4", "one more gone note")
+    )
+    .unwrap();
+    drop(f);
+    run(&env, &["sweep"], None);
+    assert_eq!(rows(), [0, 0, 0, 0, 0]);
+    let payload = format!(r#"{{"transcript_path":"{path}","session_id":"gone"}}"#);
+    run(&env, &["hook", "stop"], Some(&payload));
+    assert_eq!(rows(), [0, 0, 0, 0, 0]);
+    let (pruned, _) = run(&env, &["checkpoint-enqueue", "gone"], None);
+    assert!(pruned.contains("pruned"), "{pruned}");
+    let (_, err, ok) = run_env::<&str>(&env, &["ingest", "--require-complete", path], None, &[]);
+    assert!(ok, "{err}");
+}

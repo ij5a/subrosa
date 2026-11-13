@@ -251,6 +251,22 @@ pub fn ingest_file_report(
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
+
+    // `forget` deleted this session. A second read of its file would bring it back.
+    let forgotten: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM forgotten_sessions WHERE session_id=?)",
+        [&sid],
+        |r| r.get(0),
+    )?;
+    if forgotten {
+        return Ok(IngestReport {
+            inserted: 0,
+            scanned: 0,
+            skipped: 0,
+            partial_tail: false,
+            complete: true,
+        });
+    }
     let project = path
         .parent()
         .and_then(|p| p.file_name())

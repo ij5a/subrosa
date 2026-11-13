@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
 
-use crate::{db, ingest, paths, tags};
+use crate::{backup, db, ingest, paths, tags};
 
 /// Cap on how many candidates an ambiguous prefix lists before "+N more".
 const AMBIGUOUS_LIST_CAP: usize = 10;
@@ -294,6 +294,124 @@ pub fn enqueue(sid: &str) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Delete one session from the archive for good and record its id, so no later
+/// ingest brings it back. It never prints turn text: the session that runs
+/// this command would archive that text again.
+pub fn forget(arg: &str, confirm: bool) -> ExitCode {
+    let conn = match db::connect_with_timeout(std::time::Duration::from_secs(10)) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[subrosa] cannot open DB: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // A running session's turns so far must be in the archive before the delete.
+    let _ = ingest::sweep(&conn, &paths::projects_dir(), false);
+    let sid = match resolve_session(&conn, arg) {
+        Resolved::One(id) => id,
+        Resolved::None => {
+            eprintln!("[subrosa] no archived turns for session {arg} (not ingested?)");
+            return ExitCode::FAILURE;
+        }
+        Resolved::Ambiguous(ids) => {
+            print_ambiguous(arg, &ids);
+            return ExitCode::from(2);
+        }
+    };
+    type Meta = (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let (file_path, project, first, last): Meta = conn
+        .query_row(
+            "SELECT file_path, project, first_ts, last_ts FROM sessions WHERE session_id=?",
+            [sid.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .unwrap_or(None)
+        .unwrap_or_default();
+    if !confirm {
+        let turns: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM turns WHERE session_id=?",
+                [sid.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        eprintln!(
+            "[subrosa] session {sid}  project={}  {}..{}  {turns} turns",
+            opt_str(project.as_deref()),
+            opt_str(first.as_deref()),
+            opt_str(last.as_deref())
+        );
+        eprintln!("[subrosa] nothing was deleted; add --confirm to delete this session for good");
+        return ExitCode::FAILURE;
+    }
+    let deleted = (|| -> rusqlite::Result<usize> {
+        db::scrub_on_delete(&conn)?;
+        let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+        if db::has_table(&tx, "turn_embeddings")? {
+            tx.execute(
+                "DELETE FROM turn_embeddings WHERE turn_id IN (SELECT id FROM turns WHERE session_id=?)",
+                [sid.as_str()],
+            )?;
+        }
+        let deleted = tx.execute("DELETE FROM turns WHERE session_id=?", [sid.as_str()])?;
+        for table in ["session_tags", "checkpoint_queue", "sessions"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE session_id=?"),
+                [sid.as_str()],
+            )?;
+        }
+        tx.execute(
+            "INSERT OR IGNORE INTO forgotten_sessions(session_id, forgotten_at) VALUES (?, ?)",
+            rusqlite::params![sid, db::now_iso()],
+        )?;
+        tx.commit()?;
+        Ok(deleted)
+    })();
+    let deleted = match deleted {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("[subrosa] cannot forget session {sid}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // The write-ahead log still holds the old pages until a checkpoint empties it.
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    println!("[subrosa] forgot session {sid}: deleted {deleted} turns");
+    let snapshots = backup::snapshots().len();
+    let mirror = paths::mirror().is_some();
+    if snapshots > 0 || mirror {
+        println!(
+            "[subrosa] {snapshots} snapshots{} can still hold it; replace them with: subrosa backup --force --keep 1",
+            if mirror { " and the mirror" } else { "" }
+        );
+    }
+    if let Some(path) = file_path.filter(|p| Path::new(p).exists()) {
+        println!("[subrosa] the source transcript still exists: {path}");
+    }
+    let leaves: Vec<String> = conn
+        .prepare(
+            "SELECT leaf_path FROM facts WHERE origin_session=? AND leaf_path IS NOT NULL \
+             ORDER BY leaf_path",
+        )
+        .and_then(|mut s| s.query_map([sid.as_str()], |r| r.get(0))?.collect())
+        .unwrap_or_default();
+    if !leaves.is_empty() {
+        println!(
+            "[subrosa] saved facts from it remain: {}",
+            leaves.join(", ")
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 /// Mark a session as checkpointed: ingest its latest turns, set the high-water

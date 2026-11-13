@@ -52,6 +52,19 @@ Original transcripts stay unchanged under `~/.claude/projects`. Full-disk encryp
 - Claude Code transcripts remain plaintext under `~/.claude/projects`; subrosa never edits them.
 - An optional mirror can leave the machine. A passphrase encrypts that snapshot. Without one, a synced copy is readable. The live database is never synced.
 
+## How do I delete a session?
+
+Run `subrosa forget <id>` to see the session. Run `subrosa forget <id> --confirm` to delete it. The command removes the turns, their entries in both search indexes, the vectors, the tags, and the queue entry. It overwrites the freed bytes in the live database. It records the id, so no later ingest brings the session back.
+
+These copies stay, and the command lists the first 3:
+
+- Snapshots and the mirror. Run `subrosa backup --force --keep 1` to replace them.
+- The source transcript, for up to 30 days. Delete the file yourself.
+- Saved facts from the session.
+- Up to 500 characters in other sessions that printed its text.
+
+To undo it while the source transcript exists, run `DELETE FROM forgotten_sessions WHERE session_id='<id>';` on the live database. Then run `subrosa sweep`.
+
 ## How does mirror encryption work?
 
 It protects only the mirror. XChaCha20-Poly1305 encrypts each snapshot with an argon2id key. The live database, local snapshots, and original transcripts stay unchanged.
