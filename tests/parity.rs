@@ -1569,7 +1569,18 @@ fn search_exclude_drops_hits_carrying_the_term() {
     );
 
     // --exclude rollback drops the turn that contains rollback, keeps the other.
-    let excl = run(&env, &["search", "deploy", "--exclude", "rollback"], None);
+    let excl = run(
+        &env,
+        &[
+            "search",
+            "deploy",
+            "--exclude",
+            "rollback",
+            "--session",
+            "excl",
+        ],
+        None,
+    );
     assert!(
         excl.contains("wibble"),
         "the non-excluded turn stays, got:\n{excl}"
@@ -1724,7 +1735,11 @@ fn hook_stop_ingests_in_progress_session_incrementally() {
         "the appended turn is searchable after the next Stop, got:\n{hit2}"
     );
     // Idempotent re-read: the first turn appears exactly once, not duplicated.
-    let again = run(&env, &["search", "wombatprobe", "-n", "10"], None);
+    let again = run(
+        &env,
+        &["search", "wombatprobe", "-n", "10", "--session", "live"],
+        None,
+    );
     assert_eq!(
         again.matches("\u{ab}wombatprobe\u{bb}").count(),
         1,

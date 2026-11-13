@@ -272,7 +272,9 @@ pub fn run(
                         }
                     }
                 }
-                near.truncate(fetch_n.max(0) as usize);
+                if fetch_n >= 0 {
+                    near.truncate(fetch_n as usize);
+                }
                 if !near.is_empty() {
                     println!("[subrosa] no substring match — nearest matches (within one edit):");
                     print_results(&conn, &fold_sessions(&near, limit, session), context);
@@ -410,8 +412,8 @@ fn term_trigrams(term_low: &str) -> Vec<String> {
     out
 }
 
-/// How many ranked hits are fetched per shown session, so a page can fill
-/// after repeat hits of one session fold into its first row.
+/// NOTE: a page can show fewer than -n sessions when a few sessions hold the
+/// top hits, because only -n times this many hits are fetched. Pass a larger -n.
 const FOLD_WINDOW: i64 = 4;
 
 fn fetch_limit(limit: i64, session: Option<&str>) -> i64 {
