@@ -1,7 +1,7 @@
 # Toolchain pin — `mise install` gives every contributor the same Rust.
 # Keep this on the latest stable; bump deliberately, commit mise.lock with it.
 [tools]
-rust = "1.99.1"
+rust = "1.100.0"
 
 [settings]
 lockfile = true
