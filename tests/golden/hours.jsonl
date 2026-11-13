@@ -1,0 +1,14 @@
+{"type":"user","timestamp":"2026-02-28T16:30:00.000Z","uuid":"h1","cwd":"/tmp/demo","message":{"role":"user","content":"plan the release notes"}}
+{"type":"assistant","timestamp":"2026-02-28T16:31:00.000Z","uuid":"h2","cwd":"/tmp/demo","message":{"role":"assistant","content":[{"type":"text","text":"Reading the notes."}]}}
+{"type":"user","timestamp":"2026-02-28T16:32:00.000Z","uuid":"h3","cwd":"/tmp/demo","message":{"role":"user","content":[{"type":"tool_result","content":[{"type":"text","text":"ok"}]}]}}
+{"type":"user","timestamp":"2026-02-28T16:40:00.500Z","uuid":"h4","cwd":"/tmp/demo","message":{"role":"user","content":[{"type":"text","text":"keep the notes short"}]}}
+{"type":"user","timestamp":"2026-02-28T16:50:00.000Z","uuid":"h5","cwd":"/tmp/demo","message":{"role":"user","content":"<task-notification>x</task-notification>"}}
+{"type":"user","timestamp":"2026-02-28T16:51:00.000Z","uuid":"h6","cwd":"/tmp/demo","message":{"role":"user","content":"Caveat: x"}}
+{"type":"user","timestamp":"2026-02-28T16:52:00.000Z","uuid":"h7","cwd":"/tmp/demo","message":{"role":"user","content":"<system-reminder>x</system-reminder>"}}
+{"type":"user","timestamp":"2026-02-28T16:53:00.000Z","uuid":"h8","cwd":"/tmp/demo","message":{"role":"user","content":"<local-command-caveat>x</local-command-caveat>"}}
+{"type":"user","timestamp":"2026-02-28T16:55:00.000Z","uuid":"h9","cwd":"/tmp/demo","isSidechain":true,"message":{"role":"user","content":"list the open issues"}}
+{"type":"user","timestamp":"2026-02-28T16:56:00.000Z","uuid":"h10","cwd":"/tmp/demo","isMeta":true,"message":{"role":"user","content":"local command output"}}
+{"type":"user","timestamp":"2026-02-28T16:57:00.000Z","uuid":"h11","cwd":"/tmp/demo","message":{"role":"user","content":"<command-name>/clear</command-name>"}}
+{"type":"user","timestamp":"2026-02-28T17:10:00.500Z","uuid":"h12","cwd":"/tmp/demo","message":{"role":"user","content":"[Request interrupted by user]"}}
+{"type":"user","timestamp":"2026-02-28T17:40:00.501Z","uuid":"h13","cwd":"/tmp/demo","message":{"role":"user","content":"draft the summary"}}
+{"type":"user","timestamp":"2026-03-31T16:30:00.000Z","uuid":"h14","cwd":"/tmp/demo","message":{"role":"user","content":"check the March total"}}

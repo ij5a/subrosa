@@ -96,6 +96,7 @@ subrosa          # open the dashboard
 - Builds curated facts with `/subrosa:checkpoint` and `/subrosa:checkpoint-backlog`. Each fact has a small Markdown file. `subrosa generate` writes the size-limited `MEMORY.md`, and `subrosa fact search` finds facts.
 - Lists sessions and deterministic tags. Tags include tools, file types, and topic terms.
 - Prints a session or a date range as its prompt trail with `subrosa recap`. Each typed prompt shows the first line of the final reply.
+- Prints active time for 1 local-time month with `subrosa hours`. It reads the timestamps of typed prompts, and a gap over 30 minutes counts as 2 minutes.
 - Finds co-occurring terms with `subrosa related`. It supports linked facts and read-only checks with `subrosa fact link` and `subrosa fact doctor`.
 - Makes throttled snapshots. An optional mirror can encrypt the latest snapshot with XChaCha20-Poly1305 and argon2id.
 - Masks private-key blocks, AWS keys, bearer tokens, and labeled secret values before storage.
@@ -122,6 +123,8 @@ subrosa sessions                         # sessions, newest first
 subrosa sessions --tag topic:cache-prod --after 2026-05-01
 subrosa recap <id>                       # one session as its prompt trail
 subrosa recap --after 2026-05-01 --project api # prompt trails for a date range
+subrosa hours 2026-05                    # active time per project for 1 month
+subrosa hours 2026-05 --by-session       # the same month, 1 line per session
 subrosa session <id> --tags              # session and derived tags
 subrosa fact list                        # facts for the current project
 subrosa fact search pgbouncer            # search facts
