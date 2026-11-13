@@ -192,6 +192,13 @@ fn apply_leaves_no_trace_of_a_masked_value() {
         )
         .unwrap();
     }
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT count(*) FROM turns_fts_tri_config WHERE k='secure-delete' AND v=1"
+        ),
+        1
+    );
     let vectors = |id: i64| {
         count(
             &conn,

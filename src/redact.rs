@@ -7,6 +7,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
 use regex::Regex;
 use rusqlite::{OptionalExtension, TransactionBehavior};
@@ -117,7 +118,7 @@ fn rewrite(apply: bool) -> rusqlite::Result<ExitCode> {
                     cur = Some(next.into_owned());
                 }
             }
-            if let Some(new) = cur.filter(|n| *n != text) {
+            if let Some(new) = cur {
                 *per_session.entry(sid.clone()).or_default() += 1;
                 changes.push((id, sid, new));
             }
@@ -135,12 +136,16 @@ fn rewrite(apply: bool) -> rusqlite::Result<ExitCode> {
         println!("  session {sid}: {n}");
     }
     if !apply {
-        println!("rewrite them with: subrosa redact --apply");
+        if !changes.is_empty() {
+            println!("rewrite them with: subrosa redact --apply");
+        }
         return Ok(ExitCode::SUCCESS);
     }
 
+    // Take the write lock first, so no index can appear after the checks below.
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let has_table = |name: &str| -> rusqlite::Result<bool> {
-        Ok(conn
+        Ok(tx
             .query_row(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
                 [name],
@@ -150,8 +155,6 @@ fn rewrite(apply: bool) -> rusqlite::Result<ExitCode> {
             .is_some())
     };
     let (tri, vectors) = (has_table("turns_fts_tri")?, has_table("turn_embeddings")?);
-
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
     // Without this, FTS5 keeps the old tokens in the index until a later merge.
     tx.execute(
@@ -184,11 +187,19 @@ fn rewrite(apply: bool) -> rusqlite::Result<ExitCode> {
     // NOTE: VACUUM builds its copy in RAM (temp_store=MEMORY in db::tune). Set temp_store=FILE first if an archive outgrows RAM.
     conn.execute_batch("VACUUM")?;
 
-    // The old text stays in the WAL file until a full reset truncates it.
-    let blocked: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+    // The old text stays in the WAL file until a full reset truncates it. A
+    // checkpoint by another connection returns busy at once, so retry for 30 s.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let blocked = loop {
+        let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+        if busy == 0 || Instant::now() >= deadline {
+            break busy;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
     if blocked != 0 {
         eprintln!(
-            "[subrosa] redact: a reader blocked the WAL reset, so the old text may remain there. Run the command again."
+            "[subrosa] redact: another connection blocked the WAL reset, so the old text may remain there. Run the command again."
         );
         return Ok(ExitCode::FAILURE);
     }
