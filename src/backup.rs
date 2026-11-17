@@ -18,6 +18,17 @@ const THROTTLE_SECONDS: u64 = 24 * 3600;
 const STALE_TMP_SECONDS: u64 = 3600;
 pub const DEFAULT_KEEP: usize = 7;
 
+/// The `keep=` config key. A missing or unreadable config, or anything but a
+/// whole number of 1 or more, keeps the default: an invalid value never prunes more.
+pub fn configured_keep() -> usize {
+    paths::config_get("keep")
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_KEEP)
+}
+
 pub(crate) fn snapshots() -> Vec<std::path::PathBuf> {
     let mut v: Vec<_> = fs::read_dir(paths::backups_dir())
         .map(|rd| {
@@ -113,7 +124,7 @@ pub fn snapshot(
 
     let snaps = snapshots();
     if snaps.len() > keep {
-        for old in &snaps[..snaps.len() - keep] {
+        for old in snaps[..snaps.len() - keep].iter().filter(|p| **p != dest) {
             let _ = fs::remove_file(old);
         }
     }
@@ -378,5 +389,5 @@ fn sweep_stale_tmp(dir: &Path, prefix: &str) {
 
 /// Hook path: throttled, quiet, mirror on. Never raises past the caller's log.
 pub fn throttled(conn: &Connection) -> Result<Option<String>, Box<dyn Error>> {
-    snapshot(conn, false, DEFAULT_KEEP, true)
+    snapshot(conn, false, configured_keep(), true)
 }

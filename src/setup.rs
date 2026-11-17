@@ -108,7 +108,7 @@ pub fn run(mirror_flag: Option<PathBuf>, no_mirror: bool) -> ExitCode {
                 Ok(None) if std::io::stdin().is_terminal() => ask_mirror_passphrase(),
                 Ok(None) => true,
             };
-            match backup::snapshot(&conn, true, backup::DEFAULT_KEEP, mirror_ok) {
+            match backup::snapshot(&conn, true, backup::configured_keep(), mirror_ok) {
                 Ok(Some(label)) => println!("[subrosa] first backup: {label}"),
                 Ok(None) => {}
                 Err(e) => eprintln!("[subrosa] first backup failed: {e}"),

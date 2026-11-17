@@ -1966,6 +1966,43 @@ fn newest_snapshot(env: &TestEnv) -> PathBuf {
         .expect("no local snapshot")
 }
 
+/// `keep=` sets how many snapshots a backup keeps, and `--keep` still wins.
+/// A value that is not a whole number of 1 or more keeps 7, so it never prunes more.
+#[test]
+fn keep_config_sets_the_snapshot_count() {
+    let env = setup("keep");
+    run(&env, &["init"], None);
+    let backups = env.data.join("backups");
+    for (config, args, want) in [
+        ("keep=0\n", &["backup", "--force"][..], 7),
+        ("keep=abc\n", &["backup", "--force"][..], 7),
+        ("keep=\n", &["backup", "--force"][..], 7),
+        ("keep=2\n", &["backup", "--force"][..], 2),
+        ("keep=2\n", &["backup", "--force", "--keep", "4"][..], 4),
+    ] {
+        fs::create_dir_all(&backups).unwrap();
+        for day in 1..=9 {
+            fs::write(
+                backups.join(format!("snapshot-202001{day:02}-000000.db")),
+                b"old",
+            )
+            .unwrap();
+        }
+        fs::write(env.data.join("config"), config).unwrap();
+        let (_, err, ok) = run_env::<&str>(&env, args, None, &[]);
+        assert!(ok, "{config:?} {args:?}: backup failed: {err}");
+        let left = fs::read_dir(&backups)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                name.starts_with("snapshot-") && name.ends_with(".db")
+            })
+            .count();
+        assert_eq!(left, want, "{config:?} {args:?}");
+    }
+}
+
 #[test]
 fn mirror_stays_plaintext_without_a_passphrase() {
     let env = setup("mirrorplain");

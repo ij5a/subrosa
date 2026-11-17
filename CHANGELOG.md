@@ -4,6 +4,12 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- A `keep=N` config line sets how many local snapshots subrosa keeps. The default stays 7, and a value that is not a whole number of 1 or more also keeps 7. `subrosa backup --keep` still wins for that run.
+
 ## [0.32.0] - 2026-11-14
 
 ### Added

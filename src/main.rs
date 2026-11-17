@@ -64,9 +64,9 @@ enum Cmd {
         /// Snapshot even if one was taken in the last 24h
         #[arg(long)]
         force: bool,
-        /// How many local snapshots to keep
-        #[arg(long, default_value_t = backup::DEFAULT_KEEP)]
-        keep: usize,
+        /// How many local snapshots to keep [default: keep= in the config, else 7]
+        #[arg(long)]
+        keep: Option<usize>,
         /// Skip the configured mirror copy
         #[arg(long)]
         no_mirror: bool,
@@ -416,7 +416,11 @@ fn main() -> ExitCode {
             force,
             keep,
             no_mirror,
-        } => run_backup(force, keep, no_mirror),
+        } => run_backup(
+            force,
+            keep.unwrap_or_else(backup::configured_keep),
+            no_mirror,
+        ),
         Cmd::Init { claude_md } => run_init(claude_md),
         Cmd::Ingest {
             paths,

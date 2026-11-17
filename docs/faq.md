@@ -11,7 +11,7 @@ The plugin bootstrap downloads the program from GitHub releases. It downloads ag
 | Item | Path | Details |
 |---|---|---|
 | Live database | `~/.claude/subrosa/memory.db` | Keep it out of synced folders. SQLite WAL and SHM files can corrupt during a write. |
-| Snapshots | `~/.claude/subrosa/backups/` | Keeps the last 7 snapshots with owner-only permissions. |
+| Snapshots | `~/.claude/subrosa/backups/` | Keeps the last 7 snapshots by default, with owner-only permissions. |
 | Mirror | Folder chosen by `subrosa setup` | Holds one static snapshot. With a passphrase, it writes `subrosa-latest.db.enc`. |
 | Checkpoint queue | `~/.claude/subrosa/memory.db` | SQLite table. Older versions used `~/.claude/subrosa/pending-checkpoint.log`; upgrade imports it once and leaves it untouched. |
 | Semantic model | `~/.claude/subrosa/models/` | About 133 MB, downloaded once and checksum-verified. |
@@ -31,6 +31,7 @@ The config file is `~/.claude/subrosa/config`. It uses `KEY=VALUE` lines with mo
 
 - `mirror` selects the snapshot folder or `none`.
 - `mirror_passphrase` encrypts the mirror when set. Before an encrypted mirror exists, an absent value leaves it readable.
+- `keep` sets how many local snapshots to keep, 7 by default. A value that is not a whole number of 1 or more keeps 7. The next backup removes the extra snapshots. Run `subrosa backup --force` to make that backup now.
 - `checkpoint_nudge` accepts `loud`, `quiet`, or `off`; `loud` is the default.
 - `semantic=off` stops automatic indexing, model downloads, and every network call subrosa can make. A model already on disk can still serve semantic searches.
 
