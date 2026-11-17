@@ -4,11 +4,15 @@ All notable changes to subrosa are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.33.0] - 2026-11-18
 
 ### Added
 
 - A `keep=N` config line sets how many local snapshots subrosa keeps. The default stays 7, and a value that is not a whole number of 1 or more also keeps 7. `subrosa backup --keep` still wins for that run.
+
+### Security
+
+- `cargo audit` ignores 4 new `zip` advisories (RUSTSEC-2026-0545 to RUSTSEC-2026-0548). `zip` comes in through candle-core 0.9, and subrosa loads only `model.safetensors`, so it never opens a zip file.
 
 ## [0.32.0] - 2026-11-14
 
@@ -486,6 +490,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [0.15.0]: https://github.com/ij5a/subrosa/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/ij5a/subrosa/compare/v0.14.0...v0.14.1
 [0.28.1]: https://github.com/ij5a/subrosa/compare/v0.28.0...v0.28.1
+[0.33.0]: https://github.com/ij5a/subrosa/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/ij5a/subrosa/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/ij5a/subrosa/compare/v0.30.3...v0.31.0
 [0.30.3]: https://github.com/ij5a/subrosa/compare/v0.30.2...v0.30.3
